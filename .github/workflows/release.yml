@@ -18,33 +18,74 @@ jobs:
         include:
           - target: "cp314-linux-x86_64"
             os: "ubuntu-latest"
-            args: "build --release --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
+            python-version: "3.14"
+            free-threading: false
           - target: "cp314-linux-aarch64"
             os: "ubuntu-24.04-arm"
-            args: "build --release --target linux-aarch64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
+            python-version: "3.14"
+            free-threading: false
           - target: "cp314t-linux-x86_64"
             os: "ubuntu-latest"
-            args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314t/bin/python"
+            python-version: "3.14"
+            free-threading: true
           - target: "cp315-linux-x86_64"
             os: "ubuntu-latest"
-            args: "build --release --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315/bin/python"
+            python-version: "3.15"
+            free-threading: false
           - target: "cp315t-linux-x86_64"
             os: "ubuntu-latest"
-            args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315t/bin/python"
+            python-version: "3.15"
+            free-threading: true
     steps:
       - uses: actions/checkout@v5
+
+      - name: set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: restore V compiler
+        id: restore-v
+        uses: actions/cache@v5
+        with:
+          path: /tmp/v-src
+          key: v-36be92642c49a8fe9213ea4b96c6bf56b67b668c-6851aaf3f9e696b30b26e406f16095b0002acaab
+
+      - name: install V compiler
+        if: ${{ steps.restore-v.outputs.cache-hit != 'true' }}
+        env:
+          V_COMMIT: 36be92642c49a8fe9213ea4b96c6bf56b67b668c
+          VC_COMMIT: 6851aaf3f9e696b30b26e406f16095b0002acaab
+        run: |
+          git clone https://github.com/vlang/v.git /tmp/v-src
+          cd /tmp/v-src
+          git checkout $V_COMMIT
+          git clone https://github.com/vlang/vc.git vc
+          (cd vc && git checkout $VC_COMMIT)
+          make fresh_tcc
+          make local=1 "-j$(nproc)"
+
+      - name: put V on PATH
+        run: echo "/tmp/v-src" >> "$GITHUB_PATH"
+
+      - name: install vcraft
+        run: python -m pip install "vcraft==1.7.0"
 
       - name: create venv
         run: |
           cd vlambda
           python -m venv .venv
+          . .venv/bin/activate
+          pip install "vcraft==1.7.0"
 
-      - name: build the wheel
-        uses: rroblf01/vcraft/actions/vcraft-action@v1
-        with:
-          working-directory: vlambda
-          args: ${{ matrix.args }}
-          vcraft-version: v1.7.0
+      - name: build vlambda
+        env:
+          VCRAFT_NO_MEMORY_LIMIT: 1
+        run: |
+          cd vlambda
+          . .venv/bin/activate
+          vcraft build --release ${{ matrix.free-threading && '--free-threading' || '' }}
 
       - name: upload the wheel
         uses: actions/upload-artifact@v6
@@ -62,9 +103,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.14"
-
-      - name: install vcraft
-        run: python -m pip install "vcraft==1.7.0"
 
       - name: install vcraft
         run: python -m pip install "vcraft==1.7.0"

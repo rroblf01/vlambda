@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "vcraft_build"
+backend-path = ["."]
+
+# A project keeps its Python package under `python/` (see the generated layout),
+# so a type checker or editor is told where to look: without this, `import
+# <name>` is unresolved in an editor until the package is installed.
+[tool.pyright]
+extraPaths = ["python"]
+
+[tool.mypy]
+mypy_path = "python"
+
+[tool.ty.environment]
+extra-paths = ["./python"]

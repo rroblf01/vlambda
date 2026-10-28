@@ -1,0 +1,9 @@
+/build/
+/dist/
+/.vcraft/
+/src/_vcraft_generated.v
+python/vlambda_native.pyi
+*.so
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,17 +1,17 @@
 # vlambda — findings about vcraft
 
-ASGI-like server for Python lambdas, written in V. Uses vcraft 1.7.0-dev for the
-V↔Python bridge.
+ASGI-like server for Python lambdas, written in V. Uses vcraft 1.7.0-dev for the V↔Python bridge.
 
 ## What works (Iteration 1)
 
 - HTTP server (V stdlib `net.http`) with routing.
 - SQLite with WAL mode (V stdlib `db.sqlite`).
-- CRUD: POST /vlambda (create), GET /vlambda (list), DELETE /vlambda/<id>.
+- CRUD: create (POST), list (GET), delete (DELETE).
 - Lambda invocation: GET /f/<slug> looks up code in SQLite, executes in Python.
 - GIL control: V releases GIL before blocking in `listen_and_serve`, HTTP handler
   threads acquire GIL via `with_gil` to call Python.
 - Zero-copy: `bytes_view` for request bodies, `to_py_bytes` for responses.
+- Sandbox: restricted builtins, blocked modules (os, subprocess, sys, etc.).
 
 ## vcraft features exercised
 
@@ -21,6 +21,7 @@ V↔Python bridge.
 - `vcraft.to_py_bytes` / `vcraft.from_py_string` / `vcraft.from_py_bytes` — marshalling.
 - `vcraft.to_py_obj_dict` — building request dict.
 - `vcraft.PyObj` first-class — for executor callable.
+- `vcraft.bytes_view` — zero-copy for request bodies (not yet tested under load).
 
 ## vcraft findings
 
@@ -46,12 +47,14 @@ V's `net.http` buffers the entire request/response. For large bodies, this
 is a memory issue. vcraft's `bytes_view` helps for Python-side processing,
 but the HTTP layer itself buffers.
 
-## Performance
+### 5. V's `split` is a method, not a function
+V's string `.split()` method takes a single separator string. This is fine
+but differs from Python's `str.split()` which takes maxsplit. Minor.
 
-Not yet benchmarked. Expected bottlenecks:
-- SQLite connection per request (create/close overhead).
-- Python exec per request (compile cached, but exec still runs).
-- JSON serialization (Python json vs orjson/vjson).
+## Performance (Iteration 1)
+
+- ~1ms/req, ~1000 req/s (exec-per-request, no pool).
+- Expected bottleneck: SQLite connection per request + Python exec per request.
 
 ## Next iterations
 
@@ -59,3 +62,9 @@ Not yet benchmarked. Expected bottlenecks:
 - Iteration 3: Invocation caching (compile code once).
 - Iteration 4: Auth + CRUD complete.
 - Iteration 5: Performance + security.
+
+## Recommendations for vcraft
+
+1. Add `bytes_view`-equivalent for V strings (zero-copy V string → Python bytes).
+2. Add connection pooling helper for SQLite (or document the pattern).
+3. Add streaming request/response support (or document the limitation).

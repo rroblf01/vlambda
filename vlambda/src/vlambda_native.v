@@ -91,7 +91,10 @@ mut:
 }
 
 pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
-	vlambda_req_total++
+	// Don't count health/metrics/static/UI requests in total
+	if req.url != '/health' && req.url != '/metrics' && req.url != '/metrics/json' && req.url != '/favicon.ico' && req.url != '/' && !req.url.starts_with('/ui') && !req.url.starts_with('/vlambda') {
+		vlambda_req_total++
+	}
 	start_time := time.now()
 	// Rate limiting (simple per-IP, resets each second via counter)
 	// For simplicity, track total requests per IP in a map; reset not implemented for brevity

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: ${{ matrix.target }}
+    name: python-${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

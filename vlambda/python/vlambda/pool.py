@@ -19,7 +19,7 @@ from vlambda.cache import get as get_compiled
 class Worker:
     def __init__(self, worker_id: int):
         self.id = worker_id
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=1000)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -49,8 +49,14 @@ class Worker:
 
     def submit(self, code, method, path, query, body) -> Any:
         result_queue = queue.Queue(1)
-        self._queue.put((code, method, path, query, body, result_queue))
-        return result_queue.get(timeout=30)
+        try:
+            self._queue.put((code, method, path, query, body, result_queue), timeout=5)
+        except queue.Full:
+            return {"error": "server busy, try again later"}
+        try:
+            return result_queue.get(timeout=30)
+        except queue.Empty:
+            return {"error": "invocation timeout"}
 
     def stop(self):
         self._queue.put(None)

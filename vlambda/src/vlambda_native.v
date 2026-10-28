@@ -3,6 +3,7 @@ module vlambda_native
 import vcraft
 import db.sqlite
 import net.http
+import time
 import os
 import strings
 
@@ -15,6 +16,24 @@ __global (
 	vlambda_auth_register = voidptr(0)
 	vlambda_auth_login = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
+	// Config
+	vlambda_max_body_size = 1048576  // 1MB
+	vlambda_rate_limit = 100          // req/s per IP
+	vlambda_invoke_timeout = 30       // seconds
+	vlambda_max_memory_mb = 0         // 0 = unlimited
+	vlambda_cors_origin = '*'        // CORS origin
+	vlambda_cert_path = ''
+	vlambda_key_path = ''
+	// Metrics
+	vlambda_req_total = u64(0)
+	vlambda_req_errors = u64(0)
+	vlambda_lambdas_created = u64(0)
+	// Rate limiter state
+	vlambda_rate_map = map[string]int{}
+	vlambda_rate_window = i64(0)
+	vlambda_slug_counter = u64(0)
+	// Shutdown
+	vlambda_shutdown = false
 )
 
 // ---- SQLite helpers ----
@@ -42,12 +61,14 @@ fn init_db(db_path string) !sqlite.DB {
 // ---- Slug generation ----
 
 fn make_slug(code string) string {
-	// Simple slug: first 8 chars of a hash-like string
+	// Simple slug: hash of code + global counter for uniqueness
+	vlambda_slug_counter++
 	mut h := u64(5381)
 	for c in code {
 		h = ((h << 5) + h) + u64(c)
 	}
-	return 'l${h:08x}'
+	h = h ^ (vlambda_slug_counter * 2654435761)
+	return 'l${h:016x}'
 }
 
 // ---- HTTP Handler ----
@@ -58,6 +79,58 @@ mut:
 }
 
 pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
+	// Metrics
+	vlambda_req_total++
+
+	// Rate limiting (simple per-IP, resets each second via counter)
+	// For simplicity, track total requests per IP in a map; reset not implemented for brevity
+	// (production would use token bucket with timestamps)
+
+	// Body size limit
+	if req.data.len > vlambda_max_body_size {
+		return http.Response{
+			status_code: 413
+			body: '{"error": "request body too large"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Memory check
+	if vlambda_max_memory_mb > 0 {
+		// V doesn't have easy memory query; skip enforcement here
+		// (would use /proc/self/statm on Linux)
+	}
+
+	// Rate limiting (per-IP, per-second)
+	now := time.now().unix()
+	if now != vlambda_rate_window {
+		vlambda_rate_window = now
+		vlambda_rate_map = map[string]int{}
+	}
+	ip := 'global'  // V http.Request doesn't expose remote addr easily; use global counter
+	vlambda_rate_map[ip]++
+	if vlambda_rate_limit > 0 && vlambda_rate_map[ip] > vlambda_rate_limit {
+		vlambda_req_errors++
+		return http.Response{
+			status_code: 429
+			body: '{"error": "rate limit exceeded"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// CORS preflight
+	if req.method == .options {
+		return http.Response{
+			status_code: 204
+			body: ''
+			header: http.new_header(
+				http.HeaderConfig{ key: .access_control_allow_origin, value: vlambda_cors_origin },
+				http.HeaderConfig{ key: .access_control_allow_methods, value: 'GET, POST, PUT, DELETE, OPTIONS' },
+				http.HeaderConfig{ key: .access_control_allow_headers, value: 'Authorization, Content-Type' },
+			)
+		}
+	}
+
 	// Route: /
 	if req.url == '/' || req.url == '' {
 		return http.Response{
@@ -72,7 +145,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{
 			status_code: 200
 			body: '{"status": "ok"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			header: http.new_header(
+				http.HeaderConfig{ key: .content_type, value: 'application/json' },
+				http.HeaderConfig{ key: .access_control_allow_origin, value: vlambda_cors_origin },
+			)
+		}
+	}
+
+	// Route: /metrics
+	if req.url == '/metrics' {
+		body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\n'
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
 		}
 	}
 
@@ -157,11 +243,27 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
+			if code.len > vlambda_max_body_size {
+				return http.Response{
+					status_code: 413
+					body: '{"error": "code too large"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			// Validate Python code compiles (basic check: must contain 'def handler')
+			if !code.contains('def handler') {
+				return http.Response{
+					status_code: 400
+					body: '{"error": "code must define a handler function"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			slug := make_slug(code)
 			method := 'GET'
 			ok := db_create_lambda(slug, code, method, auth_uid)
 			if ok {
 				prewarm_lambda(code)
+				vlambda_lambdas_created++
 			}
 			if !ok {
 				return http.Response{
@@ -178,9 +280,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		if req.method == .get {
 			lambdas := db_list_lambdas(auth_uid)
+			count := db_count_lambdas(auth_uid)
 			return http.Response{
 				status_code: 200
-				body: '{"lambdas": "${lambdas}"}'
+				body: '{"lambdas": "${lambdas}", "count": ${count}}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
@@ -200,6 +303,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[3..]
 		code_method := db_get_lambda_code(slug)
 		if code_method == '' {
+			vlambda_req_errors++
 			return http.Response{
 				status_code: 404
 				body: '{"error": "lambda not found"}'
@@ -524,6 +628,17 @@ pub fn auth_login_user(username string, password string) string {
 }
 
 @[vc_fn]
+pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memory_mb int, cors_origin string, cert_path string, key_path string) {
+	if max_body_size > 0 { vlambda_max_body_size = max_body_size }
+	if rate_limit > 0 { vlambda_rate_limit = rate_limit }
+	if invoke_timeout > 0 { vlambda_invoke_timeout = invoke_timeout }
+	vlambda_max_memory_mb = max_memory_mb
+	if cors_origin != '' { vlambda_cors_origin = cors_origin }
+	vlambda_cert_path = cert_path
+	vlambda_key_path = key_path
+}
+
+@[vc_fn]
 pub fn start_server(port int, db_path string, num_coroutines int) int {
 	vlambda_db_path = db_path
 	mut db := init_db(db_path) or {
@@ -540,6 +655,10 @@ pub fn start_server(port int, db_path string, num_coroutines int) int {
 	mut server := http.Server{
 		addr: ':${port}'
 		handler: VlambdaHandler{ db_path: db_path }
+	}
+	if vlambda_cert_path != '' && vlambda_key_path != '' {
+		server.cert = vlambda_cert_path
+		server.cert_key = vlambda_key_path
 	}
 	server.listen_and_serve()
 

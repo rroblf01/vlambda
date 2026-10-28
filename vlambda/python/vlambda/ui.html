@@ -85,7 +85,8 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
       <h2>New Lambda</h2>
       <div class="form-group">
         <label>Python Code</label>
-        <textarea id="code-input" placeholder="def handler(request):&#10;    return {'msg': 'hello'}"></textarea>
+        <textarea id="code-input">def handler(request):
+    return {"msg": "hello", "path": request.path}</textarea>
       </div>
       <div class="flex">
         <button class="btn btn-primary" onclick="createLambda()">Create</button>
@@ -227,7 +228,7 @@ async function loadLambdas() {
         const slug = parts[0];
         const method = parts[1];
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td><a href="#" onclick="editLambda(\'' + slug + '\')">' + slug + '</a></td>' +
+        tr.innerHTML = '<td><a href="/f/' + slug + '" target="_blank">' + slug + '</a></td>' +
           '<td><span class="badge badge-' + method.toLowerCase() + '">' + method + '</span></td>' +
           '<td class="flex">' +
           '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\')">Run</button> ' +

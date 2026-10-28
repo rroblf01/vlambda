@@ -252,7 +252,7 @@ async function loadLambdas() {
         tr.innerHTML = '<td><a href="/f/' + slug + '" target="_blank">' + slug + '</a></td>' +
           '<td><span class="badge badge-' + method.toLowerCase() + '">' + method + '</span></td>' +
           '<td class="flex">' +
-          '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\')">Run</button> ' +
+          '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\', \'' + method + '\')">Run</button> ' +
           '<button class="btn btn-sm" onclick="editLambda(\'' + slug + '\')">Edit</button> ' +
           '<button class="btn btn-sm btn-danger" onclick="openDelete(\'' + slug + '\')">Del</button>' +
           '</td>';
@@ -340,8 +340,9 @@ async function runLambda() {
   const code = document.getElementById('editor-code').value;
   const resultDiv = document.getElementById('run-result');
   resultDiv.innerHTML = '<pre>Running...</pre>';
+  const method = document.getElementById('editor-method').value;
   try {
-    const resp = await fetch(API + '/vlambda', {
+    const resp = await fetch(API + '/vlambda?method=' + method, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
       body: code
@@ -351,7 +352,12 @@ async function runLambda() {
       resultDiv.innerHTML = '<pre style="color:#f85149">' + (data.error || 'Error') + '</pre>';
       return;
     }
-    const invokeResp = await fetch(API + '/f/' + data.slug);
+    const invokeOpts = { method: method };
+    if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+      invokeOpts.headers = { 'Content-Type': 'application/json' };
+      invokeOpts.body = '{}';
+    }
+    const invokeResp = await fetch(API + '/f/' + data.slug, invokeOpts);
     const result = await invokeResp.text();
     resultDiv.innerHTML = '<pre>' + result + '</pre>';
     await fetch(API + '/vlambda/' + data.slug, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
@@ -360,11 +366,17 @@ async function runLambda() {
   }
 }
 
-async function invokeLambda(slug) {
+async function invokeLambda(slug, method) {
+  method = method || 'GET';
   try {
-    const resp = await fetch(API + '/f/' + slug);
+    const opts = { method: method };
+    if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = '{}';
+    }
+    const resp = await fetch(API + '/f/' + slug, opts);
     const text = await resp.text();
-    alert(slug + ':\n' + text);
+    alert(slug + ' [' + method + ']:\n' + text);
   } catch (e) {
     alert('Error: ' + e.message);
   }

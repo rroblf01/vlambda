@@ -4,8 +4,10 @@ version = "0.1.0"
 module = "vlambda_native"
 description = "An ASGI-like server for Python lambdas, written in V."
 license = "MIT"
+authors = ["Ricardo Robles Fernández"]
 requires-python = ">=3.14"
 readme = "README.md"
+repository = "https://github.com/rroblf01/vlambda"
 classifiers = ["Programming Language :: Other", "Programming Language :: Python :: 3", "Programming Language :: Python :: Implementation :: CPython"]
 
 [build]

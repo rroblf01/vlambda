@@ -1,8 +1,42 @@
 # vlambda
 
-An ASGI-like server for Python lambdas, written in V. Uses vcraft for the V↔Python bridge.
+An ASGI-like server for Python lambdas, written in V. Uses [vcraft](https://github.com/rroblf01/vcraft) for the V↔Python bridge.
 
-Published at: https://vlambda.ricardorobles.es
+**Live at:** https://vlambda.ricardorobles.es
+
+## What is vlambda?
+
+vlambda lets you write Python functions ("lambdas") and serve them as HTTP endpoints. It's like AWS Lambda, but self-hosted, with no cold starts, and ~0.3ms per invocation.
+
+```python
+def handler(request):
+    return {"msg": "hello", "path": request.path}
+```
+
+POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
+
+## Features
+
+- **No cold starts** — lambdas are compiled once and cached in memory
+- **Fast** — ~3,000 req/s (concurrent, free-threaded Python), ~0.3ms/req
+- **Auth** — JWT-based authentication with per-user ownership
+- **Web UI** — Dashboard for managing lambdas, code editor, metrics
+- **Async invocation** — Fire-and-forget with task tracking
+- **Sandbox** — Restricted Python builtins, blocked dangerous modules
+- **Metrics** — Prometheus-compatible + Chart.js dashboard
+- **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
+- **Naming** — Human-readable names for lambdas
+
+## Installation
+
+```bash
+uv pip install vlambda
+```
+
+Or with pip:
+```bash
+pip install vlambda
+```
 
 ## Usage
 
@@ -10,10 +44,12 @@ Published at: https://vlambda.ricardorobles.es
 python -m vlambda --port 8080 --sqlite_path ./vlambda.db --num_coroutines 10
 ```
 
-Or with env vars:
+Or with environment variables:
 ```bash
 VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambda
 ```
+
+Then open http://localhost:8080/ in your browser.
 
 ## CLI Options
 
@@ -30,50 +66,86 @@ VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambd
 | `--cert` | `VLAMBDA_CERT` | | TLS certificate path |
 | `--key` | `VLAMBDA_KEY` | | TLS key path |
 
-## Endpoints
+## API
 
-- `GET /` — health check
-- `GET /health` — JSON health check
+### Authentication
+- `POST /register` — Register user (body: `username:password`)
+- `POST /login` — Login (body: `username:password`) → JWT token
+
+### Lambdas (requires auth)
+- `POST /vlambda?method=GET&name=my-lambda` — Create lambda (body: Python code)
+- `GET /vlambda` — List lambdas
+- `GET /vlambda/<slug>` — Get lambda code
+- `PUT /vlambda/<slug>?method=POST&name=new-name` — Update lambda
+- `DELETE /vlambda/<slug>` — Delete lambda
+
+### Invocation
+- `GET/POST/PUT/PATCH/DELETE /f/<slug>` — Invoke lambda (method must match)
+- `POST /async/<slug>` — Async invoke (returns task_id)
+- `GET /task/<id>` — Get async task result
+
+### Monitoring
+- `GET /health` — Health check
 - `GET /metrics` — Prometheus metrics
-- `POST /register` — register user (body: `username:password`)
-- `POST /login` — login (body: `username:password`) → JWT token
-- `POST /vlambda` — create lambda (body: Python code, requires auth)
-- `GET /vlambda` — list lambdas (requires auth)
-- `PUT /vlambda/<slug>` — update lambda code (requires auth)
-- `DELETE /vlambda/<slug>` — delete lambda (requires auth)
-- `GET/POST/PUT/PATCH/DELETE /f/<slug>` — invoke lambda
+- `GET /metrics/json` — JSON metrics (for charts)
+- `POST /shutdown` — Graceful shutdown
 
-## Authentication
+## Lambda Format
 
-All `/vlambda` endpoints require a `Authorization: Bearer <token>` header.
-Obtain a token via `POST /login`.
+Every lambda must define a `handler` function:
 
-## Scalability
+```python
+def handler(request):
+    return {"msg": "hello", "path": request.path}
+```
 
-- **Worker pool** with configurable size (auto-scales via bounded queue + backpressure).
-- **LRU code cache** (1024 entries) — compiles once, reuses.
-- **Rate limiting** per IP (configurable req/s).
-- **Body size limit** to prevent DoS.
-- **Invocation timeout** (configurable).
-- **RAM monitoring** with warning at 90% of limit.
-- **Graceful shutdown** (SIGTERM/SIGINT).
-- **CORS** support for browser clients.
-- **TLS/HTTPS** support.
-- **Prometheus metrics** endpoint.
+The `request` object has: `method`, `path`, `query_string`, `headers`, `body`.
 
-## Status
+Safe builtins: `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `range`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`, `print`, etc.
 
-Iteration 5: Full scalability + auth + CRUD + caching + sandbox + pool + tests.
+Blocked modules: `os`, `subprocess`, `sys`, `importlib`, `ctypes`, `socket`, `urllib`, `http`, `shutil`, `pathlib`, `io`, `pickle`, `marshal`, etc.
 
-## Findings
+Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `functools`, `hashlib`, `base64`, `string`, `random`, `statistics`, etc.
 
-See `FINDINGS.md` for vcraft findings and recommendations.
+## Web UI
 
-## New Features (latest)
+Open http://localhost:8080/ in your browser for the dashboard:
+- Login/Register
+- List, create, edit, delete lambdas
+- Code editor with syntax highlighting
+- Run lambdas in-browser
+- Metrics with Chart.js charts
 
-- **Input validation**: Python code is validated with `ast.parse` before storage.
-- **Pagination**: `GET /vlambda?limit=N&offset=M` with count in response.
-- **Prometheus metrics**: `/metrics` endpoint with request count, errors, latency.
-- **SQLite connection pool**: Reusable connections, reduced per-request overhead.
-- **GC tuning**: Automatic GC disabled during requests, periodic collection.
-- **Arena allocator**: Per-request memory management in V.
+## Performance
+
+| Metric | Value |
+|--------|-------|
+| Cold start | 0ms (persistent process) |
+| Warm invocation | ~0.3ms |
+| Throughput (concurrent, free-threaded) | ~3,000 req/s |
+| Throughput (response cache hits) | ~100x faster |
+
+## Architecture
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│   Browser   │────▶│  V HTTP      │────▶│  Python     │
+│   (UI)      │◀────│  Server      │◀────│  Pool       │
+└─────────────┘     │  (net.http)  │     │  (workers)  │
+                    │              │     └─────────────┘
+                    │  ┌────────┐  │           │
+                    │  │ SQLite │  │           │
+                    │  │ (WAL)  │  │     ┌─────────────┐
+                    │  └────────┘  │     │  Sandbox    │
+                    └──────────────┘     │  (restricted│
+                                         │   builtins) │
+                                         └─────────────┘
+```
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Author
+
+Ricardo Robles Fernández - https://github.com/rroblf01/vlambda

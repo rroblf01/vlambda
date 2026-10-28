@@ -1,3 +1,9 @@
+[project]
+name = "vlambda"
+version = "0.1.0"
+authors = [{name = "Ricardo Robles Fernández"}]
+license = {text = "MIT"}
+
 [build-system]
 requires = []
 build-backend = "vcraft_build"

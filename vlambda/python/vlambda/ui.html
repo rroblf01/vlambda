@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>vlambda</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; }
@@ -143,8 +144,19 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
 
   <div id="view-metrics" class="hidden">
     <h2>Metrics</h2>
+    <div class="card" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;">
+      <div><div style="color:#8b949e;font-size:12px;">Total Requests</div><div id="m-reqs" style="font-size:24px;font-weight:700;">0</div></div>
+      <div><div style="color:#8b949e;font-size:12px;">Errors</div><div id="m-errs" style="font-size:24px;font-weight:700;color:#f85149;">0</div></div>
+      <div><div style="color:#8b949e;font-size:12px;">Lambdas Created</div><div id="m-lambdas" style="font-size:24px;font-weight:700;color:#3fb950;">0</div></div>
+      <div><div style="color:#8b949e;font-size:12px;">Avg Latency (ms)</div><div id="m-lat" style="font-size:24px;font-weight:700;">0</div></div>
+    </div>
     <div class="card">
-      <pre id="metrics-output">Loading...</pre>
+      <h2 style="font-size:14px;">Per-Lambda Invocations</h2>
+      <canvas id="chart-invocations" height="200"></canvas>
+    </div>
+    <div class="card">
+      <h2 style="font-size:14px;">Per-Lambda Latency (ms)</h2>
+      <canvas id="chart-latency" height="200"></canvas>
     </div>
     <button class="btn" onclick="loadMetrics()">Refresh</button>
   </div>
@@ -412,13 +424,38 @@ async function confirmDelete() {
   closeModal();
 }
 
+let chartInv = null;
+let chartLat = null;
+
 async function loadMetrics() {
   try {
-    const resp = await fetch(API + '/metrics');
-    const text = await resp.text();
-    document.getElementById('metrics-output').textContent = text;
+    const resp = await fetch(API + '/metrics/json');
+    const data = await resp.json();
+    document.getElementById('m-reqs').textContent = data.requests_total;
+    document.getElementById('m-errs').textContent = data.errors_total;
+    document.getElementById('m-lambdas').textContent = data.lambdas_created;
+    document.getElementById('m-lat').textContent = data.latency_avg_ms.toFixed(2);
+
+    const labels = data.per_lambda.map(l => l.slug);
+    const invocations = data.per_lambda.map(l => l.invocations);
+    const latencies = data.per_lambda.map(l => l.latency_avg_ms);
+
+    if (chartInv) chartInv.destroy();
+    if (chartLat) chartLat.destroy();
+
+    chartInv = new Chart(document.getElementById('chart-invocations'), {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ label: 'Invocations', data: invocations, backgroundColor: '#1f6feb' }] },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+
+    chartLat = new Chart(document.getElementById('chart-latency'), {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ label: 'Avg Latency (ms)', data: latencies, backgroundColor: '#238636' }] },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
   } catch (e) {
-    document.getElementById('metrics-output').textContent = 'Error loading metrics';
+    console.error('metrics error:', e);
   }
 }
 

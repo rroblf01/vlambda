@@ -32,6 +32,10 @@ __global (
 	vlambda_lambdas_created = u64(0)
 	vlambda_latency_sum = f64(0)
 	vlambda_latency_count = u64(0)
+	// Per-lambda metrics: slug -> count
+	vlambda_lambda_invocations = map[string]u64{}
+	vlambda_lambda_errors = map[string]u64{}
+	vlambda_lambda_latency = map[string]f64{}
 	// Rate limiter state
 	vlambda_rate_map = map[string]int{}
 	vlambda_rate_window = i64(0)
@@ -85,6 +89,7 @@ mut:
 }
 
 pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
+	vlambda_req_total++
 	start_time := time.now()
 	// Rate limiting (simple per-IP, resets each second via counter)
 	// For simplicity, track total requests per IP in a map; reset not implemented for brevity
@@ -149,10 +154,40 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /metrics/json (JSON format for UI charts)
+	if req.url == '/metrics/json' {
+		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
+		mut body := '{"requests_total": ${vlambda_req_total}, "errors_total": ${vlambda_req_errors}, "lambdas_created": ${vlambda_lambdas_created}, "latency_avg_ms": ${avg}, "latency_count": ${vlambda_latency_count}, "per_lambda": ['
+		mut first := true
+		for slug, count in vlambda_lambda_invocations {
+			errs := vlambda_lambda_errors[slug] or { u64(0) }
+			lat := vlambda_lambda_latency[slug] or { f64(0) }
+			avg_lat := if count > 0 { lat / f64(count) } else { 0.0 }
+			if !first { body += ',' }
+			first = false
+			body += '{"slug": "${slug}", "invocations": ${count}, "errors": ${errs}, "latency_avg_ms": ${avg_lat}}'
+		}
+		body += ']}'
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /metrics
 	if req.url == '/metrics' {
 		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
-		body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\nvlambda_latency_avg_ms ${avg}\nvlambda_latency_count ${vlambda_latency_count}\n'
+		mut body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\nvlambda_latency_avg_ms ${avg}\nvlambda_latency_count ${vlambda_latency_count}\n'
+		// Per-lambda metrics
+		for slug, count in vlambda_lambda_invocations {
+			errs := vlambda_lambda_errors[slug] or { u64(0) }
+			lat := vlambda_lambda_latency[slug] or { f64(0) }
+			avg_lat := if count > 0 { lat / f64(count) } else { 0.0 }
+			body += 'vlambda_lambda_invocations{slug="${slug}"} ${count}\n'
+			body += 'vlambda_lambda_errors{slug="${slug}"} ${errs}\n'
+			body += 'vlambda_lambda_latency_avg_ms{slug="${slug}"} ${avg_lat}\n'
+		}
 		return http.Response{
 			status_code: 200
 			body: body
@@ -363,6 +398,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		elapsed := time.since(start_time).milliseconds()
 		vlambda_latency_sum += f64(elapsed)
 		vlambda_latency_count++
+		// Per-lambda metrics
+		vlambda_lambda_invocations[slug] = (vlambda_lambda_invocations[slug] or { u64(0) }) + 1
+		vlambda_lambda_latency[slug] = (vlambda_lambda_latency[slug] or { f64(0) }) + f64(elapsed)
+		if result.contains('error') {
+			vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
+		}
 		return http.Response{
 			status_code: 200
 			body: result

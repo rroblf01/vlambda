@@ -80,6 +80,7 @@ jobs:
         uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:
           container: ${{ matrix.container }}
+          working-directory: vlambda
           args: ${{ matrix.args }}
 
       - name: the wheel was written

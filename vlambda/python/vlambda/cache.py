@@ -84,3 +84,37 @@ def clear():
 def size() -> int:
     with _lock:
         return len(_cache)
+
+
+# Response cache for idempotent GET requests
+import time as _time
+_RESP_CACHE: dict = {}
+_RESP_CACHE_LOCK = threading.Lock()
+_RESP_CACHE_TTL = 5  # seconds
+_RESP_CACHE_MAX = 256
+
+
+def get_response(key: str):
+    with _RESP_CACHE_LOCK:
+        entry = _RESP_CACHE.get(key)
+        if entry is None:
+            return None
+        val, expires = entry
+        if _time.time() > expires:
+            del _RESP_CACHE[key]
+            return None
+        return val
+
+
+def set_response(key: str, value):
+    with _RESP_CACHE_LOCK:
+        if len(_RESP_CACHE) >= _RESP_CACHE_MAX:
+            # Evict oldest
+            oldest = min(_RESP_CACHE, key=lambda k: _RESP_CACHE[k][1])
+            del _RESP_CACHE[oldest]
+        _RESP_CACHE[key] = (value, _time.time() + _RESP_CACHE_TTL)
+
+
+def invalidate_responses():
+    with _RESP_CACHE_LOCK:
+        _RESP_CACHE.clear()

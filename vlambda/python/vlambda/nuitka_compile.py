@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tempfile
 import importlib.util
 import hashlib
 
@@ -40,7 +39,6 @@ def compile_lambda(code: str):
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
-    # Find the .so
     for fn in os.listdir(_CACHE_DIR):
         if fn.startswith(name) and fn.endswith(".so"):
             so_path = os.path.join(_CACHE_DIR, fn)

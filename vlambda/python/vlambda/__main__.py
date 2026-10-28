@@ -22,6 +22,13 @@ def main() -> None:
     parser.add_argument("--key", default=os.environ.get("VLAMBDA_KEY", ""))
     args = parser.parse_args()
 
+    # Try to use jemalloc for better allocation performance
+    try:
+        import ctypes
+        ctypes.CDLL("libjemalloc.so.2", mode=ctypes.RTLD_GLOBAL)
+    except OSError:
+        pass
+
     from vlambda.sandbox import execute_lambda
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3

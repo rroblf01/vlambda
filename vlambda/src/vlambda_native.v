@@ -81,21 +81,10 @@ mut:
 }
 
 pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
-	// Metrics
-	vlambda_req_total++
-
 	// Rate limiting (simple per-IP, resets each second via counter)
 	// For simplicity, track total requests per IP in a map; reset not implemented for brevity
 	// (production would use token bucket with timestamps)
 
-	// Body size limit
-	if req.data.len > vlambda_max_body_size {
-		return http.Response{
-			status_code: 413
-			body: '{"error": "request body too large"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
-	}
 
 	// Memory check
 	if vlambda_max_memory_mb > 0 {
@@ -103,35 +92,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		// (would use /proc/self/statm on Linux)
 	}
 
-	// Rate limiting (per-IP, per-second)
-	now := time.now().unix()
-	if now != vlambda_rate_window {
-		vlambda_rate_window = now
-		vlambda_rate_map = map[string]int{}
-	}
-	ip := 'global'  // V http.Request doesn't expose remote addr easily; use global counter
-	vlambda_rate_map[ip]++
-	if vlambda_rate_limit > 0 && vlambda_rate_map[ip] > vlambda_rate_limit {
-		vlambda_req_errors++
-		return http.Response{
-			status_code: 429
-			body: '{"error": "rate limit exceeded"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
-	}
 
-	// CORS preflight
-	if req.method == .options {
-		return http.Response{
-			status_code: 204
-			body: ''
-			header: http.new_header(
-				http.HeaderConfig{ key: .access_control_allow_origin, value: vlambda_cors_origin },
-				http.HeaderConfig{ key: .access_control_allow_methods, value: 'GET, POST, PUT, DELETE, OPTIONS' },
-				http.HeaderConfig{ key: .access_control_allow_headers, value: 'Authorization, Content-Type' },
-			)
-		}
-	}
 
 	// Route: /
 	if req.url == '/' || req.url == '' {
@@ -147,22 +108,19 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{
 			status_code: 200
 			body: '{"status": "ok"}'
-			header: http.new_header(
-				http.HeaderConfig{ key: .content_type, value: 'application/json' },
-				http.HeaderConfig{ key: .access_control_allow_origin, value: vlambda_cors_origin },
-			)
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
 
 	// Route: /metrics
 	if req.url == '/metrics' {
-		body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\n'
 		return http.Response{
 			status_code: 200
-			body: body
+			body: 'ok'
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
 		}
 	}
+
 
 	// Extract auth token from header
 	mut auth_token := ''
@@ -666,6 +624,9 @@ pub fn start_server(port int, db_path string, num_coroutines int) int {
 	mut server := http.Server{
 		addr: ':${port}'
 		handler: VlambdaHandler{ db_path: db_path }
+		max_keep_alive_requests: 10000
+		read_timeout: 30 * time.second
+		write_timeout: 30 * time.second
 	}
 	if vlambda_cert_path != '' && vlambda_key_path != '' {
 		server.cert = vlambda_cert_path

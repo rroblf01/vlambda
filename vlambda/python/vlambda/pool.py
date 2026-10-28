@@ -30,39 +30,88 @@ class Worker:
                 break
             code, method, path, query, body, result_queue = task
             try:
-                # Try native compilation first (if enabled)
-                from vlambda.nuitka_compile import try_native
-                req_obj = Request(
-                    method=method, path=path, query_string=query,
-                    headers={}, body=body,
-                )
-                native_result = try_native(code, req_obj)
-                if native_result is not None:
-                    result = native_result
-                else:
-                    compiled, ns_template = get_compiled(code)
-                    ns = dict(ns_template)
-                    ns["request"] = req_obj
-                    exec(compiled, ns)
-                    handler = ns.get("handler")
-                    if handler is None:
-                        result = {"error": "no handler function defined"}
+                import gc
+                # Response cache for GET requests
+                from vlambda.cache import get_response, set_response
+                cache_key = None
+                if method == "GET":
+                    cache_key = f"{code}:{path}:{query}"
+                    cached = get_response(cache_key)
+                    if cached is not None:
+                        result = cached
+                        result_queue.put(result)
+                        return
+
+                gc.disable()
+                try:
+                    # Try native compilation first (if enabled)
+                    from vlambda.nuitka_compile import try_native
+                    req_obj = Request(
+                        method=method, path=path, query_string=query,
+                        headers={}, body=body,
+                    )
+                    native_result = try_native(code, req_obj)
+                    if native_result is not None:
+                        result = native_result
                     else:
-                        result = handler(ns["request"])
+                        compiled, ns_template = get_compiled(code)
+                        ns = dict(ns_template)
+                        ns["request"] = req_obj
+                        exec(compiled, ns)
+                        handler = ns.get("handler")
+                        if handler is None:
+                            result = {"error": "no handler function defined"}
+                        else:
+                            result = handler(ns["request"])
+                finally:
+                    gc.enable()
+
+                if cache_key is not None:
+                    set_response(cache_key, result)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"}
             result_queue.put(result)
 
+    # Single-flight: coalesce identical in-flight requests
+    _inflight: dict = {}
+    _inflight_lock = threading.Lock()
+
     def submit(self, code, method, path, query, body) -> Any:
+        import hashlib
+        key = hashlib.sha256(f"{code}:{method}:{path}:{query}:{body}".encode()).hexdigest()
+        with Worker._inflight_lock:
+            if key in Worker._inflight:
+                # Wait for the in-flight result
+                event, container = Worker._inflight[key]
+                is_leader = False
+            else:
+                event = threading.Event()
+                container = {"result": None}
+                Worker._inflight[key] = (event, container)
+                is_leader = True
+
+        if not is_leader:
+            event.wait(timeout=30)
+            return container.get("result", {"error": "timeout"})
+
+        # Leader executes
         result_queue = queue.Queue(1)
         try:
             self._queue.put((code, method, path, query, body, result_queue), timeout=5)
         except queue.Full:
+            with Worker._inflight_lock:
+                Worker._inflight.pop(key, None)
+            event.set()
             return {"error": "server busy, try again later"}
         try:
-            return result_queue.get(timeout=30)
+            result = result_queue.get(timeout=30)
         except queue.Empty:
-            return {"error": "invocation timeout"}
+            result = {"error": "invocation timeout"}
+        container["result"] = result
+        with Worker._inflight_lock:
+            Worker._inflight.pop(key, None)
+        event.set()
+        return result
 
     def stop(self):
         self._queue.put(None)

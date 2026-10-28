@@ -3,17 +3,29 @@
 import subprocess, time, json, urllib.request, os, signal, sys
 
 PORT = 9799
-DB = "/tmp/opencode/test_vlambda.db"
+DB = "/tmp/test_vlambda.db"
 PROC = None
 
 def start_server():
+    import os
     global PROC
     for f in [DB, DB+"-wal", DB+"-shm"]:
         try: os.remove(f)
         except FileNotFoundError: pass
+    base = os.environ.get("VLAMBDA_BASE", os.getcwd())
+    # If running from vlambda/, adjust
+    if os.path.exists(os.path.join(base, "python", "vlambda")):
+        python_bin = os.path.join(base, ".venv", "bin", "python")
+        cwd = base
+    elif os.path.exists(os.path.join(base, "vlambda", "python", "vlambda")):
+        python_bin = os.path.join(base, "vlambda", ".venv", "bin", "python")
+        cwd = os.path.join(base, "vlambda")
+    else:
+        python_bin = "python3"
+        cwd = base
     PROC = subprocess.Popen(
-        ["vlambda/.venv/bin/python", "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
-        cwd="/home/sheik/Documentos/vlambda",
+        [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
+        cwd=cwd,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(30):

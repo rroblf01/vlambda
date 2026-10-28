@@ -45,4 +45,4 @@ jobs:
           export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
           cd /github/workspace/vlambda 2>/dev/null || cd vlambda
           . .venv/bin/activate
-          python tests/test_vlambda.py
+          python ../tests/test_vlambda.py

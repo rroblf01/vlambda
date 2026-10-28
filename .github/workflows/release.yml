@@ -43,6 +43,7 @@ jobs:
         uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:
           container: ${{ matrix.container }}
+          working-directory: vlambda
           args: ${{ matrix.args }}
 
       - name: upload the wheel
@@ -67,6 +68,7 @@ jobs:
 
       - name: build the sdist
         run: |
+          cd vlambda
           python -m venv .venv
           . .venv/bin/activate
           vcraft sdist

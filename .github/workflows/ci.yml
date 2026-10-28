@@ -35,7 +35,7 @@ jobs:
       - name: build vlambda
         run: |
           export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
-          cd /github/workspace 2>/dev/null || cd .
+          cd /github/workspace/vlambda 2>/dev/null || cd vlambda
           ${{ matrix.interpreter }} -m venv .venv
           . .venv/bin/activate
           vcraft develop --interpreter ${{ matrix.interpreter }} ${{ matrix.free_threading && '--free-threading' || '' }}
@@ -43,6 +43,6 @@ jobs:
       - name: run tests
         run: |
           export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
-          cd /github/workspace 2>/dev/null || cd .
+          cd /github/workspace/vlambda 2>/dev/null || cd vlambda
           . .venv/bin/activate
           python tests/test_vlambda.py

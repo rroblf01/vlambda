@@ -51,9 +51,9 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
 <div class="container">
   <h1>vlambda</h1>
   <div class="nav" id="nav">
-    <a href="#dashboard" id="nav-dashboard" class="active">Dashboard</a>
-    <a href="#metrics" id="nav-metrics">Metrics</a>
-    <a href="#" id="nav-logout" onclick="logout()">Logout</a>
+    <a href="#" id="nav-dashboard" class="active" onclick="showView('dashboard');return false;">Dashboard</a>
+    <a href="#" id="nav-metrics" onclick="showView('metrics');return false;">Metrics</a>
+    <a href="#" id="nav-logout" onclick="logout();return false;">Logout</a>
   </div>
 
   <div id="view-login" class="hidden">
@@ -232,6 +232,7 @@ async function loadLambdas() {
           '<td><span class="badge badge-' + method.toLowerCase() + '">' + method + '</span></td>' +
           '<td class="flex">' +
           '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\')">Run</button> ' +
+          '<button class="btn btn-sm" onclick="editLambda(\'' + slug + '\')">Edit</button> ' +
           '<button class="btn btn-sm btn-danger" onclick="openDelete(\'' + slug + '\')">Del</button>' +
           '</td>';
         tbody.appendChild(tr);
@@ -272,12 +273,25 @@ async function createLambda() {
   }
 }
 
-function editLambda(slug) {
+async function editLambda(slug) {
   currentSlug = slug;
   document.getElementById('editor-title').textContent = 'Edit: ' + slug;
-  document.getElementById('editor-code').value = '';
+  document.getElementById('editor-code').value = 'Loading...';
   document.getElementById('run-result').innerHTML = '';
   showView('editor');
+  try {
+    const resp = await fetch(API + '/vlambda/' + slug, { headers: { 'Authorization': 'Bearer ' + token } });
+    if (resp.ok) {
+      const code = await resp.text();
+      document.getElementById('editor-code').value = code;
+    } else {
+      document.getElementById('editor-code').value = '';
+      showAlert('editor-alert', 'Failed to load code', 'error');
+    }
+  } catch (e) {
+    document.getElementById('editor-code').value = '';
+    showAlert('editor-alert', 'Network error', 'error');
+  }
 }
 
 async function saveLambda() {

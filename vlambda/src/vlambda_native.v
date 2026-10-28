@@ -357,6 +357,30 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		qi2 := url_path2.index('?') or { url_path2.len }
 		url_path2 = url_path2[..qi2]
 		slug := url_path2[9..]
+		if req.method == .get {
+			if auth_uid < 0 {
+				return http.Response{
+					status_code: 401
+					body: '{"error": "unauthorized"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			code_method := db_get_lambda_code(slug)
+			if code_method == '' {
+				return http.Response{
+					status_code: 404
+					body: '{"error": "lambda not found"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			parts := code_method.split('|')
+			code := if parts.len > 0 { parts[0] } else { '' }
+			return http.Response{
+				status_code: 200
+				body: code
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
+			}
+		}
 		if req.method == .delete {
 			ok := db_delete_lambda(slug, auth_uid)
 			if ok {

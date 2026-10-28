@@ -27,7 +27,7 @@ jobs:
           - target: "cp314t-linux-x86_64"
             os: "ubuntu-latest"
             container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
-            args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
+            args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314t/bin/python"
           - target: "cp315-linux-x86_64"
             os: "ubuntu-latest"
             container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
@@ -35,7 +35,7 @@ jobs:
           - target: "cp315t-linux-x86_64"
             os: "ubuntu-latest"
             container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
-            args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315/bin/python"
+            args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315t/bin/python"
     steps:
       - uses: actions/checkout@v5
 
@@ -45,6 +45,7 @@ jobs:
           container: ${{ matrix.container }}
           working-directory: vlambda
           args: ${{ matrix.args }}
+          vcraft-version: v1.7.0
 
       - name: upload the wheel
         uses: actions/upload-artifact@v6

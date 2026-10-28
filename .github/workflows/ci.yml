@@ -19,14 +19,24 @@ jobs:
         include:
           - target: "cp314-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
             interpreter: "/opt/python/cp314-cp314/bin/python"
             free_threading: false
+          - target: "cp314t-linux-x86_64"
+            os: "ubuntu-latest"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
+            interpreter: "/opt/python/cp314-cp314t/bin/python"
+            free_threading: true
           - target: "cp315-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
             interpreter: "/opt/python/cp315-cp315/bin/python"
             free_threading: false
+          - target: "cp315t-linux-x86_64"
+            os: "ubuntu-latest"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
+            interpreter: "/opt/python/cp315-cp315t/bin/python"
+            free_threading: true
     container:
       image: ${{ matrix.container }}
     steps:

@@ -497,6 +497,9 @@ pub fn db_count_lambdas(owner_id int) int {
 pub fn run_lambda(code string, method string, path string, query string, body string) string {
 	vlambda_result_str = '{"error": "not started"}'
 	vcraft.with_gil(fn [code, method, path, query, body] () {
+		// Use arena for request allocations
+		mut arena := vcraft.arena_new()
+		defer { arena.free() }
 		mut req_items := map[string]vcraft.PyObj{}
 		req_items['method'] = vcraft.to_py_string(method)
 		req_items['path'] = vcraft.to_py_string(path)

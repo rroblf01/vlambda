@@ -39,6 +39,13 @@ def main() -> None:
         print("Failed to initialize database", file=sys.stderr)
         sys.exit(1)
 
+    from vlambda.dbpool import init as pool_init
+    pool_init(args.sqlite_path)
+
+    # GC tuning: disable during request handling, collect periodically
+    import gc
+    gc.set_threshold(0, 0, 0)  # disable automatic GC during requests
+
     configure(
         args.max_body_size, args.rate_limit, args.invoke_timeout,
         args.max_memory_mb, args.cors_origin, args.cert, args.key,
@@ -83,27 +90,23 @@ def main() -> None:
 
     # Auth: register user
     def _auth_register(username, password):
-        import sqlite3, os
-        db_path = args.sqlite_path
-        conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
+        from vlambda.dbpool import get as db_get
         try:
-            conn.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                         (username, hash_password(password)))
-            conn.commit()
-            uid = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
-            return uid
-        except sqlite3.IntegrityError:
+            with db_get(args.sqlite_path) as conn:
+                conn.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                             (username, hash_password(password)))
+                conn.commit()
+                uid = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
+                return uid
+        except Exception as e:
+            if "UNIQUE" in str(e) or "IntegrityError" in str(type(e).__name__):
+                return -1
             return -1
-        finally:
-            conn.close()
 
     # Auth: login
     def _auth_login(username, password):
-        import sqlite3
-        db_path = args.sqlite_path
-        conn = sqlite3.connect(db_path)
-        try:
+        from vlambda.dbpool import get as db_get
+        with db_get(args.sqlite_path) as conn:
             row = conn.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,)).fetchone()
             if row is None:
                 return ""
@@ -111,8 +114,6 @@ def main() -> None:
             if not check_password(password, stored):
                 return ""
             return create_token(uid, username)
-        finally:
-            conn.close()
 
     # Register V bridges
     from vlambda_native import register_auth_register, register_auth_login
@@ -130,6 +131,8 @@ def main() -> None:
             while True:
                 time.sleep(5)
                 try:
+                    import gc
+                    gc.collect()
                     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
                     if usage > limit_bytes * 0.9:
                         print(f"WARNING: memory usage {usage/1024/1024:.1f}MB approaching limit {args.max_memory_mb}MB", file=sys.stderr)
@@ -142,6 +145,9 @@ def main() -> None:
     def _shutdown(signum, frame):
         print("\nShutting down gracefully...", file=sys.stderr)
         pool.stop()
+        from vlambda.dbpool import close_all
+        close_all()
+        gc.collect()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)

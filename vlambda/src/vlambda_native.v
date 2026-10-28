@@ -198,6 +198,11 @@ pub fn register_executor(cb voidptr) {
 }
 
 @[vc_fn]
+pub fn register_pool(cb voidptr) {
+	vlambda_executor = cb
+}
+
+@[vc_fn]
 pub fn db_create_lambda(slug string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }

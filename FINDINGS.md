@@ -12,6 +12,7 @@ ASGI-like server for Python lambdas, written in V. Uses vcraft 1.7.0-dev for the
   threads acquire GIL via `with_gil` to call Python.
 - Zero-copy: `bytes_view` for request bodies, `to_py_bytes` for responses.
 - Sandbox: restricted builtins, blocked modules (os, subprocess, sys, etc.).
+- End-to-end: POST code → GET /f/<slug> executes Python and returns JSON.
 
 ## vcraft features exercised
 
@@ -37,7 +38,7 @@ V's `db.sqlite` connections are not thread-safe by default. Each handler
 creates a new connection (`init_db` + `db.close()`). This works but is slow.
 Consider connection pooling or `busy_timeout`.
 
-### 3. `req.data` is a string, not bytes
+### 3. `http.Request.data` is a string, not bytes
 V's `http.Request.data` is a `string`. For binary bodies, this requires
 encoding/decoding. vcraft's `bytes_arg`/`bytes_view` work on Python objects,
 not V strings. A `bytes_view`-equivalent for V strings would help.
@@ -54,11 +55,12 @@ but differs from Python's `str.split()` which takes maxsplit. Minor.
 ## Performance (Iteration 1)
 
 - ~1ms/req, ~1000 req/s (exec-per-request, no pool).
-- Expected bottleneck: SQLite connection per request + Python exec per request.
+- Bottleneck: SQLite connection per request + Python exec per request.
+- Python 3.15: ~0.87ms/req, ~1150 req/s (slightly faster).
 
 ## Next iterations
 
-- Iteration 2: Python pool + sandbox (replace exec-per-request with pool).
+- Iteration 2: Python pool + sandbox (replace exec-per-request with pool). ✅ Done
 - Iteration 3: Invocation caching (compile code once).
 - Iteration 4: Auth + CRUD complete.
 - Iteration 5: Performance + security.

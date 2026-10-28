@@ -68,3 +68,12 @@ Iteration 5: Full scalability + auth + CRUD + caching + sandbox + pool + tests.
 ## Findings
 
 See `FINDINGS.md` for vcraft findings and recommendations.
+
+## New Features (latest)
+
+- **Input validation**: Python code is validated with `ast.parse` before storage.
+- **Pagination**: `GET /vlambda?limit=N&offset=M` with count in response.
+- **Prometheus metrics**: `/metrics` endpoint with request count, errors, latency.
+- **SQLite connection pool**: Reusable connections, reduced per-request overhead.
+- **GC tuning**: Automatic GC disabled during requests, periodic collection.
+- **Arena allocator**: Per-request memory management in V.

@@ -30,10 +30,25 @@ def main() -> None:
         pass
 
     from vlambda.sandbox import execute_lambda
+
+    def _validate_code(code):
+        import ast
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return f"syntax error: {e}"
+        # Check for handler function
+        has_handler = any(
+            isinstance(node, ast.FunctionDef) and node.name == "handler"
+            for node in ast.walk(tree)
+        )
+        if not has_handler:
+            return "missing handler function"
+        return ""  # valid
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -119,6 +134,8 @@ def main() -> None:
     from vlambda_native import register_auth_register, register_auth_login
     register_auth_register(_auth_register)
     register_auth_login(_auth_login)
+
+    register_validate_code(_validate_code)
 
     import atexit
     atexit.register(pool.stop)

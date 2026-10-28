@@ -15,6 +15,7 @@ __global (
 	vlambda_auth_verifier = voidptr(0)
 	vlambda_auth_register = voidptr(0)
 	vlambda_auth_login = voidptr(0)
+	vlambda_validate_code = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -28,6 +29,8 @@ __global (
 	vlambda_req_total = u64(0)
 	vlambda_req_errors = u64(0)
 	vlambda_lambdas_created = u64(0)
+	vlambda_latency_sum = f64(0)
+	vlambda_latency_count = u64(0)
 	// Rate limiter state
 	vlambda_rate_map = map[string]int{}
 	vlambda_rate_window = i64(0)
@@ -81,6 +84,7 @@ mut:
 }
 
 pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
+	start_time := time.now()
 	// Rate limiting (simple per-IP, resets each second via counter)
 	// For simplicity, track total requests per IP in a map; reset not implemented for brevity
 	// (production would use token bucket with timestamps)
@@ -114,9 +118,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics
 	if req.url == '/metrics' {
+		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
+		body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\nvlambda_latency_avg_ms ${avg}\nvlambda_latency_count ${vlambda_latency_count}\n'
 		return http.Response{
 			status_code: 200
-			body: 'ok'
+			body: body
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
 		}
 	}
@@ -183,7 +189,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	}
 
 	// Route: /vlambda (POST = create, GET = list)
-	if req.url == '/vlambda' {
+	if req.url == '/vlambda' || req.url.starts_with('/vlambda?') {
 		if req.method == .post {
 			if auth_uid < 0 {
 				return http.Response{
@@ -206,7 +212,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if code.len > vlambda_max_body_size {
 				return http.Response{
 					status_code: 413
-					body: '{"error": "code too large"}'
+					body: '{"error": "request body too large"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			// Validate code syntax
+			vr := validate_code(code)
+			if vr != '' {
+				return http.Response{
+					status_code: 400
+					body: '{"error": "${vr}"}'
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
@@ -239,11 +254,25 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		if req.method == .get {
-			lambdas := db_list_lambdas(auth_uid)
+			// Parse limit/offset from query string
+			mut limit := 50
+			mut offset := 0
+			if req.url.contains('?') {
+				qs := req.url.all_after('?')
+				for part in qs.split('&') {
+					if part.starts_with('limit=') {
+						limit = part.all_after('=').int()
+					}
+					if part.starts_with('offset=') {
+						offset = part.all_after('=').int()
+					}
+				}
+			}
+			lambdas := db_list_lambdas_page(auth_uid, limit, offset)
 			count := db_count_lambdas(auth_uid)
 			return http.Response{
 				status_code: 200
-				body: '{"lambdas": "${lambdas}", "count": ${count}}'
+				body: '{"lambdas": "${lambdas}", "count": ${count}, "limit": ${limit}, "offset": ${offset}}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
@@ -289,6 +318,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			q = req.url[qi2+1..]
 		}
 		result := run_lambda(code, method, req.url, q, req.data)
+		elapsed := time.since(start_time).milliseconds()
+		vlambda_latency_sum += f64(elapsed)
+		vlambda_latency_count++
 		return http.Response{
 			status_code: 200
 			body: result
@@ -493,6 +525,26 @@ pub fn db_count_lambdas(owner_id int) int {
 	return n.int()
 }
 
+@[vc_fn]
+pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
+	mut db := init_db(vlambda_db_path) or { return '' }
+	defer { db.close() }
+	mut lim := limit
+	mut off := offset
+	if lim <= 0 { lim = 50 }
+	if off < 0 { off = 0 }
+	query := 'SELECT slug, method FROM lambdas WHERE owner_id = ? LIMIT ${lim} OFFSET ${off};'
+
+	rows := db.exec_param(query, owner_id.str()) or { return '' }
+	mut out := ''
+	for row in rows {
+		slug := row.vals[0] or { continue }
+		method := row.vals[1] or { continue }
+		out += slug + ':' + method + '\\n'
+	}
+	return out
+}
+
 // run_lambda calls Python to exe@[vc_fn]
 pub fn run_lambda(code string, method string, path string, query string, body string) string {
 	vlambda_result_str = '{"error": "not started"}'
@@ -608,6 +660,37 @@ pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memo
 	if cors_origin != '' { vlambda_cors_origin = cors_origin }
 	vlambda_cert_path = cert_path
 	vlambda_key_path = key_path
+}
+
+@[vc_fn]
+pub fn register_validate_code(cb voidptr) {
+	vlambda_validate_code = cb
+}
+
+@[vc_fn]
+pub fn validate_code(code string) string {
+	if vlambda_validate_code == unsafe { nil } { return '' }
+	mut cell := ''
+	ptr := &cell
+	vcraft.with_gil(fn [code, ptr] () {
+		args := [vcraft.to_py_string(code).ptr]
+		r := vcraft.call(vlambda_validate_code, args)
+		vcraft.borrow(args[0]).decref()
+		if r.is_null() {
+			vcraft.clear_error()
+			unsafe { *ptr = '' }
+			return
+		}
+		if r.type_name() == 'str' {
+			ss := vcraft.from_py_string(r, 'result') or { '' }
+			r.decref()
+			unsafe { *ptr = ss }
+			return
+		}
+		r.decref()
+		unsafe { *ptr = '' }
+	})
+	return cell
 }
 
 @[vc_fn]

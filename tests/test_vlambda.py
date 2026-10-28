@@ -2,7 +2,7 @@
 
 import subprocess, time, json, urllib.request, os, signal, sys
 
-PORT = 9599
+PORT = 9799
 DB = "/tmp/opencode/test_vlambda.db"
 PROC = None
 

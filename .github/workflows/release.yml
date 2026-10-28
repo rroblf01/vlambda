@@ -18,80 +18,103 @@ jobs:
         include:
           - target: "cp314-linux-x86_64"
             os: "ubuntu-latest"
-            python-version: "3.14"
-            free-threading: false
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            args: "build --release --target linux-x86_64-gnu --interpreter /opt/python/cp314-cp314/bin/python"
+            check: "/opt/python/cp314-cp314/bin/python"
           - target: "cp314-linux-aarch64"
             os: "ubuntu-24.04-arm"
-            python-version: "3.14"
-            free-threading: false
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            args: "build --release --target linux-aarch64-gnu --interpreter /opt/python/cp314-cp314/bin/python"
+            check: "/opt/python/cp314-cp314/bin/python"
+          - target: "cp314-macosx-arm64"
+            os: "macos-26"
+            python: "3.14"
+            args: "build --release"
+            check: ""
+          - target: "cp314-win_amd64"
+            os: "windows-latest"
+            python: "3.14"
+            args: "build --release"
+            check: ""
           - target: "cp314t-linux-x86_64"
             os: "ubuntu-latest"
-            python-version: "3.14"
-            free-threading: true
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            args: "build --release --target linux-x86_64-gnu --interpreter /opt/python/cp314-cp314t/bin/python --free-threading"
+            check: "/opt/python/cp314-cp314t/bin/python"
           - target: "cp315-linux-x86_64"
             os: "ubuntu-latest"
-            python-version: "3.15"
-            free-threading: false
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            args: "build --release --target linux-x86_64-gnu --interpreter /opt/python/cp315-cp315/bin/python"
+            check: "/opt/python/cp315-cp315/bin/python"
+          - target: "cp315-linux-aarch64"
+            os: "ubuntu-24.04-arm"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            args: "build --release --target linux-aarch64-gnu --interpreter /opt/python/cp315-cp315/bin/python"
+            check: "/opt/python/cp315-cp315/bin/python"
+          - target: "cp315-macosx-arm64"
+            os: "macos-26"
+            python: "3.15"
+            args: "build --release"
+            check: ""
+          - target: "cp315-win_amd64"
+            os: "windows-latest"
+            python: "3.15"
+            args: "build --release"
+            check: ""
           - target: "cp315t-linux-x86_64"
             os: "ubuntu-latest"
-            python-version: "3.15"
-            free-threading: true
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            args: "build --release --target linux-x86_64-gnu --interpreter /opt/python/cp315-cp315t/bin/python --free-threading"
+            check: "/opt/python/cp315-cp315t/bin/python"
     steps:
       - uses: actions/checkout@v5
 
       - name: set up Python
+        id: python
+        if: ${{ matrix.container == '' }}
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
+          python-version: ${{ matrix.python }}
 
-      - name: restore V compiler
-        id: restore-v
-        uses: actions/cache@v5
+      - name: build
+        uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:
-          path: /tmp/v-src
-          key: v-36be92642c49a8fe9213ea4b96c6bf56b67b668c-6851aaf3f9e696b30b26e406f16095b0002acaab
+          container: ${{ matrix.container }}
+          args: ${{ matrix.args }}
 
-      - name: install V compiler
-        if: ${{ steps.restore-v.outputs.cache-hit != 'true' }}
-        env:
-          V_COMMIT: 36be92642c49a8fe9213ea4b96c6bf56b67b668c
-          VC_COMMIT: 6851aaf3f9e696b30b26e406f16095b0002acaab
+      - name: the wheel was written
+        shell: bash
         run: |
-          git clone https://github.com/vlang/v.git /tmp/v-src
-          cd /tmp/v-src
-          git checkout $V_COMMIT
-          git clone https://github.com/vlang/vc.git vc
-          (cd vc && git checkout $VC_COMMIT)
-          make fresh_tcc
-          make local=1 "-j$(nproc)"
+          ls -la dist || true
+          ls dist/*.whl >/dev/null 2>&1 || { echo 'no wheel was written in dist/'; exit 1; }
 
-      - name: put V on PATH
-        run: echo "/tmp/v-src" >> "$GITHUB_PATH"
-
-      - name: install vcraft
-        run: python -m pip install "vcraft==1.7.0"
-
-      - name: create venv
-        run: |
-          cd vlambda
-          python -m venv .venv
-          . .venv/bin/activate
-          pip install "vcraft==1.7.0"
-
-      - name: build vlambda
-        env:
-          VCRAFT_NO_MEMORY_LIMIT: 1
-        run: |
-          cd vlambda
-          . .venv/bin/activate
-          vcraft build --release ${{ matrix.free-threading && '--free-threading' || '' }}
-
-      - name: upload the wheel
+      - name: upload
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
           path: dist/*.whl
+
+      - name: test (POSIX)
+        if: ${{ runner.os != 'Windows' && matrix.check != '' }}
+        env:
+          CONTAINER: ${{ matrix.container }}
+          CHECK: ${{ matrix.check }}
+        run: |
+          script="$CHECK -m venv /tmp/check && /tmp/check/bin/python -m pip install dist/*.whl && /tmp/check/bin/python -c 'import vlambda_native; print(vlambda_native.__name__)'"
+          if [ -n "$CONTAINER" ]; then
+            docker run --rm -e CHECK -v "$PWD:/work" -w /work "$CONTAINER" sh -c "$script"
+          else
+            sh -c "$script"
+          fi
+      - name: test (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          CHECK: ${{ steps.python.outputs.python-path }}
+        run: |
+          & "$env:CHECK" -m venv "$env:RUNNER_TEMP\check"
+          & "$env:RUNNER_TEMP\check\Scripts\python.exe" -m pip install (Get-ChildItem dist/*.whl).FullName
+          & "$env:RUNNER_TEMP\check\Scripts\python.exe" -c "import vlambda_native; print(vlambda_native.__name__)"
 
   sdist:
     name: source distribution
@@ -138,6 +161,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: check files present
+        run: ls -la dist
 
   publish:
     name: publish to PyPI

@@ -1,0 +1,8 @@
+.venv/
+dist/
+build/
+*.so
+*.db
+*.db-*
+__pycache__/
+*.pyc

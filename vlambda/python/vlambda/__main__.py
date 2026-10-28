@@ -158,17 +158,20 @@ def main() -> None:
     register_validate_code(_validate_code)
 
     # Load UI HTML
-    ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
-    try:
-        with open(ui_path) as f:
-            _ui_html = f.read()
-    except FileNotFoundError:
-        _ui_html = "<h1>vlambda</h1><p>UI not found</p>"
+    from vlambda.assets import UI_HTML as _ui_html
 
     def _get_ui_html():
         return _ui_html
 
     register_ui_html(_get_ui_html)
+
+    from vlambda.assets import FAVICON as _favicon
+
+    def _get_favicon():
+        return _favicon
+
+    from vlambda_native import register_favicon
+    register_favicon(_get_favicon)
 
     register_create_task(_create_task)
     register_get_task(_get_task)

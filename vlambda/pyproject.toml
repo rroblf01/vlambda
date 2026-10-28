@@ -14,3 +14,6 @@ mypy_path = "python"
 
 [tool.ty.environment]
 extra-paths = ["./python"]
+
+[tool.setuptools.package-data]
+vlambda = ["ui.html", "favicon.ico"]

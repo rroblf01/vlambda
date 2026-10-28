@@ -17,6 +17,7 @@ __global (
 	vlambda_auth_login = voidptr(0)
 	vlambda_validate_code = voidptr(0)
 	vlambda_ui_html = voidptr(0)
+	vlambda_favicon = voidptr(0)
 	vlambda_create_task = voidptr(0)
 	vlambda_get_task = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
@@ -846,8 +847,25 @@ pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memo
 
 @[vc_fn]
 pub fn get_favicon() string {
-	data := os.read_file('/home/sheik/Documentos/vlambda/vlambda/python/vlambda/favicon.ico') or { return '' }
-	return data
+	if vlambda_favicon == unsafe { nil } { return '' }
+	mut ptr_cell := ''
+	ptr := &ptr_cell
+	vcraft.with_gil(fn [ptr] () {
+		args := []voidptr{}
+		r := vcraft.call(vlambda_favicon, args)
+		if r.is_null() {
+			vcraft.clear_error()
+			return
+		}
+		if r.type_name() == 'bytes' {
+			ss := vcraft.from_py_bytes(r, 'favicon') or { '' }
+			r.decref()
+			unsafe { *ptr = ss }
+			return
+		}
+		r.decref()
+	})
+	return ptr_cell
 }
 
 @[vc_fn]
@@ -858,6 +876,11 @@ pub fn register_create_task(cb voidptr) {
 @[vc_fn]
 pub fn register_get_task(cb voidptr) {
 	vlambda_get_task = cb
+}
+
+@[vc_fn]
+pub fn register_favicon(cb voidptr) {
+	vlambda_favicon = cb
 }
 
 @[vc_fn]

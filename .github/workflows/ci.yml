@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: "cp314-linux-x86_64"
+            os: "ubuntu-latest"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
+            interpreter: "/opt/python/cp314-cp314/bin/python"
+            free_threading: false
+          - target: "cp315-linux-x86_64"
+            os: "ubuntu-latest"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
+            interpreter: "/opt/python/cp315-cp315/bin/python"
+            free_threading: false
+    container:
+      image: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: build vlambda
+        run: |
+          export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
+          cd /github/workspace 2>/dev/null || cd .
+          vcraft develop --interpreter ${{ matrix.interpreter }} ${{ matrix.free_threading && '--free-threading' || '' }}
+
+      - name: run tests
+        run: |
+          export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
+          cd /github/workspace 2>/dev/null || cd .
+          ${{ matrix.interpreter }} tests/test_vlambda.py

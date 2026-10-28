@@ -18,14 +18,23 @@ VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambd
 ## Endpoints
 
 - `GET /` — health check
-- `POST /vlambda` — create lambda (body: Python code)
-- `GET /vlambda` — list lambdas
-- `DELETE /vlambda/<id>` — delete lambda
+- `GET /health` — JSON health check
+- `POST /register` — register user (body: `username:password`)
+- `POST /login` — login (body: `username:password`) → JWT token
+- `POST /vlambda` — create lambda (body: Python code, requires auth)
+- `GET /vlambda` — list lambdas (requires auth)
+- `PUT /vlambda/<slug>` — update lambda code (requires auth)
+- `DELETE /vlambda/<slug>` — delete lambda (requires auth)
 - `GET/POST/PUT/PATCH/DELETE /f/<slug>` — invoke lambda
+
+## Authentication
+
+All `/vlambda` endpoints require a `Authorization: Bearer <token>` header.
+Obtain a token via `POST /login`.
 
 ## Status
 
-Iteration 1: HTTP server + SQLite + Python bridge. ~1000 req/s (exec-per-request).
+Iteration 4: Auth (JWT) + CRUD + caching + sandbox + pool. ~1000 req/s.
 
 ## Findings
 

@@ -410,6 +410,16 @@ pub fn db_list_lambdas(owner_id int) string {
 	return out
 }
 
+@[vc_fn]
+pub fn db_count_lambdas(owner_id int) int {
+	mut db := init_db(vlambda_db_path) or { return 0 }
+	defer { db.close() }
+	rows := db.exec_param('SELECT COUNT(*) FROM lambdas WHERE owner_id = ?;', owner_id.str()) or { return 0 }
+	if rows.len == 0 { return 0 }
+	n := rows[0].vals[0] or { return 0 }
+	return n.int()
+}
+
 // run_lambda calls Python to exe@[vc_fn]
 pub fn run_lambda(code string, method string, path string, query string, body string) string {
 	vlambda_result_str = '{"error": "not started"}'

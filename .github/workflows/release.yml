@@ -26,16 +26,6 @@ jobs:
             container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
             args: "build --release --target linux-aarch64-gnu --interpreter /opt/python/cp314-cp314/bin/python"
             check: "/opt/python/cp314-cp314/bin/python"
-          - target: "cp314-macosx-arm64"
-            os: "macos-26"
-            python: "3.14"
-            args: "build --release"
-            check: ""
-          - target: "cp314-win_amd64"
-            os: "windows-latest"
-            python: "3.14"
-            args: "build --release"
-            check: ""
           - target: "cp314t-linux-x86_64"
             os: "ubuntu-latest"
             container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
@@ -51,16 +41,6 @@ jobs:
             container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
             args: "build --release --target linux-aarch64-gnu --interpreter /opt/python/cp315-cp315/bin/python"
             check: "/opt/python/cp315-cp315/bin/python"
-          - target: "cp315-macosx-arm64"
-            os: "macos-26"
-            python: "3.15"
-            args: "build --release"
-            check: ""
-          - target: "cp315-win_amd64"
-            os: "windows-latest"
-            python: "3.15"
-            args: "build --release"
-            check: ""
           - target: "cp315t-linux-x86_64"
             os: "ubuntu-latest"
             container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
@@ -84,6 +64,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: the wheel was written
+        working-directory: vlambda
         shell: bash
         run: |
           ls -la dist || true
@@ -93,10 +74,11 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
-          path: dist/*.whl
+          path: vlambda/dist/*.whl
 
       - name: test (POSIX)
         if: ${{ runner.os != 'Windows' && matrix.check != '' }}
+        working-directory: vlambda
         env:
           CONTAINER: ${{ matrix.container }}
           CHECK: ${{ matrix.check }}
@@ -143,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: sdist
-          path: dist/*.tar.gz
+          path: vlambda/dist/*.tar.gz
 
   verify:
     name: verify the artifacts

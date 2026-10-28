@@ -84,6 +84,16 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
     <div id="create-form" class="card hidden">
       <h2>New Lambda</h2>
       <div class="form-group">
+        <label>Method</label>
+        <select id="method-select" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:6px;font-size:13px;width:100%;">
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="PATCH">PATCH</option>
+          <option value="DELETE">DELETE</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label>Python Code</label>
         <textarea id="code-input">def handler(request):
     return {"msg": "hello", "path": request.path}</textarea>
@@ -108,6 +118,16 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
     </div>
     <div id="editor-alert"></div>
     <div class="card">
+      <div class="form-group">
+        <label>Method</label>
+        <select id="editor-method" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:6px;font-size:13px;width:100%;">
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="PATCH">PATCH</option>
+          <option value="DELETE">DELETE</option>
+        </select>
+      </div>
       <div class="form-group">
         <label>Code</label>
         <textarea id="editor-code"></textarea>
@@ -254,8 +274,9 @@ function hideCreate() {
 
 async function createLambda() {
   const code = document.getElementById('code-input').value;
+  const method = document.getElementById('method-select').value;
   try {
-    const resp = await fetch(API + '/vlambda', {
+    const resp = await fetch(API + '/vlambda?method=' + method, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
       body: code
@@ -296,8 +317,9 @@ async function editLambda(slug) {
 
 async function saveLambda() {
   const code = document.getElementById('editor-code').value;
+  const method = document.getElementById('editor-method').value;
   try {
-    const resp = await fetch(API + '/vlambda/' + currentSlug, {
+    const resp = await fetch(API + '/vlambda/' + currentSlug + '?method=' + method, {
       method: 'PUT',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
       body: code

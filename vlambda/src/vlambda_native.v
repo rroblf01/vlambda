@@ -239,6 +239,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
+			// Parse method from query string
+			mut method := 'GET'
+			if req.url.contains('?') {
+				qs := req.url.all_after('?')
+				for part in qs.split('&') {
+					if part.starts_with('method=') {
+						method = part.all_after('=')
+					}
+				}
+			}
 			// Validate code syntax
 			vr := validate_code(code)
 			if vr != '' {
@@ -257,7 +267,6 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 			slug := make_slug(code)
-			method := 'GET'
 			ok := db_create_lambda(slug, code, method, auth_uid)
 			if ok {
 				prewarm_lambda(code)
@@ -412,7 +421,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
-			ok := db_update_lambda(slug, code, auth_uid)
+			mut method := 'GET'
+			if req.url.contains('?') {
+				qs := req.url.all_after('?')
+				for part in qs.split('&') {
+					if part.starts_with('method=') {
+						method = part.all_after('=')
+					}
+				}
+			}
+			ok := db_update_lambda(slug, code, method, auth_uid)
 			if ok {
 				prewarm_lambda(code)
 				return http.Response{
@@ -494,10 +512,10 @@ pub fn db_create_lambda(slug string, code string, method string, owner_id int) b
 }
 
 @[vc_fn]
-pub fn db_update_lambda(slug string, code string, owner_id int) bool {
+pub fn db_update_lambda(slug string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
-	db.exec_param_many('UPDATE lambdas SET code = ? WHERE slug = ? AND owner_id = ?;', [code, slug, owner_id.str()]) or { return false }
+	db.exec_param_many('UPDATE lambdas SET code = ?, method = ? WHERE slug = ? AND owner_id = ?;', [code, method, slug, owner_id.str()]) or { return false }
 	// Invalidate cache
 	vlambda_code_cache.delete(slug)
 	return true

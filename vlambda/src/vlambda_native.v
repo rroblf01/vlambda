@@ -395,12 +395,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			q = req.url[qi2+1..]
 		}
 		result := run_lambda(code, method, req.url, q, req.data)
-		elapsed := time.since(start_time).milliseconds()
-		vlambda_latency_sum += f64(elapsed)
+		elapsed := time.since(start_time).microseconds()
+		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
 		// Per-lambda metrics
 		vlambda_lambda_invocations[slug] = (vlambda_lambda_invocations[slug] or { u64(0) }) + 1
-		vlambda_lambda_latency[slug] = (vlambda_lambda_latency[slug] or { f64(0) }) + f64(elapsed)
+		vlambda_lambda_latency[slug] = (vlambda_lambda_latency[slug] or { f64(0) }) + f64(elapsed) / 1000.0
 		if result.contains('error') {
 			vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 		}

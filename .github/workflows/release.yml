@@ -42,7 +42,6 @@ jobs:
       - name: build the wheel
         uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:
-          container: ${{ matrix.container }}
           working-directory: vlambda
           args: ${{ matrix.args }}
           vcraft-version: v1.7.0
@@ -75,7 +74,7 @@ jobs:
           cd vlambda
           python -m venv .venv
           . .venv/bin/activate
-          python -m pip install "vcraft==1.7.0"
+          pip install "vcraft==1.7.0"
           vcraft sdist
 
       - name: upload the sdist

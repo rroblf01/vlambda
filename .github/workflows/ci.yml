@@ -12,47 +12,29 @@ permissions:
 jobs:
   test:
     name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: "cp314-linux-x86_64"
-            os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
-            interpreter: "/opt/python/cp314-cp314/bin/python"
-            free_threading: false
-          - target: "cp314t-linux-x86_64"
-            os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
-            interpreter: "/opt/python/cp314-cp314t/bin/python"
-            free_threading: true
-          - target: "cp315-linux-x86_64"
-            os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
-            interpreter: "/opt/python/cp315-cp315/bin/python"
-            free_threading: false
-          - target: "cp315t-linux-x86_64"
-            os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.4.5"
-            interpreter: "/opt/python/cp315-cp315t/bin/python"
-            free_threading: true
-    container:
-      image: ${{ matrix.container }}
+        python-version: ["3.14", "3.15"]
     steps:
       - uses: actions/checkout@v5
 
+      - name: set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
       - name: build vlambda
-        run: |
-          export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
-          cd /github/workspace/vlambda 2>/dev/null || cd vlambda
-          ${{ matrix.interpreter }} -m venv .venv
-          . .venv/bin/activate
-          vcraft develop --interpreter ${{ matrix.interpreter }} ${{ matrix.free_threading && '--free-threading' || '' }}
+        uses: rroblf01/vcraft/actions/vcraft-action@v1
+        with:
+          args: develop
+          working-directory: vlambda
+          vcraft-version: v1.7.0
 
       - name: run tests
         run: |
-          export PATH="/opt/vcraft/bin:/opt/v:${PATH}"
-          cd /github/workspace/vlambda 2>/dev/null || cd vlambda
+          cd vlambda
           . .venv/bin/activate
           python ../tests/test_vlambda.py

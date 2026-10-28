@@ -18,23 +18,18 @@ jobs:
         include:
           - target: "cp314-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
             args: "build --release --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
           - target: "cp314-linux-aarch64"
             os: "ubuntu-24.04-arm"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
             args: "build --release --target linux-aarch64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
           - target: "cp314t-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
             args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314t/bin/python"
           - target: "cp315-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
             args: "build --release --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315/bin/python"
           - target: "cp315t-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:latest"
             args: "build --release --free-threading --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315t/bin/python"
     steps:
       - uses: actions/checkout@v5

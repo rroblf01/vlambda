@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -68,6 +68,26 @@ def main() -> None:
 
     from vlambda.pool import Pool
     pool = Pool(args.num_coroutines)
+
+    from vlambda.tasks import create_task, get_task
+
+    def _create_task(code, method, path, query, body):
+        import json
+        task_id = create_task(code, method, path, query, body, pool)
+        return json.dumps({"task_id": task_id, "status": "pending"})
+
+    def _get_task(task_id):
+        import json
+        task = get_task(task_id)
+        if task is None:
+            return json.dumps({"error": "task not found"})
+        result = {"task_id": task_id, "status": task["status"]}
+        if task["status"] == "completed":
+            r = task["result"]
+            result["result"] = json.loads(r) if isinstance(r, str) else r
+        elif task["status"] == "failed":
+            result["error"] = task["error"]
+        return json.dumps(result)
 
     def _pool_execute(code, req_dict):
         try:
@@ -149,6 +169,9 @@ def main() -> None:
         return _ui_html
 
     register_ui_html(_get_ui_html)
+
+    register_create_task(_create_task)
+    register_get_task(_get_task)
 
     import atexit
     atexit.register(pool.stop)

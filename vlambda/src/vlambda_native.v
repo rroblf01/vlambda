@@ -17,6 +17,8 @@ __global (
 	vlambda_auth_login = voidptr(0)
 	vlambda_validate_code = voidptr(0)
 	vlambda_ui_html = voidptr(0)
+	vlambda_create_task = voidptr(0)
+	vlambda_get_task = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -115,6 +117,46 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			status_code: 200
 			body: get_ui_html()
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
+		}
+	}
+
+	// Route: /async/<slug> (fire-and-forget)
+	if req.url.starts_with('/async/') {
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[7..]
+		code_method := db_get_lambda_code(slug)
+		if code_method == '' {
+			return http.Response{
+				status_code: 404
+				body: '{"error": "lambda not found"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		parts := code_method.split('|')
+		code := if parts.len > 0 { parts[0] } else { '' }
+		method := if parts.len > 1 { parts[1] } else { 'GET' }
+		mut q := ''
+		if qi2 := req.url.index('?') {
+			q = req.url[qi2+1..]
+		}
+		task_id := create_task_async(code, method, req.url, q, req.data)
+		return http.Response{
+			status_code: 202
+			body: task_id
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Route: /task/<id>
+	if req.url.starts_with('/task/') {
+		task_id := req.url[6..]
+		result := get_task_status(task_id)
+		return http.Response{
+			status_code: 200
+			body: result
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
 
@@ -809,8 +851,66 @@ pub fn get_favicon() string {
 }
 
 @[vc_fn]
+pub fn register_create_task(cb voidptr) {
+	vlambda_create_task = cb
+}
+
+@[vc_fn]
+pub fn register_get_task(cb voidptr) {
+	vlambda_get_task = cb
+}
+
+@[vc_fn]
 pub fn register_ui_html(cb voidptr) {
 	vlambda_ui_html = cb
+}
+
+@[vc_fn]
+pub fn create_task_async(code string, method string, path string, query string, body string) string {
+	if vlambda_create_task == unsafe { nil } { return '{"error": "not configured"}' }
+	mut cell := ''
+	ptr := &cell
+	vcraft.with_gil(fn [code, method, path, query, body, ptr] () {
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, vcraft.to_py_bytes(body).ptr]
+		r := vcraft.call(vlambda_create_task, args)
+		for a in args { vcraft.borrow(a).decref() }
+		if r.is_null() {
+			vcraft.clear_error()
+			return
+		}
+		if r.type_name() == 'str' {
+			ss := vcraft.from_py_string(r, 'result') or { '' }
+			r.decref()
+			unsafe { *ptr = ss }
+			return
+		}
+		r.decref()
+	})
+	return cell
+}
+
+@[vc_fn]
+pub fn get_task_status(task_id string) string {
+	if vlambda_get_task == unsafe { nil } { return '{"error": "not configured"}' }
+	mut cell := ''
+	ptr := &cell
+	vcraft.with_gil(fn [task_id, ptr] () {
+		args := [vcraft.to_py_string(task_id).ptr]
+		r := vcraft.call(vlambda_get_task, args)
+		vcraft.borrow(args[0]).decref()
+		if r.is_null() {
+			vcraft.clear_error()
+			return
+		}
+		if r.type_name() == 'str' {
+			ss := vcraft.from_py_string(r, 'result') or { '' }
+			r.decref()
+			unsafe { *ptr = ss }
+			return
+		}
+		r.decref()
+	})
+	return cell
 }
 
 @[vc_fn]

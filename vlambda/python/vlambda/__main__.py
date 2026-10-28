@@ -153,6 +153,17 @@ def main() -> None:
     import atexit
     atexit.register(pool.stop)
 
+    # Run server in a thread so signals can be handled
+    import threading
+    _server_done = threading.Event()
+
+    def _run_server():
+        rc = start_server(args.port, args.sqlite_path, args.num_coroutines)
+        _server_done.set()
+
+    _server_thread = threading.Thread(target=_run_server, daemon=True)
+    _server_thread.start()
+
     # Memory monitoring thread (if max_memory_mb > 0)
     if args.max_memory_mb > 0:
         import threading, time, resource
@@ -178,15 +189,20 @@ def main() -> None:
         from vlambda.dbpool import close_all
         close_all()
         gc.collect()
-        sys.exit(0)
+        _server_done.set()
+        os._exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
     print(f"Starting vlambda on port {args.port} (db={args.sqlite_path}, coroutines={args.num_coroutines})")
     print(f"  max_body={args.max_body_size}, rate_limit={args.rate_limit}/s, timeout={args.invoke_timeout}s, max_mem={args.max_memory_mb}MB")
-    rc = start_server(args.port, args.sqlite_path, args.num_coroutines)
-    sys.exit(rc)
+    print("Press Ctrl+C to stop.")
+    # Note: Ctrl+C may not work due to V's blocking listen_and_serve().
+    # Use 'kill <pid>' or the /shutdown endpoint to stop.
+    import time
+    while True:
+        time.sleep(1)
 
 
 if __name__ == "__main__":

@@ -117,6 +117,19 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /shutdown (POST)
+	if req.url == '/shutdown' && req.method == .post {
+		spawn fn () {
+			time.sleep(200 * time.millisecond)
+			C.exit(0)
+		}()
+		return http.Response{
+			status_code: 200
+			body: '{"status": "shutting down"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /ui (serve HTML dashboard)
 	if req.url == '/ui' || req.url == '/' {
 		return http.Response{

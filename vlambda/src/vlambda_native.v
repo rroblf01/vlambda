@@ -60,11 +60,13 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('CREATE TABLE IF NOT EXISTS lambdas (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		slug TEXT UNIQUE NOT NULL,
+		name TEXT NOT NULL DEFAULT "",
 		code TEXT NOT NULL,
 		method TEXT NOT NULL DEFAULT "GET",
 		owner_id INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL
 	);')!
+	db.exec('ALTER TABLE lambdas ADD COLUMN name TEXT NOT NULL DEFAULT "";') or {}
 	return db
 }
 
@@ -284,13 +286,17 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
-			// Parse method from query string
+			// Parse method and name from query string
 			mut method := 'GET'
+			mut name := ''
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
 					if part.starts_with('method=') {
 						method = part.all_after('=')
+					}
+					if part.starts_with('name=') {
+						name = part.all_after('=')
 					}
 				}
 			}
@@ -312,7 +318,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 			slug := make_slug(code)
-			ok := db_create_lambda(slug, code, method, auth_uid)
+			ok := db_create_lambda(slug, name, code, method, auth_uid)
 			if ok {
 				prewarm_lambda(code)
 				vlambda_lambdas_created++
@@ -473,15 +479,19 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 			mut method := 'GET'
+			mut name := ''
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
 					if part.starts_with('method=') {
 						method = part.all_after('=')
 					}
+					if part.starts_with('name=') {
+						name = part.all_after('=')
+					}
 				}
 			}
-			ok := db_update_lambda(slug, code, method, auth_uid)
+			ok := db_update_lambda(slug, name, code, method, auth_uid)
 			if ok {
 				prewarm_lambda(code)
 				return http.Response{
@@ -554,19 +564,19 @@ pub fn auth_verify_token(token string) int {
 }
 
 @[vc_fn]
-pub fn db_create_lambda(slug string, code string, method string, owner_id int) bool {
+pub fn db_create_lambda(slug string, name string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
-	db.exec_param_many('INSERT INTO lambdas (slug, code, method, owner_id, created_at) VALUES (?, ?, ?, ?, ?);',
-		[slug, code, method, owner_id.str(), '2026-01-01T00:00:00Z']) or { return false }
+	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?);',
+		[slug, name, code, method, owner_id.str(), '2026-01-01T00:00:00Z']) or { return false }
 	return true
 }
 
 @[vc_fn]
-pub fn db_update_lambda(slug string, code string, method string, owner_id int) bool {
+pub fn db_update_lambda(slug string, name string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
-	db.exec_param_many('UPDATE lambdas SET code = ?, method = ? WHERE slug = ? AND owner_id = ?;', [code, method, slug, owner_id.str()]) or { return false }
+	db.exec_param_many('UPDATE lambdas SET name = ?, code = ?, method = ? WHERE slug = ? AND owner_id = ?;', [name, code, method, slug, owner_id.str()]) or { return false }
 	// Invalidate cache
 	vlambda_code_cache.delete(slug)
 	return true
@@ -609,6 +619,15 @@ pub fn db_get_lambda_code(slug string) string {
 }
 
 @[vc_fn]
+pub fn db_get_lambda_name(slug string) string {
+	mut db := init_db(vlambda_db_path) or { return '' }
+	defer { db.close() }
+	rows := db.exec_param('SELECT name FROM lambdas WHERE slug = ?;', slug) or { return '' }
+	if rows.len == 0 { return '' }
+	return rows[0].vals[0] or { return '' }
+}
+
+@[vc_fn]
 pub fn db_delete_lambda(slug string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
@@ -621,12 +640,13 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 pub fn db_list_lambdas(owner_id int) string {
 	mut db := init_db(vlambda_db_path) or { return '' }
 	defer { db.close() }
-	rows := db.exec_param('SELECT slug, method FROM lambdas WHERE owner_id = ?;', owner_id.str()) or { return '' }
+	rows := db.exec_param('SELECT slug, name, method FROM lambdas WHERE owner_id = ?;', owner_id.str()) or { return '' }
 	mut out := ''
 	for row in rows {
 		slug := row.vals[0] or { continue }
-		method := row.vals[1] or { continue }
-		out += slug + ':' + method + '\\n'
+		name := row.vals[1] or { continue }
+		method := row.vals[2] or { continue }
+		out += slug + '|' + name + '|' + method + '\\n'
 	}
 	return out
 }
@@ -649,14 +669,15 @@ pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 	mut off := offset
 	if lim <= 0 { lim = 50 }
 	if off < 0 { off = 0 }
-	query := 'SELECT slug, method FROM lambdas WHERE owner_id = ? LIMIT ${lim} OFFSET ${off};'
+	query := 'SELECT slug, name, method FROM lambdas WHERE owner_id = ? LIMIT ${lim} OFFSET ${off};'
 
 	rows := db.exec_param(query, owner_id.str()) or { return '' }
 	mut out := ''
 	for row in rows {
 		slug := row.vals[0] or { continue }
-		method := row.vals[1] or { continue }
-		out += slug + ':' + method + '\\n'
+		name := row.vals[1] or { continue }
+		method := row.vals[2] or { continue }
+		out += slug + '|' + name + '|' + method + '\\n'
 	}
 	return out
 }

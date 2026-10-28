@@ -86,6 +86,10 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
     <div id="create-form" class="card hidden">
       <h2>New Lambda</h2>
       <div class="form-group">
+        <label>Name (optional)</label>
+        <input type="text" id="name-input" placeholder="my-lambda">
+      </div>
+      <div class="form-group">
         <label>Method</label>
         <select id="method-select" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:6px;font-size:13px;width:100%;">
           <option value="GET">GET</option>
@@ -120,6 +124,10 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
     </div>
     <div id="editor-alert"></div>
     <div class="card">
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="editor-name" placeholder="my-lambda">
+      </div>
       <div class="form-group">
         <label>Method</label>
         <select id="editor-method" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:6px;font-size:13px;width:100%;">
@@ -177,6 +185,7 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
 const API = '';
 let token = localStorage.getItem('vlambda_token');
 let currentSlug = null;
+let lambdaNames = {};
 let deleteTarget = null;
 
 function showAlert(id, msg, type) {
@@ -257,11 +266,14 @@ async function loadLambdas() {
     if (data.lambdas) {
       data.lambdas.trim().split('\n').forEach(line => {
         if (!line) return;
-        const parts = line.split(':');
+        const parts = line.split('|');
         const slug = parts[0];
-        const method = parts[1];
+        const name = parts[1] || '';
+        const method = parts[2];
+        lambdaNames[slug] = name;
+        const displayName = name ? name : slug;
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td><a href="/f/' + slug + '" target="_blank">' + slug + '</a></td>' +
+        tr.innerHTML = '<td><a href="/f/' + slug + '" target="_blank">' + displayName + '</a><br><span style="font-size:11px;color:#8b949e;">' + slug + '</span></td>' +
           '<td><span class="badge badge-' + method.toLowerCase() + '">' + method + '</span></td>' +
           '<td class="flex">' +
           '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\', \'' + method + '\')">Run</button> ' +
@@ -283,13 +295,15 @@ function showCreate() {
 function hideCreate() {
   document.getElementById('create-form').classList.add('hidden');
   document.getElementById('code-input').value = '';
+  document.getElementById('name-input').value = '';
 }
 
 async function createLambda() {
   const code = document.getElementById('code-input').value;
   const method = document.getElementById('method-select').value;
+  const name = document.getElementById('name-input').value;
   try {
-    const resp = await fetch(API + '/vlambda?method=' + method, {
+    const resp = await fetch(API + '/vlambda?method=' + method + '&name=' + encodeURIComponent(name), {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
       body: code
@@ -311,6 +325,7 @@ async function editLambda(slug) {
   currentSlug = slug;
   document.getElementById('editor-title').textContent = 'Edit: ' + slug;
   document.getElementById('editor-code').value = 'Loading...';
+  document.getElementById('editor-name').value = lambdaNames[slug] || '';
   document.getElementById('run-result').innerHTML = '';
   showView('editor');
   try {
@@ -331,8 +346,9 @@ async function editLambda(slug) {
 async function saveLambda() {
   const code = document.getElementById('editor-code').value;
   const method = document.getElementById('editor-method').value;
+  const name = document.getElementById('editor-name').value;
   try {
-    const resp = await fetch(API + '/vlambda/' + currentSlug + '?method=' + method, {
+    const resp = await fetch(API + '/vlambda/' + currentSlug + '?method=' + method + '&name=' + encodeURIComponent(name), {
       method: 'PUT',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
       body: code

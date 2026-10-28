@@ -16,6 +16,7 @@ __global (
 	vlambda_auth_register = voidptr(0)
 	vlambda_auth_login = voidptr(0)
 	vlambda_validate_code = voidptr(0)
+	vlambda_ui_html = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -113,6 +114,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			status_code: 200
 			body: '{"status": "ok"}'
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Route: /ui (serve HTML dashboard)
+	if req.url == '/ui' || req.url == '/' {
+		return http.Response{
+			status_code: 200
+			body: get_ui_html()
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
 		}
 	}
 
@@ -660,6 +670,34 @@ pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memo
 	if cors_origin != '' { vlambda_cors_origin = cors_origin }
 	vlambda_cert_path = cert_path
 	vlambda_key_path = key_path
+}
+
+@[vc_fn]
+pub fn register_ui_html(cb voidptr) {
+	vlambda_ui_html = cb
+}
+
+@[vc_fn]
+pub fn get_ui_html() string {
+	if vlambda_ui_html == unsafe { nil } { return '<h1>vlambda</h1>' }
+	mut ptr_cell := '<h1>vlambda</h1>'
+	ptr := &ptr_cell
+	vcraft.with_gil(fn [ptr] () {
+		args := []voidptr{}
+		r := vcraft.call(vlambda_ui_html, args)
+		if r.is_null() {
+			vcraft.clear_error()
+			return
+		}
+		if r.type_name() == 'str' {
+			ss := vcraft.from_py_string(r, 'html') or { '<h1>vlambda</h1>' }
+			r.decref()
+			unsafe { *ptr = ss }
+			return
+		}
+		r.decref()
+	})
+	return ptr_cell
 }
 
 @[vc_fn]

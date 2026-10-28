@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vlambda</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; }
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.container { max-width: 960px; margin: 0 auto; padding: 20px; }
+h1 { font-size: 24px; margin-bottom: 16px; color: #f0f6fc; }
+h2 { font-size: 18px; margin-bottom: 12px; color: #f0f6fc; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.btn { padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; cursor: pointer; font-size: 13px; }
+.btn:hover { background: #30363d; }
+.btn-primary { background: #238636; border-color: #238636; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn-danger { background: #da3633; border-color: #da3633; color: #fff; }
+.btn-danger:hover { background: #f85149; }
+.btn-sm { padding: 3px 8px; font-size: 12px; }
+input, textarea { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px; border-radius: 6px; font-size: 13px; width: 100%; font-family: monospace; }
+textarea { min-height: 200px; resize: vertical; }
+label { display: block; margin-bottom: 4px; font-size: 13px; color: #8b949e; }
+.form-group { margin-bottom: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 8px; text-align: left; border-bottom: 1px solid #30363d; font-size: 13px; }
+th { color: #8b949e; font-weight: 600; }
+tr:hover { background: #161b22; }
+.badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #30363d; }
+.badge-get { background: #1f6feb; }
+.badge-post { background: #238636; }
+.alert { padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+.alert-error { background: #3d1f1f; border: 1px solid #da3633; color: #f85149; }
+.alert-success { background: #1f3d1f; border: 1px solid #238636; color: #3fb950; }
+.hidden { display: none; }
+.flex { display: flex; gap: 8px; align-items: center; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.mt { margin-top: 12px; }
+.mb { margin-bottom: 12px; }
+pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; max-width: 400px; width: 90%; }
+.nav { display: flex; gap: 16px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid #30363d; }
+.nav a { color: #8b949e; font-size: 14px; }
+.nav a.active { color: #f0f6fc; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>vlambda</h1>
+  <div class="nav" id="nav">
+    <a href="#dashboard" id="nav-dashboard" class="active">Dashboard</a>
+    <a href="#metrics" id="nav-metrics">Metrics</a>
+    <a href="#" id="nav-logout" onclick="logout()">Logout</a>
+  </div>
+
+  <div id="view-login" class="hidden">
+    <div class="card" style="max-width:400px;margin:40px auto;">
+      <h2>Login / Register</h2>
+      <div id="login-alert"></div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="username" placeholder="username">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="password" placeholder="password">
+      </div>
+      <div class="flex">
+        <button class="btn btn-primary" onclick="doLogin()">Login</button>
+        <button class="btn" onclick="doRegister()">Register</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-dashboard">
+    <div class="flex-between mb">
+      <h2>Your Lambdas</h2>
+      <button class="btn btn-primary" onclick="showCreate()">+ New Lambda</button>
+    </div>
+    <div id="dashboard-alert"></div>
+    <div id="create-form" class="card hidden">
+      <h2>New Lambda</h2>
+      <div class="form-group">
+        <label>Python Code</label>
+        <textarea id="code-input" placeholder="def handler(request):&#10;    return {'msg': 'hello'}"></textarea>
+      </div>
+      <div class="flex">
+        <button class="btn btn-primary" onclick="createLambda()">Create</button>
+        <button class="btn" onclick="hideCreate()">Cancel</button>
+      </div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Slug</th><th>Method</th><th>Actions</th></tr></thead>
+        <tbody id="lambda-list"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="view-editor" class="hidden">
+    <div class="flex-between mb">
+      <h2 id="editor-title">Edit Lambda</h2>
+      <button class="btn" onclick="showView('dashboard')">Back</button>
+    </div>
+    <div id="editor-alert"></div>
+    <div class="card">
+      <div class="form-group">
+        <label>Code</label>
+        <textarea id="editor-code"></textarea>
+      </div>
+      <div class="flex mb">
+        <button class="btn btn-primary" onclick="saveLambda()">Save</button>
+        <button class="btn" onclick="runLambda()">Run</button>
+      </div>
+      <div id="run-result"></div>
+    </div>
+  </div>
+
+  <div id="view-metrics" class="hidden">
+    <h2>Metrics</h2>
+    <div class="card">
+      <pre id="metrics-output">Loading...</pre>
+    </div>
+    <button class="btn" onclick="loadMetrics()">Refresh</button>
+  </div>
+</div>
+
+<div id="delete-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Delete Lambda?</h2>
+    <p style="margin:12px 0;color:#8b949e;">This action cannot be undone.</p>
+    <div class="flex">
+      <button class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+      <button class="btn" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let token = localStorage.getItem('vlambda_token');
+let currentSlug = null;
+let deleteTarget = null;
+
+function showAlert(id, msg, type) {
+  const el = document.getElementById(id);
+  el.innerHTML = '<div class="alert alert-' + type + '">' + msg + '</div>';
+  setTimeout(() => el.innerHTML = '', 4000);
+}
+
+function showView(name) {
+  document.querySelectorAll('[id^="view-"]').forEach(e => e.classList.add('hidden'));
+  document.getElementById('view-' + name).classList.remove('hidden');
+  document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));
+  const nav = document.getElementById('nav-' + name);
+  if (nav) nav.classList.add('active');
+  if (name === 'dashboard') loadLambdas();
+  if (name === 'metrics') loadMetrics();
+}
+
+function checkAuth() {
+  if (!token) {
+    document.getElementById('view-login').classList.remove('hidden');
+    document.getElementById('view-dashboard').classList.add('hidden');
+    document.getElementById('view-editor').classList.add('hidden');
+    document.getElementById('view-metrics').classList.add('hidden');
+    document.getElementById('nav').classList.add('hidden');
+  } else {
+    document.getElementById('nav').classList.remove('hidden');
+    showView('dashboard');
+  }
+}
+
+async function doLogin() {
+  const u = document.getElementById('username').value;
+  const p = document.getElementById('password').value;
+  try {
+    const resp = await fetch(API + '/login', { method: 'POST', body: u + ':' + p });
+    const data = await resp.json();
+    if (resp.ok) {
+      token = data.token;
+      localStorage.setItem('vlambda_token', token);
+      checkAuth();
+    } else {
+      showAlert('login-alert', data.error || 'Login failed', 'error');
+    }
+  } catch (e) {
+    showAlert('login-alert', 'Network error', 'error');
+  }
+}
+
+async function doRegister() {
+  const u = document.getElementById('username').value;
+  const p = document.getElementById('password').value;
+  try {
+    const resp = await fetch(API + '/register', { method: 'POST', body: u + ':' + p });
+    const data = await resp.json();
+    if (resp.ok) {
+      showAlert('login-alert', 'Registered! Please login.', 'success');
+    } else {
+      showAlert('login-alert', data.error || 'Register failed', 'error');
+    }
+  } catch (e) {
+    showAlert('login-alert', 'Network error', 'error');
+  }
+}
+
+function logout() {
+  token = null;
+  localStorage.removeItem('vlambda_token');
+  checkAuth();
+}
+
+async function loadLambdas() {
+  try {
+    const resp = await fetch(API + '/vlambda', { headers: { 'Authorization': 'Bearer ' + token } });
+    const data = await resp.json();
+    const tbody = document.getElementById('lambda-list');
+    tbody.innerHTML = '';
+    if (data.lambdas) {
+      data.lambdas.trim().split('\n').forEach(line => {
+        if (!line) return;
+        const parts = line.split(':');
+        const slug = parts[0];
+        const method = parts[1];
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td><a href="#" onclick="editLambda(\'' + slug + '\')">' + slug + '</a></td>' +
+          '<td><span class="badge badge-' + method.toLowerCase() + '">' + method + '</span></td>' +
+          '<td class="flex">' +
+          '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\')">Run</button> ' +
+          '<button class="btn btn-sm btn-danger" onclick="openDelete(\'' + slug + '\')">Del</button>' +
+          '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+  } catch (e) {
+    showAlert('dashboard-alert', 'Failed to load lambdas', 'error');
+  }
+}
+
+function showCreate() {
+  document.getElementById('create-form').classList.remove('hidden');
+}
+
+function hideCreate() {
+  document.getElementById('create-form').classList.add('hidden');
+  document.getElementById('code-input').value = '';
+}
+
+async function createLambda() {
+  const code = document.getElementById('code-input').value;
+  try {
+    const resp = await fetch(API + '/vlambda', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
+      body: code
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showAlert('dashboard-alert', 'Created: ' + data.slug, 'success');
+      hideCreate();
+      loadLambdas();
+    } else {
+      showAlert('dashboard-alert', data.error || 'Create failed', 'error');
+    }
+  } catch (e) {
+    showAlert('dashboard-alert', 'Network error', 'error');
+  }
+}
+
+function editLambda(slug) {
+  currentSlug = slug;
+  document.getElementById('editor-title').textContent = 'Edit: ' + slug;
+  document.getElementById('editor-code').value = '';
+  document.getElementById('run-result').innerHTML = '';
+  showView('editor');
+}
+
+async function saveLambda() {
+  const code = document.getElementById('editor-code').value;
+  try {
+    const resp = await fetch(API + '/vlambda/' + currentSlug, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
+      body: code
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showAlert('editor-alert', 'Saved!', 'success');
+    } else {
+      showAlert('editor-alert', data.error || 'Save failed', 'error');
+    }
+  } catch (e) {
+    showAlert('editor-alert', 'Network error', 'error');
+  }
+}
+
+async function runLambda() {
+  const code = document.getElementById('editor-code').value;
+  const resultDiv = document.getElementById('run-result');
+  resultDiv.innerHTML = '<pre>Running...</pre>';
+  try {
+    const resp = await fetch(API + '/vlambda', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
+      body: code
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      resultDiv.innerHTML = '<pre style="color:#f85149">' + (data.error || 'Error') + '</pre>';
+      return;
+    }
+    const invokeResp = await fetch(API + '/f/' + data.slug);
+    const result = await invokeResp.text();
+    resultDiv.innerHTML = '<pre>' + result + '</pre>';
+    await fetch(API + '/vlambda/' + data.slug, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+  } catch (e) {
+    resultDiv.innerHTML = '<pre style="color:#f85149">Error: ' + e.message + '</pre>';
+  }
+}
+
+async function invokeLambda(slug) {
+  try {
+    const resp = await fetch(API + '/f/' + slug);
+    const text = await resp.text();
+    alert(slug + ':\n' + text);
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+function openDelete(slug) {
+  deleteTarget = slug;
+  document.getElementById('delete-modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  deleteTarget = null;
+  document.getElementById('delete-modal').classList.add('hidden');
+}
+
+async function confirmDelete() {
+  if (!deleteTarget) return;
+  try {
+    const resp = await fetch(API + '/vlambda/' + deleteTarget, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (resp.ok) {
+      showAlert('dashboard-alert', 'Deleted', 'success');
+      loadLambdas();
+    } else {
+      const data = await resp.json();
+      showAlert('dashboard-alert', data.error || 'Delete failed', 'error');
+    }
+  } catch (e) {
+    showAlert('dashboard-alert', 'Network error', 'error');
+  }
+  closeModal();
+}
+
+async function loadMetrics() {
+  try {
+    const resp = await fetch(API + '/metrics');
+    const text = await resp.text();
+    document.getElementById('metrics-output').textContent = text;
+  } catch (e) {
+    document.getElementById('metrics-output').textContent = 'Error loading metrics';
+  }
+}
+
+checkAuth();
+</script>
+</body>
+</html>

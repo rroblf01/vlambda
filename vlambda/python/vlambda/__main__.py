@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -136,6 +136,19 @@ def main() -> None:
     register_auth_login(_auth_login)
 
     register_validate_code(_validate_code)
+
+    # Load UI HTML
+    ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
+    try:
+        with open(ui_path) as f:
+            _ui_html = f.read()
+    except FileNotFoundError:
+        _ui_html = "<h1>vlambda</h1><p>UI not found</p>"
+
+    def _get_ui_html():
+        return _ui_html
+
+    register_ui_html(_get_ui_html)
 
     import atexit
     atexit.register(pool.stop)

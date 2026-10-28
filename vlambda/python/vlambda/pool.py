@@ -30,19 +30,25 @@ class Worker:
                 break
             code, method, path, query, body, result_queue = task
             try:
-                compiled, ns_template = get_compiled(code)
-                # Create a fresh namespace from template
-                ns = dict(ns_template)
-                ns["request"] = Request(
+                # Try native compilation first (if enabled)
+                from vlambda.nuitka_compile import try_native
+                req_obj = Request(
                     method=method, path=path, query_string=query,
                     headers={}, body=body,
                 )
-                exec(compiled, ns)
-                handler = ns.get("handler")
-                if handler is None:
-                    result = {"error": "no handler function defined"}
+                native_result = try_native(code, req_obj)
+                if native_result is not None:
+                    result = native_result
                 else:
-                    result = handler(ns["request"])
+                    compiled, ns_template = get_compiled(code)
+                    ns = dict(ns_template)
+                    ns["request"] = req_obj
+                    exec(compiled, ns)
+                    handler = ns.get("handler")
+                    if handler is None:
+                        result = {"error": "no handler function defined"}
+                    else:
+                        result = handler(ns["request"])
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"}
             result_queue.put(result)
@@ -69,10 +75,16 @@ class Pool:
         self._lock = threading.Lock()
 
     def execute(self, code, method, path, query, body) -> Any:
+        # Auto-scale: if queue is deep, add a worker
         with self._lock:
+            if len(self._workers) < 64 and self._queue_depth() > len(self._workers) * 2:
+                self._workers.append(Worker(len(self._workers)))
             worker = self._workers[self._index % len(self._workers)]
             self._index += 1
         return worker.submit(code, method, path, query, body)
+
+    def _queue_depth(self) -> int:
+        return sum(w._queue.qsize() for w in self._workers)
 
     def stop(self):
         for w in self._workers:

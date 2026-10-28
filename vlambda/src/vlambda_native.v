@@ -32,6 +32,8 @@ __global (
 	vlambda_rate_map = map[string]int{}
 	vlambda_rate_window = i64(0)
 	vlambda_slug_counter = u64(0)
+	// In-memory code cache: slug -> code|method
+	vlambda_code_cache = map[string]string{}
 	// Shutdown
 	vlambda_shutdown = false
 )
@@ -459,6 +461,8 @@ pub fn db_update_lambda(slug string, code string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
 	db.exec_param_many('UPDATE lambdas SET code = ? WHERE slug = ? AND owner_id = ?;', [code, slug, owner_id.str()]) or { return false }
+	// Invalidate cache
+	vlambda_code_cache.delete(slug)
 	return true
 }
 
@@ -483,13 +487,19 @@ pub fn prewarm_lambda(code string) {
 
 @[vc_fn]
 pub fn db_get_lambda_code(slug string) string {
+	// Check in-memory cache first
+	if cached := vlambda_code_cache[slug] {
+		return cached
+	}
 	mut db := init_db(vlambda_db_path) or { return '' }
 	defer { db.close() }
 	rows := db.exec_param('SELECT code, method FROM lambdas WHERE slug = ?;', slug) or { return '' }
 	if rows.len == 0 { return '' }
 	code := rows[0].vals[0] or { return '' }
 	method := rows[0].vals[1] or { return '' }
-	return code + '|' + method
+	result := code + '|' + method
+	vlambda_code_cache[slug] = result
+	return result
 }
 
 @[vc_fn]
@@ -497,6 +507,7 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
 	db.exec_param_many('DELETE FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { return false }
+	vlambda_code_cache.delete(slug)
 	return true
 }
 

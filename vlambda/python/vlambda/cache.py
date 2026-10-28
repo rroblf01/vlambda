@@ -3,14 +3,42 @@
 from __future__ import annotations
 
 import threading
+import marshal
+import os
 from collections import OrderedDict
 from typing import Any
 
 from vlambda.sandbox import make_sandbox
 
 _MAX_SIZE = 1024
+_CACHE_DIR = os.environ.get("VLAMBDA_CACHE_DIR", "/tmp/opencode/vlambda_cache")
 _cache: OrderedDict[str, tuple] = OrderedDict()
 _lock = threading.Lock()
+
+
+def _disk_path(code: str) -> str:
+    import hashlib
+    h = hashlib.sha256(code.encode()).hexdigest()[:16]
+    return os.path.join(_CACHE_DIR, f"{h}.pyc")
+
+
+def _load_from_disk(code: str):
+    path = _disk_path(code)
+    try:
+        with open(path, "rb") as f:
+            return marshal.load(f)
+    except (FileNotFoundError, EOFError, ValueError, TypeError):
+        return None
+
+
+def _save_to_disk(code: str, compiled):
+    path = _disk_path(code)
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        with open(path, "wb") as f:
+            marshal.dump(compiled, f)
+    except Exception:
+        pass
 
 
 def get(code: str):
@@ -18,8 +46,13 @@ def get(code: str):
         if code in _cache:
             _cache.move_to_end(code)
             return _cache[code]
-    # Compile outside lock
-    compiled, ns_template = make_sandbox(code, None)
+    # Try disk cache
+    compiled = _load_from_disk(code)
+    if compiled is None:
+        compiled, ns_template = make_sandbox(code, None)
+        _save_to_disk(code, compiled)
+    else:
+        _, ns_template = make_sandbox(code, None)
     with _lock:
         if code in _cache:
             _cache.move_to_end(code)
@@ -31,13 +64,16 @@ def get(code: str):
 
 
 def prewarm(code: str):
-    """Pre-compile code without returning it."""
     get(code)
 
 
 def invalidate(code: str):
     with _lock:
         _cache.pop(code, None)
+    try:
+        os.remove(_disk_path(code))
+    except FileNotFoundError:
+        pass
 
 
 def clear():

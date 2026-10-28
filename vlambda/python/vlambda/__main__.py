@@ -41,7 +41,12 @@ def main() -> None:
     pool = Pool(args.num_coroutines)
 
     def _pool_execute(code, req_dict):
-        import json
+        try:
+            import orjson
+            _dumps = orjson.dumps
+        except ImportError:
+            import json
+            _dumps = lambda x: json.dumps(x).encode()
         result = pool.execute(
             code,
             req_dict.get("method", "GET"),
@@ -49,7 +54,12 @@ def main() -> None:
             req_dict.get("query_string", ""),
             req_dict.get("body", b""),
         )
-        return json.dumps(result) if not isinstance(result, str) else result
+        if isinstance(result, str):
+            return result
+        if isinstance(result, bytes):
+            return result.decode()
+        dumped = _dumps(result)
+        return dumped.decode() if isinstance(dumped, bytes) else dumped
 
     register_pool(_pool_execute)
 

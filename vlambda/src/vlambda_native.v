@@ -11,6 +11,9 @@ import strings
 __global (
 	vlambda_db_path = './vlambda.db'
 	vlambda_executor = voidptr(0)
+	vlambda_auth_verifier = voidptr(0)
+	vlambda_auth_register = voidptr(0)
+	vlambda_auth_login = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 )
 
@@ -64,9 +67,85 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /health
+	if req.url == '/health' {
+		return http.Response{
+			status_code: 200
+			body: '{"status": "ok"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Extract auth token from header
+	mut auth_token := ''
+	if auth_hdr := req.header.get(.authorization) {
+		if auth_hdr.starts_with('Bearer ') {
+			auth_token = auth_hdr[7..]
+		}
+	}
+	auth_uid := if auth_token.len > 0 { auth_verify_token(auth_token) } else { -1 }
+
+	// Route: /register (POST)
+	if req.url == '/register' && req.method == .post {
+		// Parse username:password from body
+		parts := req.data.split(':')
+		if parts.len < 2 {
+			return http.Response{
+				status_code: 400
+				body: '{"error": "expected username:password"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		uid := auth_register_user(parts[0], parts[1])
+		if uid < 0 {
+			return http.Response{
+				status_code: 409
+				body: '{"error": "user already exists"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		return http.Response{
+			status_code: 201
+			body: '{"user_id": ${uid}}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Route: /login (POST)
+	if req.url == '/login' && req.method == .post {
+		parts := req.data.split(':')
+		if parts.len < 2 {
+			return http.Response{
+				status_code: 400
+				body: '{"error": "expected username:password"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		token := auth_login_user(parts[0], parts[1])
+		if token == '' {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "invalid credentials"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		return http.Response{
+			status_code: 200
+			body: '{"token": "${token}"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /vlambda (POST = create, GET = list)
 	if req.url == '/vlambda' {
 		if req.method == .post {
+			if auth_uid < 0 {
+				return http.Response{
+					status_code: 401
+					body: '{"error": "unauthorized"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			// Create lambda
 			// Body: {"code": "...", "method": "GET"}
 			// For now, read code from body directly
@@ -80,7 +159,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			slug := make_slug(code)
 			method := 'GET'
-			ok := db_create_lambda(slug, code, method, 0)
+			ok := db_create_lambda(slug, code, method, auth_uid)
+			if ok {
+				prewarm_lambda(code)
+			}
 			if !ok {
 				return http.Response{
 					status_code: 500
@@ -95,7 +177,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		if req.method == .get {
-			lambdas := db_list_lambdas(0)
+			lambdas := db_list_lambdas(auth_uid)
 			return http.Response{
 				status_code: 200
 				body: '{"lambdas": "${lambdas}"}'
@@ -157,7 +239,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		url_path2 = url_path2[..qi2]
 		slug := url_path2[9..]
 		if req.method == .delete {
-			ok := db_delete_lambda(slug, 0)
+			ok := db_delete_lambda(slug, auth_uid)
 			if ok {
 				return http.Response{
 					status_code: 200
@@ -168,6 +250,37 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			return http.Response{
 				status_code: 500
 				body: '{"error": "delete failed"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		if req.method == .put {
+			if auth_uid < 0 {
+				return http.Response{
+					status_code: 401
+					body: '{"error": "unauthorized"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			code := req.data
+			if code.len == 0 {
+				return http.Response{
+					status_code: 400
+					body: '{"error": "missing code in body"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			ok := db_update_lambda(slug, code, auth_uid)
+			if ok {
+				prewarm_lambda(code)
+				return http.Response{
+					status_code: 200
+					body: '{"updated": true}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			return http.Response{
+				status_code: 500
+				body: '{"error": "update failed"}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
@@ -203,12 +316,65 @@ pub fn register_pool(cb voidptr) {
 }
 
 @[vc_fn]
+pub fn register_auth_verifier(cb voidptr) {
+	vlambda_auth_verifier = cb
+}
+
+@[vc_fn]
+pub fn auth_verify_token(token string) int {
+	if vlambda_auth_verifier == unsafe { nil } { return -1 }
+	mut cell := -1
+	ptr := &cell
+	vcraft.with_gil(fn [token, ptr] () {
+		args := [vcraft.to_py_string(token).ptr]
+		r := vcraft.call(vlambda_auth_verifier, args)
+		vcraft.borrow(args[0]).decref()
+		if r.is_null() {
+			vcraft.clear_error()
+			unsafe { *ptr = -1 }
+			return
+		}
+		uid := int(vcraft.from_py_int(r, 'uid') or { -1 })
+		r.decref()
+		unsafe { *ptr = uid }
+	})
+	return cell
+}
+
+@[vc_fn]
 pub fn db_create_lambda(slug string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() }
 	db.exec_param_many('INSERT INTO lambdas (slug, code, method, owner_id, created_at) VALUES (?, ?, ?, ?, ?);',
 		[slug, code, method, owner_id.str(), '2026-01-01T00:00:00Z']) or { return false }
 	return true
+}
+
+@[vc_fn]
+pub fn db_update_lambda(slug string, code string, owner_id int) bool {
+	mut db := init_db(vlambda_db_path) or { return false }
+	defer { db.close() }
+	db.exec_param_many('UPDATE lambdas SET code = ? WHERE slug = ? AND owner_id = ?;', [code, slug, owner_id.str()]) or { return false }
+	return true
+}
+
+
+@[vc_fn]
+pub fn prewarm_lambda(code string) {
+	if vlambda_executor == unsafe { nil } { return }
+	vcraft.with_gil(fn [code] () {
+		mut req_items := map[string]vcraft.PyObj{}
+		req_items['method'] = vcraft.to_py_string('GET')
+		req_items['path'] = vcraft.to_py_string('/')
+		req_items['query_string'] = vcraft.to_py_string('')
+		req_items['body'] = vcraft.to_py_bytes('')
+		req_obj := vcraft.to_py_obj_dict(req_items)
+		args := [vcraft.to_py_string(code).ptr, req_obj.ptr]
+		r := vcraft.call(vlambda_executor, args)
+		if !r.is_null() { r.decref() }
+		req_obj.decref()
+		vcraft.borrow(args[0]).decref()
+	})
 }
 
 @[vc_fn]
@@ -286,6 +452,65 @@ pub fn run_lambda(code string, method string, path string, query string, body st
 		vlambda_result_str = ss
 	})
 	return vlambda_result_str
+}
+
+@[vc_fn]
+pub fn register_auth_register(cb voidptr) {
+	vlambda_auth_register = cb
+}
+
+@[vc_fn]
+pub fn register_auth_login(cb voidptr) {
+	vlambda_auth_login = cb
+}
+
+@[vc_fn]
+pub fn auth_register_user(username string, password string) int {
+	if vlambda_auth_register == unsafe { nil } { return -1 }
+	mut cell := -1
+	ptr := &cell
+	vcraft.with_gil(fn [username, password, ptr] () {
+		args := [vcraft.to_py_string(username).ptr, vcraft.to_py_string(password).ptr]
+		r := vcraft.call(vlambda_auth_register, args)
+		vcraft.borrow(args[0]).decref()
+		vcraft.borrow(args[1]).decref()
+		if r.is_null() {
+			vcraft.clear_error()
+			unsafe { *ptr = -1 }
+			return
+		}
+		uid := int(vcraft.from_py_int(r, 'uid') or { -1 })
+		r.decref()
+		unsafe { *ptr = uid }
+	})
+	return cell
+}
+
+@[vc_fn]
+pub fn auth_login_user(username string, password string) string {
+	if vlambda_auth_login == unsafe { nil } { return '' }
+	mut cell := ''
+	ptr := &cell
+	vcraft.with_gil(fn [username, password, ptr] () {
+		args := [vcraft.to_py_string(username).ptr, vcraft.to_py_string(password).ptr]
+		r := vcraft.call(vlambda_auth_login, args)
+		vcraft.borrow(args[0]).decref()
+		vcraft.borrow(args[1]).decref()
+		if r.is_null() {
+			vcraft.clear_error()
+			unsafe { *ptr = '' }
+			return
+		}
+		if r.type_name() == 'str' {
+			s := vcraft.from_py_string(r, 'token') or { '' }
+			r.decref()
+			unsafe { *ptr = s }
+			return
+		}
+		r.decref()
+		unsafe { *ptr = '' }
+	})
+	return cell
 }
 
 @[vc_fn]

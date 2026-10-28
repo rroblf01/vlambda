@@ -13,19 +13,7 @@ from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
 from vlambda.request import Request
-
-# Compiled code cache: code_str -> code object
-_code_cache: dict[str, Any] = {}
-_code_cache_lock = threading.Lock()
-
-
-def get_compiled(code: str):
-    with _code_cache_lock:
-        if code in _code_cache:
-            return _code_cache[code]
-        compiled, ns_template = make_sandbox(code, None)
-        _code_cache[code] = (compiled, ns_template)
-        return _code_cache[code]
+from vlambda.cache import get as get_compiled
 
 
 class Worker:

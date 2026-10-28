@@ -26,6 +26,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
+      - name: create venv
+        run: |
+          cd vlambda
+          python -m venv .venv
+
       - name: build vlambda
         uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:

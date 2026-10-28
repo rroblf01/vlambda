@@ -34,6 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: create venv
+        run: |
+          cd vlambda
+          python -m venv .venv
+
       - name: build the wheel
         uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:
@@ -62,11 +67,15 @@ jobs:
       - name: install vcraft
         run: python -m pip install "vcraft==1.7.0"
 
+      - name: install vcraft
+        run: python -m pip install "vcraft==1.7.0"
+
       - name: build the sdist
         run: |
           cd vlambda
           python -m venv .venv
           . .venv/bin/activate
+          python -m pip install "vcraft==1.7.0"
           vcraft sdist
 
       - name: upload the sdist

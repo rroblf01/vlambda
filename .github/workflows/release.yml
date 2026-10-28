@@ -110,6 +110,19 @@ jobs:
           . .venv/bin/activate
           pip install "vcraft==1.7.0"
           vcraft sdist
+          python - <<'PY'
+          import glob, gzip, io, tarfile
+          src = glob.glob("dist/*.tar.gz")[0]
+          dst = src + ".pax"
+          with tarfile.open(src, "r:gz") as tin:
+              with tarfile.open(dst, "w:gz", format=tarfile.PAX_FORMAT) as tout:
+                  for m in tin.getmembers():
+                      f = tin.extractfile(m)
+                      data = f.read() if f is not None else None
+                      tout.addfile(m, io.BytesIO(data) if data is not None else None)
+          import os
+          os.replace(dst, src)
+          PY
 
       - name: upload the sdist
         uses: actions/upload-artifact@v6

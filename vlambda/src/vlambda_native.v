@@ -99,12 +99,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 
 
-	// Route: /
+	// Route: / (serve UI dashboard)
 	if req.url == '/' || req.url == '' {
 		return http.Response{
 			status_code: 200
-			body: 'vlambda server running'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
+			body: get_ui_html()
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
 		}
 	}
 

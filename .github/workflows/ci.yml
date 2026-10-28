@@ -5,66 +5,34 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: python-${{ matrix.python-version }}
+    name: python-${{ matrix.python }}
     runs-on: ubuntu-latest
+    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.0
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.14", "3.15"]
+        include:
+          - python: "3.14"
+            interpreter: /opt/python/cp314-cp314/bin/python
+          - python: "3.15"
+            interpreter: /opt/python/cp315-cp315/bin/python
     steps:
       - uses: actions/checkout@v5
 
-      - name: set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
-
-      - name: restore V compiler
-        id: restore-v
-        uses: actions/cache@v5
-        with:
-          path: /tmp/v-src
-          key: v-36be92642c49a8fe9213ea4b96c6bf56b67b668c-6851aaf3f9e696b30b26e406f16095b0002acaab
-
-      - name: install V compiler
-        if: ${{ steps.restore-v.outputs.cache-hit != 'true' }}
-        env:
-          V_COMMIT: 36be92642c49a8fe9213ea4b96c6bf56b67b668c
-          VC_COMMIT: 6851aaf3f9e696b30b26e406f16095b0002acaab
-        run: |
-          git clone https://github.com/vlang/v.git /tmp/v-src
-          cd /tmp/v-src
-          git checkout $V_COMMIT
-          git clone https://github.com/vlang/vc.git vc
-          (cd vc && git checkout $VC_COMMIT)
-          make fresh_tcc
-          make local=1 "-j$(nproc)"
-
-      - name: put V on PATH
-        run: echo "/tmp/v-src" >> "$GITHUB_PATH"
-
-      - name: install vcraft
-        run: python -m pip install "vcraft==1.7.0"
-
-      - name: build vlambda
+      - name: build and test
+        working-directory: vlambda
         env:
           VCRAFT_NO_MEMORY_LIMIT: 1
         run: |
-          cd vlambda
-          python -m venv .venv
+          rm -rf .venv
+          ${{ matrix.interpreter }} -m venv .venv
           . .venv/bin/activate
-          pip install "vcraft==1.7.0"
           vcraft develop
-
-      - name: run tests
-        run: |
-          cd vlambda
-          . .venv/bin/activate
           python ../tests/test_vlambda.py

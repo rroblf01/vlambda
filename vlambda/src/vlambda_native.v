@@ -569,7 +569,7 @@ pub fn db_init(db_path string) bool {
 	mut db := init_db(db_path) or {
 		return false
 	}
-	db.close()
+	db.close() or {}
 	return true
 }
 
@@ -612,7 +612,7 @@ pub fn auth_verify_token(token string) int {
 @[vc_fn]
 pub fn db_create_lambda(slug string, name string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
-	defer { db.close() }
+	defer { db.close() or {} }
 	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?);',
 		[slug, name, code, method, owner_id.str(), '2026-01-01T00:00:00Z']) or { return false }
 	return true
@@ -621,7 +621,7 @@ pub fn db_create_lambda(slug string, name string, code string, method string, ow
 @[vc_fn]
 pub fn db_update_lambda(slug string, name string, code string, method string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
-	defer { db.close() }
+	defer { db.close() or {} }
 	db.exec_param_many('UPDATE lambdas SET name = ?, code = ?, method = ? WHERE slug = ? AND owner_id = ?;', [name, code, method, slug, owner_id.str()]) or { return false }
 	// Invalidate cache
 	vlambda_code_cache.delete(slug)
@@ -654,7 +654,7 @@ pub fn db_get_lambda_code(slug string) string {
 		return cached
 	}
 	mut db := init_db(vlambda_db_path) or { return '' }
-	defer { db.close() }
+	defer { db.close() or {} }
 	rows := db.exec_param('SELECT code, method FROM lambdas WHERE slug = ?;', slug) or { return '' }
 	if rows.len == 0 { return '' }
 	code := rows[0].vals[0] or { return '' }
@@ -667,7 +667,7 @@ pub fn db_get_lambda_code(slug string) string {
 @[vc_fn]
 pub fn db_get_lambda_name(slug string) string {
 	mut db := init_db(vlambda_db_path) or { return '' }
-	defer { db.close() }
+	defer { db.close() or {} }
 	rows := db.exec_param('SELECT name FROM lambdas WHERE slug = ?;', slug) or { return '' }
 	if rows.len == 0 { return '' }
 	return rows[0].vals[0] or { return '' }
@@ -676,7 +676,7 @@ pub fn db_get_lambda_name(slug string) string {
 @[vc_fn]
 pub fn db_delete_lambda(slug string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
-	defer { db.close() }
+	defer { db.close() or {} }
 	db.exec_param_many('DELETE FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { return false }
 	vlambda_code_cache.delete(slug)
 	return true
@@ -685,7 +685,7 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 @[vc_fn]
 pub fn db_list_lambdas(owner_id int) string {
 	mut db := init_db(vlambda_db_path) or { return '' }
-	defer { db.close() }
+	defer { db.close() or {} }
 	rows := db.exec_param('SELECT slug, name, method FROM lambdas WHERE owner_id = ?;', owner_id.str()) or { return '' }
 	mut out := ''
 	for row in rows {
@@ -700,7 +700,7 @@ pub fn db_list_lambdas(owner_id int) string {
 @[vc_fn]
 pub fn db_count_lambdas(owner_id int) int {
 	mut db := init_db(vlambda_db_path) or { return 0 }
-	defer { db.close() }
+	defer { db.close() or {} }
 	rows := db.exec_param('SELECT COUNT(*) FROM lambdas WHERE owner_id = ?;', owner_id.str()) or { return 0 }
 	if rows.len == 0 { return 0 }
 	n := rows[0].vals[0] or { return 0 }
@@ -710,7 +710,7 @@ pub fn db_count_lambdas(owner_id int) int {
 @[vc_fn]
 pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 	mut db := init_db(vlambda_db_path) or { return '' }
-	defer { db.close() }
+	defer { db.close() or {} }
 	mut lim := limit
 	mut off := offset
 	if lim <= 0 { lim = 50 }
@@ -997,7 +997,7 @@ pub fn start_server(port int, db_path string, num_coroutines int) int {
 		println('Failed to init DB: ${err}')
 		return 1
 	}
-	db.close()
+	db.close() or {}
 	println('vlambda server starting on port ${port}')
 	println('DB: ${db_path}, coroutines: ${num_coroutines}')
 

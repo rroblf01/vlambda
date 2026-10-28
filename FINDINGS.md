@@ -52,11 +52,16 @@ but the HTTP layer itself buffers.
 V's string `.split()` method takes a single separator string. This is fine
 but differs from Python's `str.split()` which takes maxsplit. Minor.
 
-## Performance (Iteration 1)
+## Performance
 
-- ~1ms/req, ~1000 req/s (exec-per-request, no pool).
-- Bottleneck: SQLite connection per request + Python exec per request.
-- Python 3.15: ~0.87ms/req, ~1150 req/s (slightly faster).
+| Build | ms/req | req/s |
+|-------|--------|-------|
+| 3.14 (GIL) | 1.04 | 964 |
+| 3.15 (GIL) | 0.87 | 1150 |
+| 3.15t (no GIL) | 1.03 | 973 |
+
+Bottleneck: SQLite connection per request + Python exec per request.
+Free-threading doesn't help (GIL isn't the bottleneck).
 
 ## Next iterations
 

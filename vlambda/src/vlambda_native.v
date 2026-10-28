@@ -139,6 +139,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /favicon.ico
+	if req.url == '/favicon.ico' {
+		icon := get_favicon()
+		return http.Response{
+			status_code: 200
+			body: icon
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'image/x-icon' })
+		}
+	}
+
 	// Route: /metrics
 	if req.url == '/metrics' {
 		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
@@ -725,6 +735,12 @@ pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memo
 	if cors_origin != '' { vlambda_cors_origin = cors_origin }
 	vlambda_cert_path = cert_path
 	vlambda_key_path = key_path
+}
+
+@[vc_fn]
+pub fn get_favicon() string {
+	data := os.read_file('/home/sheik/Documentos/vlambda/vlambda/python/vlambda/favicon.ico') or { return '' }
+	return data
 }
 
 @[vc_fn]

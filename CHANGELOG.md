@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-28
+
 ### Added
 - Async lambda invocation (`/async/<slug>`, `/task/<id>`)
 - Web UI dashboard (login, lambda management, code editor, metrics)
@@ -78,4 +80,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No cold starts (persistent process)
 
 [Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/rroblf01/vlambda/releases/tag/v0.1.0
 [0.1.0]: https://github.com/rroblf01/vlambda/releases/tag/v0.1.0

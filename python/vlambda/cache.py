@@ -87,37 +87,18 @@ def size() -> int:
         return len(_cache)
 
 
-# Response cache for idempotent GET requests
-import time as _time
-from collections import OrderedDict
-_RESP_CACHE: OrderedDict = OrderedDict()
-_RESP_CACHE_LOCK = threading.Lock()
-_RESP_CACHE_TTL = int(__import__("os").environ.get("VLAMBDA_RESP_CACHE_TTL", "5"))  # seconds
-_RESP_CACHE_MAX = int(__import__("os").environ.get("VLAMBDA_RESP_CACHE", "256"))
+# Response cache for idempotent GET requests.
+# Backed by the optional shared cache for horizontal scaling.
+from vlambda.shared_cache import get as _shared_get, set as _shared_set, clear as _shared_clear
 
 
 def get_response(key: str):
-    with _RESP_CACHE_LOCK:
-        entry = _RESP_CACHE.get(key)
-        if entry is None:
-            return None
-        val, expires = entry
-        if _time.time() > expires:
-            del _RESP_CACHE[key]
-            return None
-        _RESP_CACHE.move_to_end(key)
-        return val
+    return _shared_get(key)
 
 
 def set_response(key: str, value):
-    with _RESP_CACHE_LOCK:
-        if key in _RESP_CACHE:
-            _RESP_CACHE.move_to_end(key)
-        _RESP_CACHE[key] = (value, _time.time() + _RESP_CACHE_TTL)
-        if len(_RESP_CACHE) > _RESP_CACHE_MAX:
-            _RESP_CACHE.popitem(last=False)
+    _shared_set(key, value)
 
 
 def invalidate_responses():
-    with _RESP_CACHE_LOCK:
-        _RESP_CACHE.clear()
+    _shared_clear()

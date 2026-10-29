@@ -261,6 +261,22 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /ready
+	if req.url == '/ready' {
+		if vlambda_executor == unsafe { nil } {
+			return http.Response{
+				status_code: 503
+				body: '{"status": "not ready"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		return http.Response{
+			status_code: 200
+			body: '{"status": "ready"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /shutdown (POST)
 	if req.url == '/shutdown' && req.method == .post {
 		spawn fn () {

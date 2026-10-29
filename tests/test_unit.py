@@ -57,16 +57,20 @@ def test_cache_lru_eviction(monkeypatch):
 
 
 def test_response_cache_ttl(monkeypatch):
-    import vlambda.cache as cache
-    monkeypatch.setattr(cache, "_RESP_CACHE_TTL", 0)
+    from vlambda.shared_cache import clear as _clear
+    _clear()
+    import vlambda.shared_cache as sc
+    monkeypatch.setattr(sc, "_TTL", 0)
     set_response("k", "value")
     time.sleep(0.01)
     assert get_response("k") is None
 
 
 def test_response_cache_eviction(monkeypatch):
-    import vlambda.cache as cache
-    monkeypatch.setattr(cache, "_RESP_CACHE_MAX", 2)
+    from vlambda.shared_cache import clear as _clear
+    _clear()
+    import vlambda.shared_cache as sc
+    monkeypatch.setattr(sc, "_MAX_ENTRIES", 2)
     set_response("a", "1")
     set_response("b", "2")
     set_response("c", "3")

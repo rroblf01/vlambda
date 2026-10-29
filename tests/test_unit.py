@@ -123,3 +123,46 @@ def test_delete_project(tmp_path):
     (proj / "main.py").write_text("def handler(request): return 1\n")
     delete_project(str(proj))
     assert not proj.exists()
+
+
+def test_auth_token_roundtrip():
+    from vlambda.auth import create_token, verify_token
+    token = create_token(42, "alice")
+    data = verify_token(token)
+    assert data is not None
+    assert data["sub"] == "42"
+    assert data["username"] == "alice"
+
+
+def test_auth_bad_token():
+    from vlambda.auth import verify_token
+    assert verify_token("not-a-token") is None
+    assert verify_token("a.b.c") is None
+
+
+def test_tasks_create_and_get():
+    from vlambda.tasks import create_task, get_task
+    pool = None
+    # create_task expects pool with execute; use a dummy
+    class DummyPool:
+        def execute(self, *a, **k):
+            return {"ok": True}
+    tid = create_task("code", "GET", "/", "", b"", DummyPool())
+    task = get_task(tid)
+    assert task is not None
+    assert task["status"] in ("pending", "completed")
+    time.sleep(0.2)
+    task = get_task(tid)
+    assert task["status"] == "completed"
+
+
+def test_project_safe_extract_zip_slip():
+    import io, zipfile
+    from vlambda.project import _safe_extract
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("../evil.py", "x=1")
+    buf.seek(0)
+    zf = zipfile.ZipFile(buf)
+    with pytest.raises(ValueError):
+        _safe_extract(zf, tempfile.mkdtemp())

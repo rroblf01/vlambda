@@ -37,17 +37,45 @@ def _safe_extract(zf: zipfile.ZipFile, dest: str):
             shutil.copyfileobj(src, dst)
 
 
-def _install_requirements(project_dir: str):
+def _collect_dependencies(project_dir: str) -> list[str]:
+    deps: list[str] = []
     req = os.path.join(project_dir, "requirements.txt")
-    if not os.path.exists(req):
+    if os.path.exists(req):
+        with open(req, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    deps.append(line)
+    pyproject = os.path.join(project_dir, "pyproject.toml")
+    if os.path.exists(pyproject):
+        try:
+            import tomllib
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+            project = data.get("project", {})
+            deps.extend(project.get("dependencies", []) or [])
+            optional = project.get("optional-dependencies", {}) or {}
+            for group in optional.values():
+                deps.extend(group or [])
+        except Exception:
+            # Fall back to installing the project itself if parsing fails.
+            deps.append(".")
+    return deps
+
+
+def _install_dependencies(project_dir: str):
+    vendor = os.path.join(project_dir, "vendor")
+    os.makedirs(vendor, exist_ok=True)
+    deps = _collect_dependencies(project_dir)
+    if not deps:
         return
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", req],
-        check=True,
-        timeout=300,
-        capture_output=True,
-        text=True,
-    )
+    # Prefer uv for fast, reproducible installs into an isolated vendor dir.
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [uv, "pip", "install", "--target", vendor, *deps]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--target", vendor, *deps]
+    subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
 
 
 def _module_name(project_dir: str, entrypoint: str) -> str:
@@ -64,8 +92,9 @@ def _load_handler(project_dir: str, entrypoint: str):
     full = os.path.join(project_dir, entrypoint)
     if not os.path.exists(full):
         raise FileNotFoundError(f"entrypoint not found: {entrypoint}")
-    if project_dir not in sys.path:
-        sys.path.insert(0, project_dir)
+    for path in (project_dir, os.path.join(project_dir, "vendor")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
     name = _module_name(project_dir, entrypoint)
     spec = importlib.util.spec_from_file_location(name, full)
     if spec is None or spec.loader is None:
@@ -110,7 +139,7 @@ def create_project(zip_b64: str, entrypoint: str, name: str, method: str, owner_
                 if os.path.exists(os.path.join(project_dir, candidate)):
                     entrypoint = candidate
                     break
-        _install_requirements(project_dir)
+        _install_dependencies(project_dir)
         import vlambda_native
 
         ok = vlambda_native.db_create_project(slug, name, method or "GET", entrypoint, project_dir, owner_id)

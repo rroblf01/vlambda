@@ -190,7 +190,33 @@ def test_metrics_history():
     assert status == 200
     assert "items" in body
 
+def test_concurrency():
+    import threading
+    token, slug = test_create_invoke()
+    results = []
+    lock = threading.Lock()
+
+    def worker():
+        for _ in range(5):
+            try:
+                status, body = req("GET", f"/f/{slug}")
+                with lock:
+                    results.append((status, body))
+            except Exception as e:
+                with lock:
+                    results.append(("ERR", str(e)))
+
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=30)
+    assert all(not th.is_alive() for th in threads)
+    assert len(results) == 100
+    assert all(r[0] != "ERR" for r in results)
+
 def test_rate_limit():
+    time.sleep(3.0)
     # default 100 req/s; send enough to trigger 429
     token, slug = test_create_invoke()
     codes = []
@@ -212,7 +238,7 @@ if __name__ == "__main__":
     tests = [test_health, test_register_login, test_create_invoke, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
-             test_async_task, test_metrics_history, test_sandbox_blocked, test_rate_limit]
+             test_async_task, test_metrics_history, test_sandbox_blocked, test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:
         try:

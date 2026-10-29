@@ -215,6 +215,31 @@ def test_concurrency():
     assert len(results) == 100
     assert all(r[0] != "ERR" for r in results)
 
+def test_alias_version():
+    token = test_register_login()
+    status, body = req("POST", "/vlambda", "def handler(request): return {\"msg\": \"v1\"}", token)
+    assert status == 201
+    slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{slug}", "def handler(request): return {\"msg\": \"v2\"}", token)
+    assert status == 200
+    status, body = req("POST", f"/vlambda/{slug}/alias?name=prod&version=1", token=token)
+    assert status == 201
+    status, body = req("GET", f"/f/{slug}")
+    assert body["msg"] == "v2"
+    status, body = req("GET", f"/f/{slug}?alias=prod")
+    assert body["msg"] == "v1"
+
+
+def test_metrics_stats():
+    token, slug = test_create_invoke()
+    req("GET", f"/f/{slug}")
+    time.sleep(1.2)
+    status, body = req("GET", "/metrics/stats?days=1")
+    assert status == 200
+    assert "count" in body
+    assert body["count"] >= 1
+
+
 def test_rate_limit():
     time.sleep(3.0)
     # default 100 req/s; send enough to trigger 429
@@ -238,7 +263,8 @@ if __name__ == "__main__":
     tests = [test_health, test_register_login, test_create_invoke, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
-             test_async_task, test_metrics_history, test_sandbox_blocked, test_concurrency, test_rate_limit]
+             test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
+             test_sandbox_blocked, test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:
         try:

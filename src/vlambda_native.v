@@ -714,6 +714,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		code := if parts.len > 0 { parts[0] } else { '' }
 		method := if parts.len > 1 { parts[1] } else { 'GET' }
 		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
+		memory_mb := if parts.len > 3 { parts[3].int() } else { 0 }
 		// Check method
 		if method != req.method.str() {
 			return http.Response{
@@ -730,7 +731,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		vlambda_request_counter++
 		request_id := 'req-${vlambda_request_counter}'
-		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout)
+		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout, memory_mb)
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
@@ -1202,10 +1203,10 @@ fn body_to_py_bytes(body string) vcraft.PyObj {
 	}
 }
 
-pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int) string {
+pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int) string {
 	vlambda_result_str = '{"error": "not started"}'
 	start_time := time.now()
-	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, start_time] () {
+	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, memory_mb, start_time] () {
 		if vlambda_executor == unsafe { nil } {
 			vlambda_result_str = '{"error": "no executor registered"}'
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
@@ -1217,7 +1218,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			}
 			return
 		}
-		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr]
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {

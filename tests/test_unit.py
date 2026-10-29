@@ -86,7 +86,7 @@ def test_pool_basic():
 def test_metrics_persistence(tmp_path):
     db = str(tmp_path / "metrics.db")
     metrics_init(db, 1)
-    record("slug1", "GET", "/f/x", 1.5, "")
+    record("req1", "slug1", "GET", "/f/x", 1.5, "")
     close()
     # reopen
     metrics_init(db, 1)
@@ -166,3 +166,23 @@ def test_project_safe_extract_zip_slip():
     zf = zipfile.ZipFile(buf)
     with pytest.raises(ValueError):
         _safe_extract(zf, tempfile.mkdtemp())
+
+
+def test_dlq_records_failed_task(monkeypatch):
+    import os
+    os.environ["VLAMBDA_TASK_RETRIES"] = "1"
+    os.environ["VLAMBDA_TASK_RETRY_DELAY"] = "0.01"
+    from vlambda import tasks
+    before = len(tasks.get_dlq())
+
+    class FailingPool:
+        def execute(self, *a, **k):
+            raise RuntimeError("boom")
+
+    tid = tasks.create_task("code", "GET", "/", "", b"", FailingPool())
+    time.sleep(0.5)
+    task = tasks.get_task(tid)
+    assert task is not None
+    assert task["status"] == "failed"
+    dlq = tasks.get_dlq()
+    assert len(dlq) >= before + 1

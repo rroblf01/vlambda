@@ -53,7 +53,12 @@ class Worker:
 
     _SINGLE_FLIGHT = __import__("os").environ.get("VLAMBDA_SINGLE_FLIGHT", "0") == "1"
 
-    def submit(self, code, method, path, query, body, timeout=0) -> Any:
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0) -> Any:
+        if memory_mb and memory_mb > 0:
+            import resource
+            usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+            if usage > memory_mb * 1024 * 1024:
+                return {"error": "memory quota exceeded"}
         if not Worker._SINGLE_FLIGHT:
             result_queue = queue.Queue(1)
             try:
@@ -114,7 +119,7 @@ class Pool:
         self._lock = threading.Lock()
         self._counter = itertools.count()
 
-    def execute(self, code, method, path, query, body, timeout=0) -> Any:
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0) -> Any:
         # Auto-scale: if queue is deep, add a worker up to the configured cap.
         with self._lock:
             if len(self._workers) < self._max_workers and self._queue_depth() > len(self._workers) * 2:
@@ -122,7 +127,7 @@ class Pool:
             workers = list(self._workers)
         # Atomic round-robin selection without holding the lock during submit.
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb)
 
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)

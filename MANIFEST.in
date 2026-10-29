@@ -1,2 +1,3 @@
 include python/vlambda/ui.html
 include python/vlambda/favicon.ico
+recursive-include python/vlambda/static *

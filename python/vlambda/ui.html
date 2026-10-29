@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>vlambda</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/assets/app.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; }
@@ -101,8 +101,7 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
       </div>
       <div class="form-group">
         <label>Python Code</label>
-        <textarea id="code-input">def handler(request):
-    return {"msg": "hello", "path": request.path}</textarea>
+        <div id="code-input" style="border:1px solid #30363d;border-radius:6px;overflow:hidden;"></div>
       </div>
       <div class="flex">
         <button class="btn btn-primary" onclick="createLambda()">Create</button>
@@ -140,7 +139,7 @@ pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddin
       </div>
       <div class="form-group">
         <label>Code</label>
-        <textarea id="editor-code"></textarea>
+        <div id="editor-code" style="border:1px solid #30363d;border-radius:6px;overflow:hidden;min-height:200px;"></div>
       </div>
       <div class="flex mb">
         <button class="btn btn-primary" onclick="saveLambda()">Save</button>
@@ -299,7 +298,7 @@ function hideCreate() {
 }
 
 async function createLambda() {
-  const code = document.getElementById('code-input').value;
+  const code = getCodeValue('code-input');
   const method = document.getElementById('method-select').value;
   const name = document.getElementById('name-input').value;
   try {
@@ -332,7 +331,7 @@ async function editLambda(slug) {
     const resp = await fetch(API + '/vlambda/' + slug, { headers: { 'Authorization': 'Bearer ' + token } });
     if (resp.ok) {
       const code = await resp.text();
-      document.getElementById('editor-code').value = code;
+      setCodeValue('editor-code', code);
     } else {
       document.getElementById('editor-code').value = '';
       showAlert('editor-alert', 'Failed to load code', 'error');
@@ -344,7 +343,7 @@ async function editLambda(slug) {
 }
 
 async function saveLambda() {
-  const code = document.getElementById('editor-code').value;
+  const code = getCodeValue('editor-code');
   const method = document.getElementById('editor-method').value;
   const name = document.getElementById('editor-name').value;
   try {
@@ -365,7 +364,7 @@ async function saveLambda() {
 }
 
 async function runLambda() {
-  const code = document.getElementById('editor-code').value;
+  const code = getCodeValue('editor-code');
   const resultDiv = document.getElementById('run-result');
   resultDiv.innerHTML = '<pre>Running...</pre>';
   const method = document.getElementById('editor-method').value;
@@ -475,7 +474,63 @@ async function loadMetrics() {
   }
 }
 
+let codeEditor = null;
+let editorCodeView = null;
+
+function initEditors() {
+  const createEl = document.getElementById('code-input');
+  if (createEl && !createEl._cm) {
+    createEl._cm = VLambdaEditor.createEditor(createEl, 'def handler(request):\n    return {"msg": "hello", "path": request.path}');
+  }
+  const editorEl = document.getElementById('editor-code');
+  if (editorEl && !editorEl._cm) {
+    editorEl._cm = VLambdaEditor.createEditor(editorEl, '');
+  }
+}
+
+function getCodeValue(id) {
+  const el = document.getElementById(id);
+  return el && el._cm ? VLambdaEditor.getValue(el._cm) : (el ? el.value : '');
+}
+
+function setCodeValue(id, text) {
+  const el = document.getElementById(id);
+  if (el && el._cm) VLambdaEditor.setValue(el._cm, text);
+  else if (el) el.value = text;
+}
+
+// Wrap existing functions
+const _showCreate = showCreate;
+showCreate = function() { _showCreate(); initEditors(); };
+const _editLambda = editLambda;
+editLambda = async function(slug) {
+  await _editLambda(slug);
+  initEditors();
+  const code = document.getElementById('editor-code').value;
+  if (code && code !== 'Loading...') setCodeValue('editor-code', code);
+};
+
+const _createLambda = createLambda;
+createLambda = async function() {
+  const code = getCodeValue('code-input');
+  document.getElementById('code-input').value = code;
+  await _createLambda();
+};
+
+const _saveLambda = saveLambda;
+saveLambda = async function() {
+  document.getElementById('editor-code').value = getCodeValue('editor-code');
+  await _saveLambda();
+};
+
+const _runLambda = runLambda;
+runLambda = async function() {
+  document.getElementById('editor-code').value = getCodeValue('editor-code');
+  await _runLambda();
+};
+
 checkAuth();
+setTimeout(initEditors, 0);
 </script>
 </body>
 </html>

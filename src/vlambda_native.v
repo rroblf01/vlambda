@@ -20,9 +20,13 @@ __global (
 	vlambda_favicon = voidptr(0)
 	vlambda_create_task = voidptr(0)
 	vlambda_get_task = voidptr(0)
+	vlambda_get_asset = voidptr(0)
 	vlambda_get_dlq = voidptr(0)
 	vlambda_record_metric = voidptr(0)
 	vlambda_query_metrics = voidptr(0)
+	vlambda_query_summary = voidptr(0)
+	vlambda_export_metrics = voidptr(0)
+	vlambda_pool_stats = voidptr(0)
 	vlambda_query_stats = voidptr(0)
 	vlambda_run_project = voidptr(0)
 	vlambda_create_project = voidptr(0)
@@ -299,6 +303,31 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /assets/<name>
+	if req.url.starts_with('/assets/') {
+		mut name := req.url[8..]
+		qi := name.index('?') or { name.len }
+		name = name[..qi]
+		body := get_asset(name)
+		if body == '' {
+			return http.Response{
+				status_code: 404
+				body: 'asset not found'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
+			}
+		}
+		mut ctype := 'application/octet-stream'
+		if name.ends_with('.js') { ctype = 'application/javascript' }
+		if name.ends_with('.css') { ctype = 'text/css' }
+		if name.ends_with('.html') { ctype = 'text/html' }
+		if name.ends_with('.ico') { ctype = 'image/x-icon' }
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: ctype })
+		}
+	}
+
 	// Route: /favicon.ico
 	if req.url == '/favicon.ico' {
 		icon := get_favicon()
@@ -429,6 +458,112 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+
+	// Route: /metrics/summary (aggregated persisted metrics)
+	if req.url.starts_with('/metrics/summary') {
+		mut days := 7
+		mut slug := ''
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('slug=') { slug = part.all_after('=') }
+			}
+		}
+		mut body := '{"days": ${days}, "items": []}'
+		ptr := &body
+		if vlambda_query_summary != unsafe { nil } {
+			vcraft.with_gil(fn [days, slug, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_query_summary, args)
+				vcraft.borrow(args[0]).decref()
+				vcraft.borrow(args[1]).decref()
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "items": []}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Route: /metrics/export (CSV)
+	if req.url.starts_with('/metrics/export') {
+		mut days := 7
+		mut slug := ''
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('slug=') { slug = part.all_after('=') }
+			}
+		}
+		mut body := ''
+		ptr := &body
+		if vlambda_export_metrics != unsafe { nil } {
+			vcraft.with_gil(fn [days, slug, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_export_metrics, args)
+				vcraft.borrow(args[0]).decref()
+				vcraft.borrow(args[1]).decref()
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/csv' })
+		}
+	}
+
+	// Route: /pool/stats
+	if req.url == '/pool/stats' {
+		mut body := '{}'
+		ptr := &body
+		if vlambda_pool_stats != unsafe { nil } {
+			vcraft.with_gil(fn [ptr] () {
+				args := []voidptr{}
+				r := vcraft.call(vlambda_pool_stats, args)
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
 
 	// Extract auth token from header
 	mut auth_token := ''
@@ -934,7 +1069,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	return http.Response{
 		status_code: 404
-		body: 'not found'
+		body: 'asset not found'
 		header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
 	}
 }
@@ -1415,6 +1550,7 @@ pub fn get_favicon() string {
 		r := vcraft.call(vlambda_favicon, args)
 		if r.is_null() {
 			vcraft.clear_error()
+			unsafe { *ptr = 'NULL_RESULT' }
 			return
 		}
 		if r.type_name() == 'bytes' {
@@ -1454,6 +1590,21 @@ pub fn register_query_metrics(cb voidptr) {
 }
 
 @[vc_fn]
+pub fn register_query_summary(cb voidptr) {
+	vlambda_query_summary = cb
+}
+
+@[vc_fn]
+pub fn register_export_metrics(cb voidptr) {
+	vlambda_export_metrics = cb
+}
+
+@[vc_fn]
+pub fn register_pool_stats(cb voidptr) {
+	vlambda_pool_stats = cb
+}
+
+@[vc_fn]
 pub fn register_query_stats(cb voidptr) {
 	vlambda_query_stats = cb
 }
@@ -1489,6 +1640,11 @@ pub fn register_favicon(cb voidptr) {
 }
 
 @[vc_fn]
+pub fn register_get_asset(cb voidptr) {
+	vlambda_get_asset = cb
+}
+
+@[vc_fn]
 pub fn register_ui_html(cb voidptr) {
 	vlambda_ui_html = cb
 }
@@ -1512,6 +1668,7 @@ pub fn create_task_async(code string, method string, path string, query string, 
 			unsafe { *ptr = ss }
 			return
 		}
+		unsafe { *ptr = 'TYPE_' + r.type_name() }
 		r.decref()
 	})
 	return cell
@@ -1536,6 +1693,37 @@ pub fn get_task_status(task_id string) string {
 			unsafe { *ptr = ss }
 			return
 		}
+		r.decref()
+	})
+	return cell
+}
+
+@[vc_fn]
+pub fn get_asset(name string) string {
+	if vlambda_get_asset == unsafe { nil } { return 'NIL_CALLBACK' }
+	mut cell := ''
+	ptr := &cell
+	vcraft.with_gil(fn [name, ptr] () {
+		args := [vcraft.to_py_string(name).ptr]
+		r := vcraft.call(vlambda_get_asset, args)
+		vcraft.borrow(args[0]).decref()
+		if r.is_null() {
+			vcraft.clear_error()
+			return
+		}
+		if r.type_name() == 'bytes' {
+			ss := vcraft.from_py_bytes(r, 'asset') or { 'FROM_BYTES_ERR' }
+			r.decref()
+			unsafe { *ptr = ss + '' }
+			return
+		}
+		if r.type_name() == 'str' {
+			ss := vcraft.from_py_string(r, 'asset') or { 'FROM_STR_ERR' }
+			r.decref()
+			unsafe { *ptr = ss + '' }
+			return
+		}
+		unsafe { *ptr = 'TYPE_' + r.type_name() }
 		r.decref()
 	})
 	return cell

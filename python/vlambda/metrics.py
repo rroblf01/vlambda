@@ -6,6 +6,8 @@ background thread, so request handling is not blocked by disk writes.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import queue
@@ -25,10 +27,12 @@ _lock = threading.Lock()
 _stop = threading.Event()
 _worker: threading.Thread | None = None
 _last_cleanup = 0.0
+_last_rollup = 0.0
+_seen_slugs: set[str] = set()
 
 
 def init(db_path: str | None = None, retention_days: int | None = None):
-    global _DB_PATH, _RETENTION_DAYS, _conn, _worker, _last_cleanup
+    global _DB_PATH, _RETENTION_DAYS, _conn, _worker, _last_cleanup, _last_rollup
     if db_path is not None:
         _DB_PATH = db_path
     if retention_days is not None:
@@ -41,6 +45,14 @@ def init(db_path: str | None = None, retention_days: int | None = None):
                 _conn.execute("ALTER TABLE metrics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
+            try:
+                _conn.execute("ALTER TABLE metrics ADD COLUMN error_type TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                _conn.execute("ALTER TABLE metrics ADD COLUMN cold_start INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
             _conn.execute(
                 "CREATE TABLE IF NOT EXISTS metrics ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -50,22 +62,42 @@ def init(db_path: str | None = None, retention_days: int | None = None):
                 "method TEXT NOT NULL,"
                 "path TEXT NOT NULL,"
                 "latency_ms REAL NOT NULL,"
-                "error TEXT NOT NULL DEFAULT ''"
+                "error TEXT NOT NULL DEFAULT '',"
+                "error_type TEXT NOT NULL DEFAULT '',"
+                "cold_start INTEGER NOT NULL DEFAULT 0"
                 ")"
             )
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts)")
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_slug ON metrics(slug)")
+            _conn.execute(
+                "CREATE TABLE IF NOT EXISTS metrics_daily ("
+                "day TEXT NOT NULL,"
+                "slug TEXT NOT NULL,"
+                "requests INTEGER NOT NULL,"
+                "errors INTEGER NOT NULL,"
+                "avg_latency_ms REAL NOT NULL,"
+                "p95_latency_ms REAL NOT NULL,"
+                "cold_starts INTEGER NOT NULL,"
+                "PRIMARY KEY (day, slug)"
+                ")"
+            )
             _conn.commit()
     if _worker is None or not _worker.is_alive():
         _stop.clear()
         _worker = threading.Thread(target=_run, daemon=True)
         _worker.start()
     _last_cleanup = time.time()
+    _last_rollup = time.time()
 
 
 def record(request_id: str, slug: str, method: str, path: str, latency_ms: float, error: str = ""):
+    cold_start = 0
+    if slug not in _seen_slugs:
+        _seen_slugs.add(slug)
+        cold_start = 1
+    error_type = error.split(":")[0].split()[0] if error else ""
     try:
-        _queue.put_nowait((time.time(), request_id, slug, method, path, latency_ms, error))
+        _queue.put_nowait((time.time(), request_id, slug, method, path, latency_ms, error, error_type, cold_start))
     except queue.Full:
         pass
 
@@ -75,10 +107,54 @@ def _flush(batch: list[tuple]):
         return
     with _lock:
         _conn.executemany(
-            "INSERT INTO metrics (ts, request_id, slug, method, path, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO metrics (ts, request_id, slug, method, path, latency_ms, error, error_type, cold_start) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             batch,
         )
         _conn.commit()
+
+
+def _rollup():
+    global _last_rollup
+    if _conn is None:
+        return
+    cutoff = time.time() - 86400
+    with _lock:
+        rows = _conn.execute(
+            "SELECT substr(datetime(ts, 'unixepoch'), 1, 10), slug, latency_ms, error, cold_start FROM metrics WHERE ts < ?",
+            (cutoff,),
+        ).fetchall()
+    if not rows:
+        _last_rollup = time.time()
+        return
+    grouped: dict[tuple[str, str], list[tuple]] = {}
+    for day, slug, latency, error, cold in rows:
+        grouped.setdefault((day, slug), []).append((latency, error, cold))
+    with _lock:
+        for (day, slug), values in grouped.items():
+            latencies = sorted(v[0] for v in values)
+            n = len(latencies)
+            p95 = latencies[min(n - 1, int((n - 1) * 0.95))] if n else 0.0
+            _conn.execute(
+                "INSERT INTO metrics_daily (day, slug, requests, errors, avg_latency_ms, p95_latency_ms, cold_starts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(day, slug) DO UPDATE SET "
+                "requests=requests+excluded.requests, errors=errors+excluded.errors, "
+                "avg_latency_ms=(avg_latency_ms*requests+excluded.avg_latency_ms*excluded.requests)/(requests+excluded.requests), "
+                "p95_latency_ms=excluded.p95_latency_ms, cold_starts=cold_starts+excluded.cold_starts",
+                (
+                    day,
+                    slug,
+                    n,
+                    sum(1 for v in values if v[1]),
+                    sum(v[0] for v in values) / n,
+                    p95,
+                    sum(v[2] for v in values),
+                ),
+            )
+        _conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff,))
+        _conn.commit()
+    _last_rollup = time.time()
 
 
 def _cleanup():
@@ -88,12 +164,13 @@ def _cleanup():
     cutoff = time.time() - _RETENTION_DAYS * 86400
     with _lock:
         _conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff,))
+        _conn.execute("DELETE FROM metrics_daily WHERE day < date(?, 'unixepoch')", (cutoff,))
         _conn.commit()
     _last_cleanup = time.time()
 
 
 def _run():
-    global _last_cleanup
+    global _last_cleanup, _last_rollup
     batch: list[tuple] = []
     last_flush = time.time()
     while not _stop.is_set():
@@ -107,18 +184,22 @@ def _run():
             _flush(batch)
             batch = []
             last_flush = now
+            if now - _last_rollup >= 3600:
+                _rollup()
             if now - _last_cleanup >= 3600:
                 _cleanup()
     if batch:
         _flush(batch)
+    _rollup()
+    _cleanup()
 
 
 def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     if _conn is None:
-        return {"days": days, "items": []}
+        return {"days": days, "count": 0, "items": []}
     cutoff = time.time() - days * 86400
     sql = (
-        "SELECT ts, request_id, slug, method, path, latency_ms, error FROM metrics "
+        "SELECT ts, request_id, slug, method, path, latency_ms, error, error_type, cold_start FROM metrics "
         "WHERE ts >= ?"
     )
     params: list[Any] = [cutoff]
@@ -137,17 +218,72 @@ def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
             "path": r[4],
             "latency_ms": r[5],
             "error": r[6],
+            "error_type": r[7],
+            "cold_start": bool(r[8]),
         }
         for r in rows
     ]
     return {"days": days, "count": len(items), "items": items}
 
 
+def summary(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+    if _conn is None:
+        return {"days": days, "items": []}
+    cutoff = time.time() - days * 86400
+    cutoff_day = time.strftime("%Y-%m-%d", time.gmtime(cutoff))
+    sql = (
+        "SELECT day, slug, requests, errors, avg_latency_ms, p95_latency_ms, cold_starts "
+        "FROM metrics_daily WHERE day >= ?"
+    )
+    params: list[Any] = [cutoff_day]
+    if slug:
+        sql += " AND slug = ?"
+        params.append(slug)
+    sql += " ORDER BY day DESC, slug"
+    with _lock:
+        rows = _conn.execute(sql, params).fetchall()
+    items = [
+        {
+            "day": r[0],
+            "slug": r[1],
+            "requests": r[2],
+            "errors": r[3],
+            "avg_latency_ms": r[4],
+            "p95_latency_ms": r[5],
+            "cold_starts": r[6],
+        }
+        for r in rows
+    ]
+    return {"days": days, "count": len(items), "items": items}
+
+
+def export_csv(days: int = 1, slug: str | None = None) -> str:
+    data = query(days, slug)
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["ts", "request_id", "slug", "method", "path", "latency_ms", "error", "error_type", "cold_start"])
+    for item in data["items"]:
+        writer.writerow(
+            [
+                item["ts"],
+                item["request_id"],
+                item["slug"],
+                item["method"],
+                item["path"],
+                item["latency_ms"],
+                item["error"],
+                item["error_type"],
+                int(item["cold_start"]),
+            ]
+        )
+    return out.getvalue()
+
+
 def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     if _conn is None:
-        return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0}
+        return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0, "cold_starts": 0}
     cutoff = time.time() - days * 86400
-    sql = "SELECT latency_ms, error FROM metrics WHERE ts >= ?"
+    sql = "SELECT latency_ms, error, cold_start FROM metrics WHERE ts >= ?"
     params: list[Any] = [cutoff]
     if slug:
         sql += " AND slug = ?"
@@ -156,9 +292,10 @@ def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         rows = _conn.execute(sql, params).fetchall()
     latencies = sorted(r[0] for r in rows)
     errors = sum(1 for r in rows if r[1])
+    cold_starts = sum(r[2] for r in rows)
     n = len(latencies)
     if n == 0:
-        return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0}
+        return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0, "cold_starts": 0}
 
     def pct(p: float) -> float:
         idx = min(n - 1, int((n - 1) * p))
@@ -172,6 +309,7 @@ def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         "p95_ms": pct(0.95),
         "p99_ms": pct(0.99),
         "errors": errors,
+        "cold_starts": cold_starts,
     }
 
 

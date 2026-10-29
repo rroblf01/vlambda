@@ -132,6 +132,13 @@ class Pool:
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)
 
+    def stats(self):
+        return {
+            "workers": len(self._workers),
+            "max_workers": self._max_workers,
+            "queue_depth": self._queue_depth(),
+        }
+
     def stop(self):
         for w in self._workers:
             w.stop()

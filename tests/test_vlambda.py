@@ -216,6 +216,7 @@ def test_concurrency():
     assert all(r[0] != "ERR" for r in results)
 
 def test_alias_version():
+    time.sleep(2.0)
     token = test_register_login()
     status, body = req("POST", "/vlambda", "def handler(request): return {\"msg\": \"v1\"}", token)
     assert status == 201

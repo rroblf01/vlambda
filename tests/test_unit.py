@@ -1,0 +1,125 @@
+import os
+import tempfile
+import zipfile
+import io
+import time
+
+import pytest
+
+from vlambda.sandbox import make_sandbox, make_namespace, blocked_import, SAFE_BUILTINS
+from vlambda.cache import get as get_compiled, get_response, set_response, invalidate, clear
+from vlambda.pool import Pool
+from vlambda.metrics import init as metrics_init, record, query, close
+from vlambda.project import _safe_extract, _load_handler, delete_project
+
+
+def test_sandbox_safe_builtin():
+    compiled, ns = make_sandbox("def handler(request): return abs(-5)", None)
+    exec(compiled, ns)
+    assert ns["handler"](None) == 5
+
+
+def test_sandbox_blocked_module():
+    with pytest.raises(ImportError):
+        blocked_import("os")
+    with pytest.raises(ImportError):
+        blocked_import("subprocess")
+
+
+def test_sandbox_compile_error():
+    with pytest.raises(SyntaxError):
+        make_sandbox("def handler(request) return 1", None)
+
+
+def test_sandbox_missing_handler():
+    compiled, ns = make_sandbox("x = 1", None)
+    exec(compiled, ns)
+    assert ns.get("handler") is None
+
+
+def test_cache_basic():
+    code = "def handler(request): return 42"
+    compiled, ns, handler = get_compiled(code)
+    assert handler is not None
+    assert handler(None) == 42
+
+
+def test_cache_lru_eviction(monkeypatch):
+    import vlambda.cache as cache
+    monkeypatch.setattr(cache, "_MAX_SIZE", 2)
+    clear()
+    h1 = get_compiled("def handler(request): return 1")[2]
+    h2 = get_compiled("def handler(request): return 2")[2]
+    h3 = get_compiled("def handler(request): return 3")[2]
+    # First should be evicted
+    assert get_compiled("def handler(request): return 1")[2] is not h1
+    clear()
+
+
+def test_response_cache_ttl(monkeypatch):
+    import vlambda.cache as cache
+    monkeypatch.setattr(cache, "_RESP_CACHE_TTL", 0)
+    set_response("k", "value")
+    time.sleep(0.01)
+    assert get_response("k") is None
+
+
+def test_response_cache_eviction(monkeypatch):
+    import vlambda.cache as cache
+    monkeypatch.setattr(cache, "_RESP_CACHE_MAX", 2)
+    set_response("a", "1")
+    set_response("b", "2")
+    set_response("c", "3")
+    assert get_response("a") is None
+    assert get_response("c") == "3"
+
+
+def test_pool_basic():
+    pool = Pool(2)
+    code = "def handler(request): return request.path.upper()"
+    from vlambda.request import Request
+    res = pool.execute(code, "GET", "/abc", "", b"")
+    assert res == "/ABC"
+    pool.stop()
+
+
+def test_metrics_persistence(tmp_path):
+    db = str(tmp_path / "metrics.db")
+    metrics_init(db, 1)
+    record("slug1", "GET", "/f/x", 1.5, "")
+    close()
+    # reopen
+    metrics_init(db, 1)
+    data = query(1)
+    assert data["count"] >= 1
+    assert data["items"][0]["slug"] == "slug1"
+    close()
+
+
+def test_safe_extract_rejects_traversal():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("../evil.py", "x = 1")
+    buf.seek(0)
+    zf = zipfile.ZipFile(buf)
+    dest = tempfile.mkdtemp()
+    with pytest.raises(ValueError):
+        _safe_extract(zf, dest)
+
+
+def test_project_load_handler(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "main.py").write_text("def handler(request): return {'ok': True}\n")
+    (proj / "utils.py").write_text("def shout(x): return x.upper()\n")
+    handler = _load_handler(str(proj), "main.py")
+    from vlambda.request import Request
+    assert handler(Request()) == {"ok": True}
+
+
+def test_delete_project(tmp_path):
+    proj = tmp_path / "proj2"
+    proj.mkdir()
+    (proj / "main.py").write_text("def handler(request): return 1\n")
+    delete_project(str(proj))
+    assert not proj.exists()

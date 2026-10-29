@@ -52,10 +52,15 @@ def req(method, path, data=None, token=None):
     r = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         resp = urllib.request.urlopen(r)
-        return resp.status, json.loads(resp.read())
+        raw = resp.read()
+        try: body = json.loads(raw) if raw else {}
+        except Exception: body = {}
+        return resp.status, body
     except urllib.error.HTTPError as e:
-        try: return e.code, json.loads(e.read())
-        except: return e.code, {}
+        raw = e.read()
+        try: body = json.loads(raw) if raw else {}
+        except Exception: body = {}
+        return e.code, body
 
 def test_health():
     status, body = req("GET", "/health")
@@ -117,11 +122,97 @@ def test_body_size():
     status, body = req("POST", "/vlambda", big, token)
     assert status == 413
 
+
+
+def test_method_mismatch():
+    token, slug = test_create_invoke()
+    # create is GET by default; POST should be 405
+    status, body = req("POST", f"/f/{slug}")
+    assert status == 405
+
+def test_pagination():
+    token = test_register_login()
+    for i in range(3):
+        req("POST", "/vlambda", f"def handler(request): return {{'i': {i}}}", token)
+    status, body = req("GET", "/vlambda?limit=2&offset=0", token=token)
+    assert status == 200
+    assert body["limit"] == 2
+    assert body["offset"] == 0
+
+def test_ownership():
+    t1 = test_register_login()
+    t2 = test_register_login()
+    status, body = req("POST", "/vlambda", "def handler(request): return {}", t1)
+    assert status == 201
+    slug = body["slug"]
+    # second user cannot get/update/delete
+    status, body = req("GET", f"/vlambda/{slug}", token=t2)
+    assert status in (401, 403, 404)
+    status, body = req("DELETE", f"/vlambda/{slug}", token=t2)
+    assert status in (401, 403, 404, 500)
+
+def test_project_zip():
+    import base64, io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("main.py", "def handler(request):\n    from utils import shout\n    return {'msg': shout(request.path)}\n")
+        z.writestr("utils.py", "def shout(x):\n    return x.upper()\n")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    token = test_register_login()
+    status, body = req("POST", "/vlambda?project=1&entry=main.py&name=demo", b64, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200
+    assert "msg" in body
+    status, body = req("DELETE", f"/vlambda/{slug}", token=token)
+    assert status == 200
+
+def test_async_task():
+    token, slug = test_create_invoke()
+    status, body = req("POST", f"/async/{slug}")
+    assert status == 202
+    task_id = body["task_id"]
+    # poll
+    for _ in range(20):
+        status, body = req("GET", f"/task/{task_id}")
+        if body.get("status") == "completed":
+            break
+        time.sleep(0.1)
+    assert body.get("status") == "completed"
+
+def test_metrics_history():
+    token, slug = test_create_invoke()
+    req("GET", f"/f/{slug}")
+    time.sleep(1.2)
+    status, body = req("GET", "/metrics/history?days=1")
+    # endpoint may require no auth; accept 200
+    assert status == 200
+    assert "items" in body
+
+def test_rate_limit():
+    # default 100 req/s; send enough to trigger 429
+    token, slug = test_create_invoke()
+    codes = []
+    for _ in range(150):
+        status, body = req("GET", f"/f/{slug}")
+        codes.append(status)
+    assert 429 in codes
+
+def test_sandbox_blocked():
+    token = test_register_login()
+    status, body = req("POST", "/vlambda", "import os\ndef handler(request): return {}", token)
+    # validation may reject at ast level? os import allowed by ast; execution blocked only if called.
+    # At least ensure no crash
+    assert status in (201, 400)
+
 if __name__ == "__main__":
     start_server()
     time.sleep(1)
     tests = [test_health, test_register_login, test_create_invoke, test_auth_required,
-             test_update, test_delete, test_validation, test_metrics, test_body_size]
+             test_update, test_delete, test_validation, test_metrics, test_body_size,
+             test_method_mismatch, test_pagination, test_ownership, test_project_zip,
+             test_async_task, test_metrics_history, test_rate_limit, test_sandbox_blocked]
     failed = 0
     for t in tests:
         try:

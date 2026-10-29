@@ -123,12 +123,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	if vlambda_rate_limit > 0 && req.url != '/health' && req.url != '/metrics' && req.url != '/metrics/json' && req.url != '/favicon.ico' {
 		ip := req.remote_addr.all_before(':')
 		now := f64(time.now().unix())
-		mut bucket := vlambda_rate_buckets[ip] or { TokenBucket{ tokens: f64(vlambda_rate_limit * 2), last: now } }
+		mut bucket := vlambda_rate_buckets[ip] or { TokenBucket{ tokens: f64(vlambda_rate_limit), last: now } }
 		elapsed := now - bucket.last
 		if elapsed > 0 {
 			bucket.tokens += elapsed * f64(vlambda_rate_limit)
-			if bucket.tokens > f64(vlambda_rate_limit * 2) {
-				bucket.tokens = f64(vlambda_rate_limit * 2)
+			if bucket.tokens > f64(vlambda_rate_limit) {
+				bucket.tokens = f64(vlambda_rate_limit)
 			}
 		}
 		bucket.last = now
@@ -655,6 +655,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
+			owner := db_get_lambda_owner(slug)
+			if owner >= 0 && owner != auth_uid {
+				return http.Response{
+					status_code: 403
+					body: '{"error": "forbidden"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			code_method := db_get_lambda_code(slug)
 			if code_method == '' {
 				return http.Response{
@@ -673,6 +681,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		if req.method == .delete {
 			project_info := db_get_project(slug)
+			owner := db_get_lambda_owner(slug)
+			if owner >= 0 && owner != auth_uid {
+				return http.Response{
+					status_code: 403
+					body: '{"error": "forbidden"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			if project_info != '' {
 				pparts := project_info.split('|')
 				if pparts.len > 0 {
@@ -885,6 +901,16 @@ pub fn db_get_project(slug string) string {
 	entrypoint := rows[0].vals[1] or { return '' }
 	method := rows[0].vals[2] or { return '' }
 	return project_dir + '|' + entrypoint + '|' + method
+}
+
+@[vc_fn]
+pub fn db_get_lambda_owner(slug string) int {
+	mut db := init_db(vlambda_db_path) or { return -1 }
+	defer { db.close() or {} }
+	rows := db.exec_param('SELECT owner_id FROM lambdas WHERE slug = ?;', slug) or { return -1 }
+	if rows.len == 0 { return -1 }
+	n := rows[0].vals[0] or { return -1 }
+	return n.int()
 }
 
 @[vc_fn]

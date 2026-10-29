@@ -63,19 +63,61 @@ def _collect_dependencies(project_dir: str) -> list[str]:
     return deps
 
 
+_PACKAGES_DIR = os.environ.get("VLAMBDA_PACKAGES_DIR", "/tmp/opencode/vlambda_packages")
+_PACKAGES_MAX_MB = int(os.environ.get("VLAMBDA_PACKAGES_MAX_MB", "1024"))
+
+
+def _prune_packages():
+    try:
+        total = 0
+        entries = []
+        for name in os.listdir(_PACKAGES_DIR):
+            p = os.path.join(_PACKAGES_DIR, name)
+            if not os.path.isdir(p):
+                continue
+            size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(p) for f in fs)
+            total += size
+            entries.append((os.path.getmtime(p), p, size))
+        limit = _PACKAGES_MAX_MB * 1024 * 1024
+        if total <= limit:
+            return
+        entries.sort()
+        for _, p, size in entries:
+            if total <= limit:
+                break
+            shutil.rmtree(p, ignore_errors=True)
+            total -= size
+    except Exception:
+        pass
+
+
 def _install_dependencies(project_dir: str):
-    vendor = os.path.join(project_dir, "vendor")
-    os.makedirs(vendor, exist_ok=True)
     deps = _collect_dependencies(project_dir)
+    vendor = os.path.join(project_dir, "vendor")
+    if os.path.lexists(vendor):
+        if os.path.isdir(vendor) and not os.path.islink(vendor):
+            shutil.rmtree(vendor, ignore_errors=True)
+        else:
+            os.remove(vendor)
     if not deps:
+        os.makedirs(vendor, exist_ok=True)
         return
-    # Prefer uv for fast, reproducible installs into an isolated vendor dir.
-    uv = shutil.which("uv")
-    if uv:
-        cmd = [uv, "pip", "install", "--target", vendor, *deps]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--target", vendor, *deps]
-    subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+    os.makedirs(_PACKAGES_DIR, exist_ok=True)
+    key = hashlib.sha256("\n".join(sorted(deps)).encode()).hexdigest()[:16]
+    shared = os.path.join(_PACKAGES_DIR, key)
+    if not os.path.exists(shared):
+        os.makedirs(shared, exist_ok=True)
+        uv = shutil.which("uv")
+        if uv:
+            cmd = [uv, "pip", "install", "--target", shared, *deps]
+        else:
+            cmd = [sys.executable, "-m", "pip", "install", "--target", shared, *deps]
+        subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+    try:
+        os.symlink(shared, vendor)
+    except OSError:
+        shutil.copytree(shared, vendor)
+    _prune_packages()
 
 
 def _module_name(project_dir: str, entrypoint: str) -> str:

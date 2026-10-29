@@ -137,6 +137,38 @@ def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     return {"days": days, "count": len(items), "items": items}
 
 
+def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+    if _conn is None:
+        return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0}
+    cutoff = time.time() - days * 86400
+    sql = "SELECT latency_ms, error FROM metrics WHERE ts >= ?"
+    params: list[Any] = [cutoff]
+    if slug:
+        sql += " AND slug = ?"
+        params.append(slug)
+    with _lock:
+        rows = _conn.execute(sql, params).fetchall()
+    latencies = sorted(r[0] for r in rows)
+    errors = sum(1 for r in rows if r[1])
+    n = len(latencies)
+    if n == 0:
+        return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0}
+
+    def pct(p: float) -> float:
+        idx = min(n - 1, int((n - 1) * p))
+        return latencies[idx]
+
+    return {
+        "days": days,
+        "count": n,
+        "avg_ms": sum(latencies) / n,
+        "p50_ms": pct(0.50),
+        "p95_ms": pct(0.95),
+        "p99_ms": pct(0.99),
+        "errors": errors,
+    }
+
+
 def close():
     _stop.set()
     if _worker is not None and _worker.is_alive():

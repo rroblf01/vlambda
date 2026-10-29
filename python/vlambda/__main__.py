@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_run_project, register_create_project, register_delete_project, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_run_project, register_create_project, register_delete_project, register_get_dlq, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -198,7 +198,7 @@ def main() -> None:
     register_get_task(_get_task)
 
     import atexit
-    from vlambda.metrics import record as _metrics_record, query as _metrics_query
+    from vlambda.metrics import record as _metrics_record, query as _metrics_query, stats as _metrics_query_stats
     import json as _json
 
     def _record_metric(slug, method, path, latency_ms, error):
@@ -213,6 +213,15 @@ def main() -> None:
 
     register_record_metric(_record_metric)
     register_query_metrics(_query_metrics)
+
+    def _query_stats(days, slug=""):
+        try:
+            d = int(days)
+        except (ValueError, TypeError):
+            d = 7
+        return _json.dumps(_metrics_query_stats(d, slug))
+
+    register_query_stats(_query_stats)
 
     from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl
 
@@ -244,6 +253,13 @@ def main() -> None:
     register_run_project(_run_project)
     register_create_project(_create_project)
     register_delete_project(_delete_project)
+
+    def _get_dlq():
+        import json
+        from vlambda.tasks import get_dlq
+        return json.dumps(get_dlq())
+
+    register_get_dlq(_get_dlq)
 
     # Prewarm caches for existing lambdas/projects to reduce cold starts.
     try:

@@ -13,6 +13,9 @@ _lock = threading.Lock()
 _MAX_TASKS = 10000
 _EXECUTOR = None
 _EXECUTOR_LOCK = threading.Lock()
+_DLQ: list[dict] = []
+_DLQ_LOCK = threading.Lock()
+_DLQ_MAX = 1000
 import os
 
 
@@ -39,17 +42,28 @@ def create_task(code: str, method: str, path: str, query: str, body: bytes, pool
     _executor = _get_executor()
 
     def _run():
-        try:
-            result = pool.execute(code, method, path, query, body)
-            with _lock:
-                _tasks[task_id]["status"] = "completed"
-                _tasks[task_id]["result"] = result
-                _tasks[task_id]["completed"] = time.time()
-        except Exception as e:
-            with _lock:
-                _tasks[task_id]["status"] = "failed"
-                _tasks[task_id]["error"] = str(e)
-                _tasks[task_id]["completed"] = time.time()
+        retries = int(os.environ.get("VLAMBDA_TASK_RETRIES", "2"))
+        delay = float(os.environ.get("VLAMBDA_TASK_RETRY_DELAY", "0.5"))
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                result = pool.execute(code, method, path, query, body)
+                with _lock:
+                    _tasks[task_id]["status"] = "completed"
+                    _tasks[task_id]["result"] = result
+                    _tasks[task_id]["completed"] = time.time()
+                return
+            except Exception as e:
+                last_error = e
+                if attempt < retries:
+                    time.sleep(delay * (attempt + 1))
+        with _lock:
+            _tasks[task_id]["status"] = "failed"
+            _tasks[task_id]["error"] = str(last_error)
+            _tasks[task_id]["completed"] = time.time()
+        with _DLQ_LOCK:
+            if len(_DLQ) < _DLQ_MAX:
+                _DLQ.append({"task_id": task_id, "error": str(last_error), "ts": time.time()})
 
     _executor.submit(_run)
     return task_id
@@ -71,6 +85,12 @@ def get_task(task_id: str) -> dict | None:
         if t is None:
             return None
         return dict(t)
+
+
+def get_dlq() -> list[dict]:
+    with _DLQ_LOCK:
+        return list(_DLQ)
+
 
 
 def cleanup_old(max_age: int = 3600):

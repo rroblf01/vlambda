@@ -20,8 +20,10 @@ __global (
 	vlambda_favicon = voidptr(0)
 	vlambda_create_task = voidptr(0)
 	vlambda_get_task = voidptr(0)
+	vlambda_get_dlq = voidptr(0)
 	vlambda_record_metric = voidptr(0)
 	vlambda_query_metrics = voidptr(0)
+	vlambda_query_stats = voidptr(0)
 	vlambda_run_project = voidptr(0)
 	vlambda_create_project = voidptr(0)
 	vlambda_delete_project = voidptr(0)
@@ -53,6 +55,7 @@ __global (
 	vlambda_slug_counter = u64(0)
 	// In-memory code cache: slug -> code|method
 	vlambda_code_cache = map[string]string{}
+	vlambda_missing_cache = map[string]bool{}
 	// Shutdown
 	vlambda_shutdown = false
 	vlambda_overloaded = false
@@ -212,6 +215,31 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /dlq
+	if req.url == '/dlq' {
+		if vlambda_get_dlq == unsafe { nil } {
+			return http.Response{ status_code: 500, body: '{"error": "not configured"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut body := '[]'
+		ptr := &body
+		vcraft.with_gil(fn [ptr] () {
+			args := []voidptr{}
+			r := vcraft.call(vlambda_get_dlq, args)
+			if r.is_null() {
+				vcraft.clear_error()
+				return
+			}
+			if r.type_name() == 'str' {
+				ss := vcraft.from_py_string(r, 'result') or { '[]' }
+				r.decref()
+				unsafe { *ptr = ss + '' }
+				return
+			}
+			r.decref()
+		})
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /health
 	if req.url == '/health' {
 		return http.Response{
@@ -321,6 +349,46 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "items": []}' }
 					r.decref()
 					unsafe { *ptr = ss }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+
+	// Route: /metrics/stats (aggregated persisted metrics)
+	if req.url.starts_with('/metrics/stats') {
+		mut days := 7
+		mut slug := ''
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('slug=') { slug = part.all_after('=') }
+			}
+		}
+		mut body := '{"days": ${days}, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0}'
+		ptr := &body
+		if vlambda_query_stats != unsafe { nil } {
+			vcraft.with_gil(fn [days, slug, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_query_stats, args)
+				vcraft.borrow(args[0]).decref()
+				vcraft.borrow(args[1]).decref()
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '[]' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
 					return
 				}
 				r.decref()
@@ -824,6 +892,7 @@ pub fn db_create_lambda(slug string, name string, code string, method string, ow
 	defer { db.close() or {} }
 	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?);',
 		[slug, name, code, method, owner_id.str(), '2026-01-01T00:00:00Z']) or { return false }
+	vlambda_missing_cache.delete(slug)
 	return true
 }
 
@@ -864,8 +933,17 @@ pub fn db_get_lambda_code(slug string) string {
 	}
 	mut db := init_db(vlambda_db_path) or { return '' }
 	defer { db.close() or {} }
+	if vlambda_missing_cache[slug] {
+		return ''
+	}
 	rows := db.exec_param('SELECT code, method FROM lambdas WHERE slug = ?;', slug) or { return '' }
-	if rows.len == 0 { return '' }
+	if rows.len == 0 {
+		vlambda_missing_cache[slug] = true
+		if vlambda_missing_cache.len > 10000 {
+			vlambda_missing_cache = map[string]bool{}
+		}
+		return ''
+	}
 	code := rows[0].vals[0] or { return '' }
 	method := rows[0].vals[1] or { return '' }
 	result := code + '|' + method
@@ -919,6 +997,7 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 	defer { db.close() or {} }
 	db.exec_param_many('DELETE FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { return false }
 	vlambda_code_cache.delete(slug)
+	vlambda_missing_cache.delete(slug)
 	return true
 }
 
@@ -1189,6 +1268,11 @@ pub fn register_get_task(cb voidptr) {
 }
 
 @[vc_fn]
+pub fn register_get_dlq(cb voidptr) {
+	vlambda_get_dlq = cb
+}
+
+@[vc_fn]
 pub fn register_record_metric(cb voidptr) {
 	vlambda_record_metric = cb
 }
@@ -1196,6 +1280,11 @@ pub fn register_record_metric(cb voidptr) {
 @[vc_fn]
 pub fn register_query_metrics(cb voidptr) {
 	vlambda_query_metrics = cb
+}
+
+@[vc_fn]
+pub fn register_query_stats(cb voidptr) {
+	vlambda_query_stats = cb
 }
 @[vc_fn]
 pub fn set_overloaded(flag bool) {

@@ -1049,6 +1049,15 @@ pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 }
 
 // run_lambda calls Python to exe@[vc_fn]
+fn body_to_py_bytes(body string) vcraft.PyObj {
+	if body.len == 0 {
+		return vcraft.to_py_bytes('')
+	}
+	unsafe {
+		return vcraft.to_py_bytes_fast(&u8(body.str), body.len)
+	}
+}
+
 pub fn run_lambda(slug string, code string, method string, path string, query string, body string) string {
 	vlambda_result_str = '{"error": "not started"}'
 	start_time := time.now()
@@ -1064,7 +1073,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 			}
 			return
 		}
-		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, vcraft.to_py_bytes(body).ptr]
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
@@ -1127,7 +1136,7 @@ pub fn run_project(project_dir string, entrypoint string, method string, path st
 		req_items['method'] = vcraft.to_py_string(method)
 		req_items['path'] = vcraft.to_py_string(path)
 		req_items['query_string'] = vcraft.to_py_string(query)
-		req_items['body'] = vcraft.to_py_bytes(body)
+		req_items['body'] = body_to_py_bytes(body)
 		req_obj := vcraft.to_py_obj_dict(req_items)
 
 		if vlambda_run_project == unsafe { nil } {
@@ -1329,7 +1338,7 @@ pub fn create_task_async(code string, method string, path string, query string, 
 	mut cell := ''
 	ptr := &cell
 	vcraft.with_gil(fn [code, method, path, query, body, ptr] () {
-		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, vcraft.to_py_bytes(body).ptr]
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr]
 		r := vcraft.call(vlambda_create_task, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if r.is_null() {

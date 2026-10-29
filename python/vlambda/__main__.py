@@ -309,6 +309,13 @@ def main() -> None:
 
     # Memory monitoring thread (if max_memory_mb > 0)
     if args.max_memory_mb > 0:
+        import resource
+        limit_bytes = args.max_memory_mb * 1024 * 1024
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+            print(f"Hard memory limit set to {args.max_memory_mb}MB", file=sys.stderr)
+        except (ValueError, OSError) as e:
+            print(f"Could not set hard memory limit: {e}", file=sys.stderr)
         import threading, time, resource
         def _mem_monitor():
             limit_bytes = args.max_memory_mb * 1024 * 1024

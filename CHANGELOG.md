@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Per-lambda timeout quotas and alias/version support.
 - Multi-file project uploads as ZIP archives with configurable entrypoint.
 - Per-project dependencies from `requirements.txt` and `pyproject.toml`, installed into an isolated `vendor/` directory.
 - Shared dependency store keyed by dependency set, with size-based pruning.

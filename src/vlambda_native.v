@@ -626,11 +626,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
-		// Per-lambda metrics
-		vlambda_lambda_invocations[slug] = (vlambda_lambda_invocations[slug] or { u64(0) }) + 1
-		vlambda_lambda_latency[slug] = (vlambda_lambda_latency[slug] or { f64(0) }) + f64(elapsed) / 1000.0
-		if result.contains('error') {
-			vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
+		// Per-lambda metrics (optional)
+		if vlambda_metrics_enabled {
+			vlambda_lambda_invocations[slug] = (vlambda_lambda_invocations[slug] or { u64(0) }) + 1
+			vlambda_lambda_latency[slug] = (vlambda_lambda_latency[slug] or { f64(0) }) + f64(elapsed) / 1000.0
+			if result.contains('error') {
+				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
+			}
 		}
 		return http.Response{
 			status_code: 200

@@ -212,7 +212,7 @@ if __name__ == "__main__":
     tests = [test_health, test_register_login, test_create_invoke, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
-             test_async_task, test_metrics_history, test_rate_limit, test_sandbox_blocked]
+             test_async_task, test_metrics_history, test_sandbox_blocked, test_rate_limit]
     failed = 0
     for t in tests:
         try:

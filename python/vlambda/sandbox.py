@@ -46,12 +46,20 @@ def _preload():
 _preload()
 
 
-def make_sandbox(code: str, request_obj):
-    """Compile and return (code_obj, namespace) for safe execution."""
+
+
+def make_namespace(request_obj=None):
+    """Build a fresh sandbox namespace without compiling code."""
     ns = {"__builtins__": {k: getattr(builtins, k) for k in SAFE_BUILTINS}}
     ns["__builtins__"]["__import__"] = blocked_import
     ns.update(_PREIMPORTED)
     ns["request"] = request_obj
+    return ns
+
+
+def make_sandbox(code: str, request_obj):
+    """Compile and return (code_obj, namespace) for safe execution."""
+    ns = make_namespace(request_obj)
     compiled = compile(code, "<lambda>", "exec", optimize=2)
     return compiled, ns
 

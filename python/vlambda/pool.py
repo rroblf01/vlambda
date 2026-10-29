@@ -45,15 +45,13 @@ class Worker:
                     method=method, path=path, query_string=query,
                     headers={}, body=body,
                 )
-                compiled, ns_template = get_compiled(code)
-                ns = dict(ns_template)
-                ns["request"] = req_obj
-                exec(compiled, ns)
-                handler = ns.get("handler")
+                compiled, ns_template, handler = get_compiled(code)
                 if handler is None:
                     result = {"error": "no handler function defined"}
                 else:
-                    result = handler(ns["request"])
+                    ns = dict(ns_template)
+                    ns["request"] = req_obj
+                    result = handler(req_obj)
 
                 if cache_key is not None:
                     set_response(cache_key, result)

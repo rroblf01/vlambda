@@ -8,7 +8,7 @@ import os
 from collections import OrderedDict
 from typing import Any
 
-from vlambda.sandbox import make_sandbox
+from vlambda.sandbox import make_sandbox, make_namespace
 
 _MAX_SIZE = int(__import__("os").environ.get("VLAMBDA_CODE_CACHE", "1024"))
 _CACHE_DIR = os.environ.get("VLAMBDA_CACHE_DIR", "/tmp/opencode/vlambda_cache")
@@ -26,25 +26,17 @@ def _load_from_disk(code: str):
     path = _disk_path(code)
     try:
         with open(path, "rb") as f:
-            obj = marshal.load(f)
+            return marshal.load(f)
     except (FileNotFoundError, EOFError, ValueError, TypeError, OSError):
         return None
-    if isinstance(obj, tuple) and len(obj) == 2:
-        return obj
-    # Backward-compatible cache entries storing only the compiled object.
-    try:
-        _, ns_template = make_sandbox(code, None)
-        return (obj, ns_template)
-    except Exception:
-        return None
 
 
-def _save_to_disk(code: str, compiled, ns_template=None):
+def _save_to_disk(code: str, compiled):
     path = _disk_path(code)
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
         with open(path, "wb") as f:
-            marshal.dump((compiled, ns_template), f)
+            marshal.dump(compiled, f)
     except Exception:
         pass
 
@@ -55,19 +47,20 @@ def get(code: str):
             _cache.move_to_end(code)
             return _cache[code]
     # Try disk cache
-    cached = _load_from_disk(code)
-    if cached is None:
-        compiled, ns_template = make_sandbox(code, None)
-        _save_to_disk(code, compiled, ns_template)
-    else:
-        compiled, ns_template = cached
+    compiled = _load_from_disk(code)
+    if compiled is None:
+        compiled = compile(code, "<lambda>", "exec", optimize=2)
+        _save_to_disk(code, compiled)
+    ns_template = make_namespace(None)
+    exec(compiled, ns_template)
+    handler = ns_template.get("handler")
     with _lock:
         if code in _cache:
             _cache.move_to_end(code)
             return _cache[code]
         if len(_cache) >= _MAX_SIZE:
             _cache.popitem(last=False)
-        _cache[code] = (compiled, ns_template)
+        _cache[code] = (compiled, ns_template, handler)
         return _cache[code]
 
 

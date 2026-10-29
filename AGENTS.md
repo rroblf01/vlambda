@@ -6,13 +6,13 @@
 - Generated (gitignored): src/_vcraft_generated.v, python/vlambda_native.pyi, .vcraft/, dist/, build/, *.so.
 
 ## Requirements
-- Python >=3.14; V compiler pinned to commit 36be92642c49a8fe9213ea4b96c6bf56b67b668c; vcraft 1.7.1.
-- CI uses prebuilt image ghcr.io/rroblf01/vcraft-manylinux:1.7.1.
+- Python >=3.14; V compiler pinned to commit 36be92642c49a8fe9213ea4b96c6bf56b67b668c; vcraft 1.7.2.
+- CI uses prebuilt image ghcr.io/rroblf01/vcraft-manylinux:1.7.2.
 
 ## Build (dev)
 python -m venv .venv
 . .venv/bin/activate
-pip install vcraft==1.7.1
+pip install vcraft==1.7.2
 VCRAFT_NO_MEMORY_LIMIT=1 vcraft develop
 
 vcraft develop regenerates native extension and installs editable wheel. Set VCRAFT_BIN to override vcraft binary.

@@ -52,6 +52,7 @@ __global (
 	vlambda_code_cache = map[string]string{}
 	// Shutdown
 	vlambda_shutdown = false
+	vlambda_overloaded = false
 )
 
 // ---- SQLite helpers ----
@@ -112,10 +113,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	// (production would use token bucket with timestamps)
 
 
+	// Memory pressure (set by Python monitor)
+	if vlambda_overloaded {
+		return http.Response{
+			status_code: 503
+			body: '{"error": "server overloaded, try again later"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Memory check
 	if vlambda_max_memory_mb > 0 {
-		// V doesn't have easy memory query; skip enforcement here
-		// (would use /proc/self/statm on Linux)
+		// Enforcement is done by the Python monitor thread.
 	}
 
 
@@ -1124,6 +1133,11 @@ pub fn register_record_metric(cb voidptr) {
 pub fn register_query_metrics(cb voidptr) {
 	vlambda_query_metrics = cb
 }
+@[vc_fn]
+pub fn set_overloaded(flag bool) {
+	vlambda_overloaded = flag
+}
+
 
 @[vc_fn]
 pub fn register_create_project(cb voidptr) {

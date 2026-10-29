@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_run_project, register_create_project, register_delete_project
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_run_project, register_create_project, register_delete_project, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -259,14 +259,20 @@ def main() -> None:
         import threading, time, resource
         def _mem_monitor():
             limit_bytes = args.max_memory_mb * 1024 * 1024
+            overloaded = False
             while True:
                 time.sleep(5)
                 try:
                     import gc
                     gc.collect()
                     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
-                    if usage > limit_bytes * 0.9:
+                    if usage > limit_bytes * 0.9 and not overloaded:
+                        overloaded = True
+                        set_overloaded(True)
                         print(f"WARNING: memory usage {usage/1024/1024:.1f}MB approaching limit {args.max_memory_mb}MB", file=sys.stderr)
+                    elif usage < limit_bytes * 0.8 and overloaded:
+                        overloaded = False
+                        set_overloaded(False)
                 except Exception:
                     pass
         t = threading.Thread(target=_mem_monitor, daemon=True)

@@ -37,10 +37,15 @@ def init(db_path: str | None = None, retention_days: int | None = None):
     with _lock:
         if _conn is None:
             _conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+            try:
+                _conn.execute("ALTER TABLE metrics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
             _conn.execute(
                 "CREATE TABLE IF NOT EXISTS metrics ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                 "ts REAL NOT NULL,"
+                "request_id TEXT NOT NULL DEFAULT '',"
                 "slug TEXT NOT NULL,"
                 "method TEXT NOT NULL,"
                 "path TEXT NOT NULL,"
@@ -58,9 +63,9 @@ def init(db_path: str | None = None, retention_days: int | None = None):
     _last_cleanup = time.time()
 
 
-def record(slug: str, method: str, path: str, latency_ms: float, error: str = ""):
+def record(request_id: str, slug: str, method: str, path: str, latency_ms: float, error: str = ""):
     try:
-        _queue.put_nowait((time.time(), slug, method, path, latency_ms, error))
+        _queue.put_nowait((time.time(), request_id, slug, method, path, latency_ms, error))
     except queue.Full:
         pass
 
@@ -70,7 +75,7 @@ def _flush(batch: list[tuple]):
         return
     with _lock:
         _conn.executemany(
-            "INSERT INTO metrics (ts, slug, method, path, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO metrics (ts, request_id, slug, method, path, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
             batch,
         )
         _conn.commit()
@@ -113,7 +118,7 @@ def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         return {"days": days, "items": []}
     cutoff = time.time() - days * 86400
     sql = (
-        "SELECT ts, slug, method, path, latency_ms, error FROM metrics "
+        "SELECT ts, request_id, slug, method, path, latency_ms, error FROM metrics "
         "WHERE ts >= ?"
     )
     params: list[Any] = [cutoff]
@@ -126,11 +131,12 @@ def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     items = [
         {
             "ts": r[0],
-            "slug": r[1],
-            "method": r[2],
-            "path": r[3],
-            "latency_ms": r[4],
-            "error": r[5],
+            "request_id": r[1],
+            "slug": r[2],
+            "method": r[3],
+            "path": r[4],
+            "latency_ms": r[5],
+            "error": r[6],
         }
         for r in rows
     ]

@@ -201,8 +201,8 @@ def main() -> None:
     from vlambda.metrics import record as _metrics_record, query as _metrics_query, stats as _metrics_query_stats
     import json as _json
 
-    def _record_metric(slug, method, path, latency_ms, error):
-        _metrics_record(slug, method, path, float(latency_ms), error)
+    def _record_metric(request_id, slug, method, path, latency_ms, error):
+        _metrics_record(request_id, slug, method, path, float(latency_ms), error)
 
     def _query_metrics(days):
         try:

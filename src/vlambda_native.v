@@ -902,15 +902,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 	vlambda_result_str = '{"error": "not started"}'
 	start_time := time.now()
 	vcraft.with_gil(fn [slug, code, method, path, query, body, start_time] () {
-		mut req_items := map[string]vcraft.PyObj{}
-		req_items['method'] = vcraft.to_py_string(method)
-		req_items['path'] = vcraft.to_py_string(path)
-		req_items['query_string'] = vcraft.to_py_string(query)
-		req_items['body'] = vcraft.to_py_bytes(body)
-		req_obj := vcraft.to_py_obj_dict(req_items)
-
 		if vlambda_executor == unsafe { nil } {
-			req_obj.decref()
 			vlambda_result_str = '{"error": "no executor registered"}'
 			if vlambda_record_metric != unsafe { nil } {
 				elapsed := time.since(start_time).microseconds()
@@ -921,10 +913,9 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 			}
 			return
 		}
-		args := [vcraft.to_py_string(code).ptr, req_obj.ptr]
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, vcraft.to_py_bytes(body).ptr]
 		result := vcraft.call(vlambda_executor, args)
-		req_obj.decref()
-		vcraft.borrow(args[0]).decref()
+		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
 			vcraft.clear_error()
 			vlambda_result_str = '{"error": "execution failed"}'

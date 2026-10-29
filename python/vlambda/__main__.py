@@ -95,26 +95,37 @@ def main() -> None:
             result["error"] = task["error"]
         return json.dumps(result)
 
-    def _pool_execute(code, req_dict):
+    def _pool_execute(code, method, path, query, body):
+        method = method or "GET"
+        path = path or "/"
+        query = query or ""
+        body = body or b""
+        # Response cache for GET requests, storing the final serialized payload.
+        cache_key = None
+        if method == "GET":
+            cache_key = f"{code}:{path}:{query}"
+            from vlambda.cache import get_response
+            cached = get_response(cache_key)
+            if cached is not None:
+                return cached
         try:
             import orjson
             _dumps = orjson.dumps
         except ImportError:
             import json
             _dumps = lambda x: json.dumps(x).encode()
-        result = pool.execute(
-            code,
-            req_dict.get("method", "GET"),
-            req_dict.get("path", "/"),
-            req_dict.get("query_string", ""),
-            req_dict.get("body", b""),
-        )
+        result = pool.execute(code, method, path, query, body)
         if isinstance(result, str):
-            return result
-        if isinstance(result, bytes):
-            return result.decode()
-        dumped = _dumps(result)
-        return dumped.decode() if isinstance(dumped, bytes) else dumped
+            payload = result
+        elif isinstance(result, bytes):
+            payload = result.decode()
+        else:
+            dumped = _dumps(result)
+            payload = dumped.decode() if isinstance(dumped, bytes) else dumped
+        if cache_key is not None:
+            from vlambda.cache import set_response
+            set_response(cache_key, payload)
+        return payload
 
     register_pool(_pool_execute)
 

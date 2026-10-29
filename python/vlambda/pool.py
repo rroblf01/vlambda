@@ -30,17 +30,6 @@ class Worker:
                 break
             code, method, path, query, body, result_queue = task
             try:
-                # Response cache for GET requests
-                from vlambda.cache import get_response, set_response
-                cache_key = None
-                if method == "GET":
-                    cache_key = f"{code}:{path}:{query}"
-                    cached = get_response(cache_key)
-                    if cached is not None:
-                        result = cached
-                        result_queue.put(result)
-                        continue
-
                 req_obj = Request(
                     method=method, path=path, query_string=query,
                     headers={}, body=body,
@@ -52,9 +41,6 @@ class Worker:
                     ns = dict(ns_template)
                     ns["request"] = req_obj
                     result = handler(req_obj)
-
-                if cache_key is not None:
-                    set_response(cache_key, result)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"}
             result_queue.put(result)

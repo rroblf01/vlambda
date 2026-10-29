@@ -30,7 +30,6 @@ class Worker:
                 break
             code, method, path, query, body, result_queue = task
             try:
-                import gc
                 # Response cache for GET requests
                 from vlambda.cache import get_response, set_response
                 cache_key = None
@@ -40,31 +39,21 @@ class Worker:
                     if cached is not None:
                         result = cached
                         result_queue.put(result)
-                        return
+                        continue
 
-                gc.disable()
-                try:
-                    # Try native compilation first (if enabled)
-                    from vlambda.nuitka_compile import try_native
-                    req_obj = Request(
-                        method=method, path=path, query_string=query,
-                        headers={}, body=body,
-                    )
-                    native_result = try_native(code, req_obj)
-                    if native_result is not None:
-                        result = native_result
-                    else:
-                        compiled, ns_template = get_compiled(code)
-                        ns = dict(ns_template)
-                        ns["request"] = req_obj
-                        exec(compiled, ns)
-                        handler = ns.get("handler")
-                        if handler is None:
-                            result = {"error": "no handler function defined"}
-                        else:
-                            result = handler(ns["request"])
-                finally:
-                    gc.enable()
+                req_obj = Request(
+                    method=method, path=path, query_string=query,
+                    headers={}, body=body,
+                )
+                compiled, ns_template = get_compiled(code)
+                ns = dict(ns_template)
+                ns["request"] = req_obj
+                exec(compiled, ns)
+                handler = ns.get("handler")
+                if handler is None:
+                    result = {"error": "no handler function defined"}
+                else:
+                    result = handler(ns["request"])
 
                 if cache_key is not None:
                     set_response(cache_key, result)
@@ -76,7 +65,20 @@ class Worker:
     _inflight: dict = {}
     _inflight_lock = threading.Lock()
 
+    _SINGLE_FLIGHT = __import__("os").environ.get("VLAMBDA_SINGLE_FLIGHT", "0") == "1"
+
     def submit(self, code, method, path, query, body) -> Any:
+        if not Worker._SINGLE_FLIGHT:
+            result_queue = queue.Queue(1)
+            try:
+                self._queue.put((code, method, path, query, body, result_queue), timeout=5)
+            except queue.Full:
+                return {"error": "server busy, try again later"}
+            try:
+                return result_queue.get(timeout=30)
+            except queue.Empty:
+                return {"error": "invocation timeout"}
+
         import hashlib
         key = hashlib.sha256(f"{code}:{method}:{path}:{query}:{body}".encode()).hexdigest()
         with Worker._inflight_lock:

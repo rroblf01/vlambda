@@ -10,7 +10,7 @@ from typing import Any
 
 from vlambda.sandbox import make_sandbox
 
-_MAX_SIZE = 1024
+_MAX_SIZE = int(__import__("os").environ.get("VLAMBDA_CODE_CACHE", "1024"))
 _CACHE_DIR = os.environ.get("VLAMBDA_CACHE_DIR", "/tmp/opencode/vlambda_cache")
 _cache: OrderedDict[str, tuple] = OrderedDict()
 _lock = threading.Lock()
@@ -26,17 +26,25 @@ def _load_from_disk(code: str):
     path = _disk_path(code)
     try:
         with open(path, "rb") as f:
-            return marshal.load(f)
-    except (FileNotFoundError, EOFError, ValueError, TypeError):
+            obj = marshal.load(f)
+    except (FileNotFoundError, EOFError, ValueError, TypeError, OSError):
+        return None
+    if isinstance(obj, tuple) and len(obj) == 2:
+        return obj
+    # Backward-compatible cache entries storing only the compiled object.
+    try:
+        _, ns_template = make_sandbox(code, None)
+        return (obj, ns_template)
+    except Exception:
         return None
 
 
-def _save_to_disk(code: str, compiled):
+def _save_to_disk(code: str, compiled, ns_template=None):
     path = _disk_path(code)
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
         with open(path, "wb") as f:
-            marshal.dump(compiled, f)
+            marshal.dump((compiled, ns_template), f)
     except Exception:
         pass
 
@@ -47,12 +55,12 @@ def get(code: str):
             _cache.move_to_end(code)
             return _cache[code]
     # Try disk cache
-    compiled = _load_from_disk(code)
-    if compiled is None:
+    cached = _load_from_disk(code)
+    if cached is None:
         compiled, ns_template = make_sandbox(code, None)
-        _save_to_disk(code, compiled)
+        _save_to_disk(code, compiled, ns_template)
     else:
-        _, ns_template = make_sandbox(code, None)
+        compiled, ns_template = cached
     with _lock:
         if code in _cache:
             _cache.move_to_end(code)
@@ -88,10 +96,11 @@ def size() -> int:
 
 # Response cache for idempotent GET requests
 import time as _time
-_RESP_CACHE: dict = {}
+from collections import OrderedDict
+_RESP_CACHE: OrderedDict = OrderedDict()
 _RESP_CACHE_LOCK = threading.Lock()
-_RESP_CACHE_TTL = 5  # seconds
-_RESP_CACHE_MAX = 256
+_RESP_CACHE_TTL = int(__import__("os").environ.get("VLAMBDA_RESP_CACHE_TTL", "5"))  # seconds
+_RESP_CACHE_MAX = int(__import__("os").environ.get("VLAMBDA_RESP_CACHE", "256"))
 
 
 def get_response(key: str):
@@ -103,16 +112,17 @@ def get_response(key: str):
         if _time.time() > expires:
             del _RESP_CACHE[key]
             return None
+        _RESP_CACHE.move_to_end(key)
         return val
 
 
 def set_response(key: str, value):
     with _RESP_CACHE_LOCK:
-        if len(_RESP_CACHE) >= _RESP_CACHE_MAX:
-            # Evict oldest
-            oldest = min(_RESP_CACHE, key=lambda k: _RESP_CACHE[k][1])
-            del _RESP_CACHE[oldest]
+        if key in _RESP_CACHE:
+            _RESP_CACHE.move_to_end(key)
         _RESP_CACHE[key] = (value, _time.time() + _RESP_CACHE_TTL)
+        if len(_RESP_CACHE) > _RESP_CACHE_MAX:
+            _RESP_CACHE.popitem(last=False)
 
 
 def invalidate_responses():

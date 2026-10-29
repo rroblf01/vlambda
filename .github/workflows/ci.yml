@@ -14,7 +14,7 @@ jobs:
   test:
     name: python-${{ matrix.python }}
     runs-on: ubuntu-latest
-    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.0
+    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.1
     strategy:
       fail-fast: false
       matrix:

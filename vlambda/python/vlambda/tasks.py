@@ -14,6 +14,7 @@ _MAX_TASKS = 10000
 
 def create_task(code: str, method: str, path: str, query: str, body: bytes, pool) -> str:
     task_id = str(uuid.uuid4())
+    cleanup_old(3600)
     with _lock:
         if len(_tasks) >= _MAX_TASKS:
             # Evict oldest completed/failed

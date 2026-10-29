@@ -18,22 +18,22 @@ jobs:
         include:
           - target: "cp314-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.1"
             args: "build --release --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
             check: "/opt/python/cp314-cp314/bin/python"
           - target: "cp314-linux-aarch64"
             os: "ubuntu-24.04-arm"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.1"
             args: "build --release --target linux-aarch64-gnu --manylinux 2_28 --interpreter /opt/python/cp314-cp314/bin/python"
             check: "/opt/python/cp314-cp314/bin/python"
           - target: "cp315-linux-x86_64"
             os: "ubuntu-latest"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.1"
             args: "build --release --target linux-x86_64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315/bin/python"
             check: "/opt/python/cp315-cp315/bin/python"
           - target: "cp315-linux-aarch64"
             os: "ubuntu-24.04-arm"
-            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.0"
+            container: "ghcr.io/rroblf01/vcraft-manylinux:1.7.1"
             args: "build --release --target linux-aarch64-gnu --manylinux 2_28 --interpreter /opt/python/cp315-cp315/bin/python"
             check: "/opt/python/cp315-cp315/bin/python"
     steps:
@@ -101,28 +101,15 @@ jobs:
           python-version: "3.14"
 
       - name: install vcraft
-        run: python -m pip install "vcraft==1.7.0"
+        run: python -m pip install "vcraft==1.7.1"
 
       - name: build the sdist
         run: |
           cd vlambda
           python -m venv .venv
           . .venv/bin/activate
-          pip install "vcraft==1.7.0"
+          pip install "vcraft==1.7.1"
           vcraft sdist
-          python - <<'PY'
-          import glob, gzip, io, tarfile
-          src = glob.glob("dist/*.tar.gz")[0]
-          dst = src + ".pax"
-          with tarfile.open(src, "r:gz") as tin:
-              with tarfile.open(dst, "w:gz", format=tarfile.PAX_FORMAT) as tout:
-                  for m in tin.getmembers():
-                      f = tin.extractfile(m)
-                      data = f.read() if f is not None else None
-                      tout.addfile(m, io.BytesIO(data) if data is not None else None)
-          import os
-          os.replace(dst, src)
-          PY
 
       - name: upload the sdist
         uses: actions/upload-artifact@v6
@@ -150,6 +137,31 @@ jobs:
 
       - name: check files present
         run: ls -la dist
+
+  # Provenance in its own job, on a plain runner: it runs next to `publish`
+  # rather than in front of it, so a change on GitHub's side cannot stop the
+  # files from reaching PyPI, but a failure still marks the workflow red.
+  attest:
+    name: attest the build provenance
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: collect the distributions
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
 
   publish:
     name: publish to PyPI

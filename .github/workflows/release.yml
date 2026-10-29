@@ -50,7 +50,6 @@ jobs:
         uses: rroblf01/vcraft/actions/vcraft-action@v1
         with:
           container: ${{ matrix.container }}
-          working-directory: vlambda
           args: ${{ matrix.args }}
 
       - name: the wheel was written
@@ -64,7 +63,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
-          path: vlambda/dist/*.whl
+          path: dist/*.whl
 
       - name: test (POSIX)
         if: ${{ runner.os != 'Windows' && matrix.check != '' }}
@@ -105,7 +104,6 @@ jobs:
 
       - name: build the sdist
         run: |
-          cd vlambda
           python -m venv .venv
           . .venv/bin/activate
           pip install "vcraft==1.7.1"
@@ -115,7 +113,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: sdist
-          path: vlambda/dist/*.tar.gz
+          path: dist/*.tar.gz
 
   verify:
     name: verify the artifacts

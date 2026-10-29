@@ -10,7 +10,6 @@
 - CI uses prebuilt image ghcr.io/rroblf01/vcraft-manylinux:1.7.1.
 
 ## Build (dev)
-cd vlambda
 python -m venv .venv
 . .venv/bin/activate
 pip install vcraft==1.7.1

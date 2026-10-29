@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Per-lambda timeout quotas and alias/version support.
+- Request tracing IDs and aggregated metrics endpoints (summary, stats, CSV export).
+- Pool stats endpoint and optional shared cache backend.
 - Optional shared response cache backend (memory/file/Redis) and `/ready` endpoint for horizontal scaling.
 - Multi-file project uploads as ZIP archives with configurable entrypoint.
 - Per-project dependencies from `requirements.txt` and `pyproject.toml`, installed into an isolated `vendor/` directory.

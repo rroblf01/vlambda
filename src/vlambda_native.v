@@ -20,6 +20,8 @@ __global (
 	vlambda_favicon = voidptr(0)
 	vlambda_create_task = voidptr(0)
 	vlambda_get_task = voidptr(0)
+	vlambda_record_metric = voidptr(0)
+	vlambda_query_metrics = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -244,6 +246,45 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	}
 
 
+	// Route: /metrics/history (persisted metrics from separate DB)
+	if req.url.starts_with('/metrics/history') {
+		mut days := 7
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('days=') {
+					days = part.all_after('=').int()
+				}
+			}
+		}
+		mut body := '{"days": ${days}, "items": []}'
+		ptr := &body
+		if vlambda_query_metrics != unsafe { nil } {
+			vcraft.with_gil(fn [days, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr]
+				r := vcraft.call(vlambda_query_metrics, args)
+				vcraft.borrow(args[0]).decref()
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "items": []}' }
+					r.decref()
+					unsafe { *ptr = ss }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+
 	// Extract auth token from header
 	mut auth_token := ''
 	if auth_hdr := req.header.get(.authorization) {
@@ -446,7 +487,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if qi2 := req.url.index('?') {
 			q = req.url[qi2+1..]
 		}
-		result := run_lambda(code, method, req.url, q, req.data)
+		result := run_lambda(slug, code, method, req.url, q, req.data)
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
@@ -729,9 +770,10 @@ pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 }
 
 // run_lambda calls Python to exe@[vc_fn]
-pub fn run_lambda(code string, method string, path string, query string, body string) string {
+pub fn run_lambda(slug string, code string, method string, path string, query string, body string) string {
 	vlambda_result_str = '{"error": "not started"}'
-	vcraft.with_gil(fn [code, method, path, query, body] () {
+	start_time := time.now()
+	vcraft.with_gil(fn [slug, code, method, path, query, body, start_time] () {
 		mut req_items := map[string]vcraft.PyObj{}
 		req_items['method'] = vcraft.to_py_string(method)
 		req_items['path'] = vcraft.to_py_string(path)
@@ -742,6 +784,13 @@ pub fn run_lambda(code string, method string, path string, query string, body st
 		if vlambda_executor == unsafe { nil } {
 			req_obj.decref()
 			vlambda_result_str = '{"error": "no executor registered"}'
+			if vlambda_record_metric != unsafe { nil } {
+				elapsed := time.since(start_time).microseconds()
+				args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
+				r := vcraft.call(vlambda_record_metric, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if !r.is_null() { r.decref() }
+			}
 			return
 		}
 		args := [vcraft.to_py_string(code).ptr, req_obj.ptr]
@@ -751,23 +800,51 @@ pub fn run_lambda(code string, method string, path string, query string, body st
 		if result.is_null() {
 			vcraft.clear_error()
 			vlambda_result_str = '{"error": "execution failed"}'
+			if vlambda_record_metric != unsafe { nil } {
+				elapsed := time.since(start_time).microseconds()
+				margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
+				r := vcraft.call(vlambda_record_metric, margs)
+				for a in margs { vcraft.borrow(a).decref() }
+				if !r.is_null() { r.decref() }
+			}
 			return
 		}
 		if result.type_name() == 'str' {
 			ss := vcraft.from_py_string(result, 'result') or { '{"error": "bad result"}' }
 			result.decref()
-			vlambda_result_str = ss
+			vlambda_result_str = ss + ''
+			if vlambda_record_metric != unsafe { nil } {
+				elapsed := time.since(start_time).microseconds()
+				margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
+				r := vcraft.call(vlambda_record_metric, margs)
+				for a in margs { vcraft.borrow(a).decref() }
+				if !r.is_null() { r.decref() }
+			}
 			return
 		}
 		if result.type_name() == 'bytes' {
 			ss := vcraft.from_py_bytes(result, 'result') or { '{"error": "bad result"}' }
 			result.decref()
-			vlambda_result_str = ss
+			vlambda_result_str = ss + ''
+			if vlambda_record_metric != unsafe { nil } {
+				elapsed := time.since(start_time).microseconds()
+				margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
+				r := vcraft.call(vlambda_record_metric, margs)
+				for a in margs { vcraft.borrow(a).decref() }
+				if !r.is_null() { r.decref() }
+			}
 			return
 		}
 		ss := result.str()
 		result.decref()
-		vlambda_result_str = ss
+		vlambda_result_str = ss + ''
+		if vlambda_record_metric != unsafe { nil } {
+			elapsed := time.since(start_time).microseconds()
+			margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
+			r := vcraft.call(vlambda_record_metric, margs)
+			for a in margs { vcraft.borrow(a).decref() }
+			if !r.is_null() { r.decref() }
+		}
 	})
 	return vlambda_result_str
 }
@@ -873,6 +950,16 @@ pub fn register_create_task(cb voidptr) {
 @[vc_fn]
 pub fn register_get_task(cb voidptr) {
 	vlambda_get_task = cb
+}
+
+@[vc_fn]
+pub fn register_record_metric(cb voidptr) {
+	vlambda_record_metric = cb
+}
+
+@[vc_fn]
+pub fn register_query_metrics(cb voidptr) {
+	vlambda_query_metrics = cb
 }
 
 @[vc_fn]

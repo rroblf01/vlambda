@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -65,6 +65,12 @@ def main() -> None:
         args.max_body_size, args.rate_limit, args.invoke_timeout,
         args.max_memory_mb, args.cors_origin, args.cert, args.key,
     )
+
+    metrics_db = os.environ.get("VLAMBDA_METRICS_DB", args.sqlite_path.replace(".db", "_metrics.db"))
+    metrics_retention = int(os.environ.get("VLAMBDA_METRICS_RETENTION", "7"))
+
+    from vlambda.metrics import init as metrics_init
+    metrics_init(metrics_db, metrics_retention)
 
     from vlambda.pool import Pool
     pool = Pool(args.num_coroutines)
@@ -177,6 +183,22 @@ def main() -> None:
     register_get_task(_get_task)
 
     import atexit
+    from vlambda.metrics import record as _metrics_record, query as _metrics_query
+    import json as _json
+
+    def _record_metric(slug, method, path, latency_ms, error):
+        _metrics_record(slug, method, path, float(latency_ms), error)
+
+    def _query_metrics(days):
+        try:
+            d = int(days)
+        except (ValueError, TypeError):
+            d = 7
+        return _json.dumps(_metrics_query(d))
+
+    register_record_metric(_record_metric)
+    register_query_metrics(_query_metrics)
+
     atexit.register(pool.stop)
 
     # Run server in a thread so signals can be handled

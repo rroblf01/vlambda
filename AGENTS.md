@@ -37,5 +37,6 @@ Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon t
 
 ## Quirks
 - `VCRAFT_NO_MEMORY_LIMIT=1` for constrained builds.
+- Metrics are persisted to a separate SQLite DB (`VLAMBDA_METRICS_DB`, default `<db>_metrics.db`); retention `VLAMBDA_METRICS_RETENTION` days.
 - SQLite runs in WAL mode; sidecar files are .db, -wal, -shm.
 - Regenerate ignored artifacts after changing V or Python code.

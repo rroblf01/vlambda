@@ -245,6 +245,33 @@ def main() -> None:
     register_create_project(_create_project)
     register_delete_project(_delete_project)
 
+    # Prewarm caches for existing lambdas/projects to reduce cold starts.
+    try:
+        from vlambda.dbpool import get as _db_get
+        with _db_get(args.sqlite_path) as _conn:
+            _rows = _conn.execute("SELECT slug, code, kind, entrypoint, project_dir FROM lambdas").fetchall()
+        for _slug, _code, _kind, _entrypoint, _project_dir in _rows:
+            try:
+                vlambda_native.db_get_lambda_code(_slug)
+            except Exception:
+                pass
+            if _kind == "project" and _project_dir:
+                try:
+                    from vlambda.project import _load_handler
+                    _load_handler(_project_dir, _entrypoint or "main.py")
+                except Exception:
+                    pass
+            elif _code:
+                try:
+                    from vlambda.cache import prewarm as _prewarm_code
+                    _prewarm_code(_code)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Prewarm failed: {e}", file=sys.stderr)
+
+    import vlambda.tasks as _tasks
+    atexit.register(lambda: _tasks._get_executor().shutdown(wait=False) if _tasks._EXECUTOR is not None else None)
     atexit.register(pool.stop)
 
     # Run server in a thread so signals can be handled

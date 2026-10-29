@@ -5,11 +5,15 @@ from __future__ import annotations
 import threading
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 _tasks: dict[str, dict] = {}
 _lock = threading.Lock()
 _MAX_TASKS = 10000
+_EXECUTOR = None
+_EXECUTOR_LOCK = threading.Lock()
+import os
 
 
 def create_task(code: str, method: str, path: str, query: str, body: bytes, pool) -> str:
@@ -32,7 +36,8 @@ def create_task(code: str, method: str, path: str, query: str, body: bytes, pool
             "created": time.time(),
             "completed": None,
         }
-    # Execute in background thread
+    _executor = _get_executor()
+
     def _run():
         try:
             result = pool.execute(code, method, path, query, body)
@@ -45,9 +50,19 @@ def create_task(code: str, method: str, path: str, query: str, body: bytes, pool
                 _tasks[task_id]["status"] = "failed"
                 _tasks[task_id]["error"] = str(e)
                 _tasks[task_id]["completed"] = time.time()
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
+
+    _executor.submit(_run)
     return task_id
+
+
+def _get_executor():
+    global _EXECUTOR
+    if _EXECUTOR is None:
+        with _EXECUTOR_LOCK:
+            if _EXECUTOR is None:
+                size = int(os.environ.get("VLAMBDA_ASYNC_WORKERS", "16"))
+                _EXECUTOR = ThreadPoolExecutor(max_workers=size, thread_name_prefix="vlambda-task")
+    return _EXECUTOR
 
 
 def get_task(task_id: str) -> dict | None:

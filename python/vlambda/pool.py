@@ -9,6 +9,8 @@ from __future__ import annotations
 import threading
 import time
 import queue
+import itertools
+import os
 from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
@@ -19,7 +21,7 @@ from vlambda.cache import get as get_compiled
 class Worker:
     def __init__(self, worker_id: int):
         self.id = worker_id
-        self._queue: queue.Queue = queue.Queue(maxsize=1000)
+        self._queue: queue.Queue = queue.Queue(maxsize=int(os.environ.get("VLAMBDA_QUEUE_SIZE", "1000")))
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -59,7 +61,7 @@ class Worker:
             except queue.Full:
                 return {"error": "server busy, try again later"}
             try:
-                return result_queue.get(timeout=30)
+                return result_queue.get(timeout=int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
             except queue.Empty:
                 return {"error": "invocation timeout"}
 
@@ -77,7 +79,7 @@ class Worker:
                 is_leader = True
 
         if not is_leader:
-            event.wait(timeout=30)
+            event.wait(timeout=int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
             return container.get("result", {"error": "timeout"})
 
         # Leader executes
@@ -90,7 +92,7 @@ class Worker:
             event.set()
             return {"error": "server busy, try again later"}
         try:
-            result = result_queue.get(timeout=30)
+            result = result_queue.get(timeout=int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
         except queue.Empty:
             result = {"error": "invocation timeout"}
         container["result"] = result
@@ -105,18 +107,20 @@ class Worker:
 
 class Pool:
     def __init__(self, size: int):
+        self._max_workers = max(size, int(os.environ.get("VLAMBDA_MAX_WORKERS", "64")))
         self._workers = [Worker(i) for i in range(size)]
-        self._index = 0
         self._lock = threading.Lock()
+        self._counter = itertools.count()
 
     def execute(self, code, method, path, query, body) -> Any:
-        # Auto-scale: if queue is deep, add a worker
+        # Auto-scale: if queue is deep, add a worker up to the configured cap.
         with self._lock:
-            if len(self._workers) < 64 and self._queue_depth() > len(self._workers) * 2:
+            if len(self._workers) < self._max_workers and self._queue_depth() > len(self._workers) * 2:
                 self._workers.append(Worker(len(self._workers)))
-            worker = self._workers[self._index % len(self._workers)]
-            self._index += 1
-        return worker.submit(code, method, path, query, body)
+            workers = list(self._workers)
+        # Atomic round-robin selection without holding the lock during submit.
+        idx = next(self._counter) % len(workers)
+        return workers[idx].submit(code, method, path, query, body)
 
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)

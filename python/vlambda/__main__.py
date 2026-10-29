@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_run_project, register_create_project, register_delete_project
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -198,6 +198,37 @@ def main() -> None:
 
     register_record_metric(_record_metric)
     register_query_metrics(_query_metrics)
+
+    from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl
+
+    def _run_project(project_dir, entrypoint, request_dict):
+        from vlambda.request import Request
+        req = Request(
+            method=request_dict.get("method", "GET"),
+            path=request_dict.get("path", "/"),
+            query_string=request_dict.get("query_string", ""),
+            headers={},
+            body=request_dict.get("body", b""),
+        )
+        try:
+            result = _execute_project(project_dir, entrypoint, req)
+            import json
+            if isinstance(result, str):
+                return result
+            if isinstance(result, (dict, list)):
+                return json.dumps(result)
+            return str(result)
+        except Exception as e:
+            import json
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+    def _delete_project(project_dir):
+        _delete_project_impl(project_dir)
+        return None
+
+    register_run_project(_run_project)
+    register_create_project(_create_project)
+    register_delete_project(_delete_project)
 
     atexit.register(pool.stop)
 

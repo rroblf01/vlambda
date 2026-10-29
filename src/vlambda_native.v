@@ -22,6 +22,9 @@ __global (
 	vlambda_get_task = voidptr(0)
 	vlambda_record_metric = voidptr(0)
 	vlambda_query_metrics = voidptr(0)
+	vlambda_run_project = voidptr(0)
+	vlambda_create_project = voidptr(0)
+	vlambda_delete_project = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -72,6 +75,9 @@ fn init_db(db_path string) !sqlite.DB {
 		created_at TEXT NOT NULL
 	);')!
 	db.exec('ALTER TABLE lambdas ADD COLUMN name TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN kind TEXT NOT NULL DEFAULT "code";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN entrypoint TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN project_dir TEXT NOT NULL DEFAULT "";') or {}
 	return db
 }
 
@@ -355,6 +361,60 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
+			// Project upload (multi-file zip)
+			if req.url.contains('project=1') || req.url.contains('project=true') {
+				mut entrypoint := 'main.py'
+				mut name := ''
+				mut method := 'GET'
+				if req.url.contains('?') {
+					qs := req.url.all_after('?')
+					for part in qs.split('&') {
+						if part.starts_with('entrypoint=') || part.starts_with('entry=') {
+							entrypoint = part.all_after('=')
+						}
+						if part.starts_with('name=') {
+							name = part.all_after('=')
+						}
+						if part.starts_with('method=') {
+							method = part.all_after('=')
+						}
+					}
+				}
+				if vlambda_create_project == unsafe { nil } {
+					return http.Response{
+						status_code: 500
+						body: '{"error": "project creation not configured"}'
+						header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+					}
+				}
+				mut result := '{"error": "not started"}'
+				ptr := &result
+				vcraft.with_gil(fn [req, entrypoint, name, method, auth_uid, ptr] () {
+					args := [vcraft.to_py_string(req.data).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(name).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_int(auth_uid).ptr]
+					r := vcraft.call(vlambda_create_project, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() {
+						vcraft.clear_error()
+						return
+					}
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"error": "bad result"}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+				// result may be empty if pointer assignment failed; fallback
+				if result == '{"error": "not started"}' {
+					result = '{"error": "project creation failed"}'
+				}
+				return http.Response{
+					status_code: 201
+					body: result
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			// Create lambda
 			// Body: {"code": "...", "method": "GET"}
 			// For now, read code from body directly
@@ -461,11 +521,43 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		url_path = url_path[..qi]
 		slug := url_path[3..]
 		code_method := db_get_lambda_code(slug)
-		if code_method == '' {
+		project_info := db_get_project(slug)
+		if code_method == '' && project_info == '' {
 			vlambda_req_errors++
 			return http.Response{
 				status_code: 404
 				body: '{"error": "lambda not found"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		if project_info != '' {
+			pparts := project_info.split('|')
+			project_dir := if pparts.len > 0 { pparts[0] } else { '' }
+			entrypoint := if pparts.len > 1 { pparts[1] } else { 'main.py' }
+			method := if pparts.len > 2 { pparts[2] } else { 'GET' }
+			if method != req.method.str() {
+				return http.Response{
+					status_code: 405
+					body: '{"error": "method not allowed, expected ${method}"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			mut q := ''
+			if qi2 := req.url.index('?') {
+				q = req.url[qi2+1..]
+			}
+			result := run_project(project_dir, entrypoint, method, req.url, q, req.data)
+			elapsed := time.since(start_time).microseconds()
+			vlambda_latency_sum += f64(elapsed) / 1000.0
+			vlambda_latency_count++
+			vlambda_lambda_invocations[slug] = (vlambda_lambda_invocations[slug] or { u64(0) }) + 1
+			vlambda_lambda_latency[slug] = (vlambda_lambda_latency[slug] or { f64(0) }) + f64(elapsed) / 1000.0
+			if result.contains('error') {
+				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
+			}
+			return http.Response{
+				status_code: 200
+				body: result
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
@@ -535,6 +627,21 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		if req.method == .delete {
+			project_info := db_get_project(slug)
+			if project_info != '' {
+				pparts := project_info.split('|')
+				if pparts.len > 0 {
+					project_dir := pparts[0]
+					if vlambda_delete_project != unsafe { nil } {
+						vcraft.with_gil(fn [project_dir] () {
+							args := [vcraft.to_py_string(project_dir).ptr]
+							r := vcraft.call(vlambda_delete_project, args)
+							vcraft.borrow(args[0]).decref()
+							if !r.is_null() { r.decref() }
+						})
+					}
+				}
+			}
 			ok := db_delete_lambda(slug, auth_uid)
 			if ok {
 				return http.Response{
@@ -715,6 +822,27 @@ pub fn db_get_lambda_name(slug string) string {
 }
 
 @[vc_fn]
+pub fn db_create_project(slug string, name string, method string, entrypoint string, project_dir string, owner_id int) bool {
+	mut db := init_db(vlambda_db_path) or { return false }
+	defer { db.close() or {} }
+	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at, kind, entrypoint, project_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);',
+		[slug, name, '', method, owner_id.str(), '2026-01-01T00:00:00Z', 'project', entrypoint, project_dir]) or { return false }
+	return true
+}
+
+@[vc_fn]
+pub fn db_get_project(slug string) string {
+	mut db := init_db(vlambda_db_path) or { return '' }
+	defer { db.close() or {} }
+	rows := db.exec_param('SELECT project_dir, entrypoint, method FROM lambdas WHERE slug = ? AND kind = "project";', slug) or { return '' }
+	if rows.len == 0 { return '' }
+	project_dir := rows[0].vals[0] or { return '' }
+	entrypoint := rows[0].vals[1] or { return '' }
+	method := rows[0].vals[2] or { return '' }
+	return project_dir + '|' + entrypoint + '|' + method
+}
+
+@[vc_fn]
 pub fn db_delete_lambda(slug string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
@@ -850,6 +978,50 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 }
 
 @[vc_fn]
+pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string) string {
+	vlambda_result_str = '{"error": "not started"}'
+	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body] () {
+		mut req_items := map[string]vcraft.PyObj{}
+		req_items['method'] = vcraft.to_py_string(method)
+		req_items['path'] = vcraft.to_py_string(path)
+		req_items['query_string'] = vcraft.to_py_string(query)
+		req_items['body'] = vcraft.to_py_bytes(body)
+		req_obj := vcraft.to_py_obj_dict(req_items)
+
+		if vlambda_run_project == unsafe { nil } {
+			req_obj.decref()
+			vlambda_result_str = '{"error": "no project runner registered"}'
+			return
+		}
+		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, req_obj.ptr]
+		result := vcraft.call(vlambda_run_project, args)
+		req_obj.decref()
+		for a in args { vcraft.borrow(a).decref() }
+		if result.is_null() {
+			vcraft.clear_error()
+			vlambda_result_str = '{"error": "execution failed"}'
+			return
+		}
+		if result.type_name() == 'str' {
+			ss := vcraft.from_py_string(result, 'result') or { '{"error": "bad result"}' }
+			result.decref()
+			vlambda_result_str = ss + ''
+			return
+		}
+		if result.type_name() == 'bytes' {
+			ss := vcraft.from_py_bytes(result, 'result') or { '{"error": "bad result"}' }
+			result.decref()
+			vlambda_result_str = ss + ''
+			return
+		}
+		ss := result.str()
+		result.decref()
+		vlambda_result_str = ss + ''
+	})
+	return vlambda_result_str
+}
+
+@[vc_fn]
 pub fn register_auth_register(cb voidptr) {
 	vlambda_auth_register = cb
 }
@@ -960,6 +1132,21 @@ pub fn register_record_metric(cb voidptr) {
 @[vc_fn]
 pub fn register_query_metrics(cb voidptr) {
 	vlambda_query_metrics = cb
+}
+
+@[vc_fn]
+pub fn register_create_project(cb voidptr) {
+	vlambda_create_project = cb
+}
+
+@[vc_fn]
+pub fn register_run_project(cb voidptr) {
+	vlambda_run_project = cb
+}
+
+@[vc_fn]
+pub fn register_delete_project(cb voidptr) {
+	vlambda_delete_project = cb
 }
 
 @[vc_fn]

@@ -22,6 +22,10 @@ Release build: vcraft build --release (and --free-threading for t builds). Relea
 ## Type checking
 vlambda/pyproject.toml configures pyright, mypy, ty with python/ as extra import path. Run from vlambda/.
 
+## Projects
+- Upload a ZIP: `POST /vlambda?project=1&entry=main.py` with base64 body.
+- Supports multi-file projects and `requirements.txt` (installed at upload time).
+
 ## Run
 python -m vlambda --port 8080 --sqlite_path ./vlambda.db --num_coroutines 10
 Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon thread; main thread sleeps. Ctrl+C unreliable; use /shutdown or kill.

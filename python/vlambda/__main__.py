@@ -99,7 +99,7 @@ def main() -> None:
             result["error"] = task["error"]
         return json.dumps(result)
 
-    def _pool_execute(code, method, path, query, body):
+    def _pool_execute(code, method, path, query, body, timeout=0):
         method = method or "GET"
         path = path or "/"
         query = query or ""
@@ -118,7 +118,7 @@ def main() -> None:
         except ImportError:
             import json
             _dumps = lambda x: json.dumps(x).encode()
-        result = pool.execute(code, method, path, query, body)
+        result = pool.execute(code, method, path, query, body, timeout)
         if isinstance(result, str):
             payload = result
         elif isinstance(result, bytes):

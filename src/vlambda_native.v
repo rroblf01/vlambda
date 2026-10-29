@@ -89,6 +89,14 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('ALTER TABLE lambdas ADD COLUMN kind TEXT NOT NULL DEFAULT "code";') or {}
 	db.exec('ALTER TABLE lambdas ADD COLUMN entrypoint TEXT NOT NULL DEFAULT "";') or {}
 	db.exec('ALTER TABLE lambdas ADD COLUMN project_dir TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN timeout INTEGER NOT NULL DEFAULT 0;') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 0;') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN version INTEGER NOT NULL DEFAULT 1;') or {}
+	db.exec('CREATE TABLE IF NOT EXISTS lambda_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, method TEXT NOT NULL DEFAULT "GET", entrypoint TEXT NOT NULL DEFAULT "", project_dir TEXT NOT NULL DEFAULT "", kind TEXT NOT NULL DEFAULT "code", created_at TEXT NOT NULL);')!
+	db.exec('CREATE TABLE IF NOT EXISTS lambda_aliases (alias TEXT PRIMARY KEY, slug TEXT NOT NULL, version INTEGER NOT NULL, owner_id INTEGER NOT NULL);')!
+	db.exec('ALTER TABLE lambdas ADD COLUMN kind TEXT NOT NULL DEFAULT "code";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN entrypoint TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN project_dir TEXT NOT NULL DEFAULT "";') or {}
 	return db
 }
 
@@ -194,6 +202,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		parts := code_method.split('|')
 		code := if parts.len > 0 { parts[0] } else { '' }
 		method := if parts.len > 1 { parts[1] } else { 'GET' }
+		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
+		// memory quota stored but global enforcement only for now.
 		mut q := ''
 		if qi2 := req.url.index('?') {
 			q = req.url[qi2+1..]
@@ -549,6 +559,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			// Parse method and name from query string
 			mut method := 'GET'
 			mut name := ''
+			mut timeout := 0
+			mut memory_mb := 0
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
@@ -557,6 +569,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					}
 					if part.starts_with('name=') {
 						name = part.all_after('=')
+					}
+					if part.starts_with('timeout=') {
+						timeout = part.all_after('=').int()
+					}
+					if part.starts_with('memory_mb=') {
+						memory_mb = part.all_after('=').int()
 					}
 				}
 			}
@@ -578,7 +596,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 			slug := make_slug(code)
-			ok := db_create_lambda(slug, name, code, method, auth_uid)
+			ok := db_create_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
 			if ok {
 				prewarm_lambda(code)
 				vlambda_lambdas_created++
@@ -633,7 +651,24 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
 		slug := url_path[3..]
-		code_method := db_get_lambda_code(slug)
+		mut alias := ''
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('alias=') {
+					alias = part.all_after('=')
+				}
+			}
+		}
+		code_method := if alias != '' {
+			resolved := db_resolve_alias(alias)
+			if resolved == '' { '' } else {
+				aparts := resolved.split('|')
+				aslug := if aparts.len > 0 { aparts[0] } else { '' }
+				aver := if aparts.len > 1 { aparts[1].int() } else { 0 }
+				if aslug != slug { '' } else { db_get_version_code(slug, aver) }
+			}
+		} else { db_get_lambda_code(slug) }
 		project_info := db_get_project(slug)
 		if code_method == '' && project_info == '' {
 			vlambda_req_errors++
@@ -678,6 +713,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		parts := code_method.split('|')
 		code := if parts.len > 0 { parts[0] } else { '' }
 		method := if parts.len > 1 { parts[1] } else { 'GET' }
+		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
 		// Check method
 		if method != req.method.str() {
 			return http.Response{
@@ -694,7 +730,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		vlambda_request_counter++
 		request_id := 'req-${vlambda_request_counter}'
-		result := run_lambda(request_id, slug, code, method, req.url, q, req.data)
+		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout)
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
@@ -712,6 +748,40 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			status_code: 200
 			body: result
 			header: resp_header
+		}
+	}
+
+	// Route: /vlambda/<id>/alias (POST = create alias)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/alias') {
+		if req.method == .post {
+			if auth_uid < 0 {
+				return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			mut url_path := req.url
+			qi := url_path.index('?') or { url_path.len }
+			url_path = url_path[..qi]
+			slug := url_path[9..url_path.index('/alias') or { url_path.len }]
+			mut alias := ''
+			mut version := 0
+			if req.url.contains('?') {
+				qs := req.url.all_after('?')
+				for part in qs.split('&') {
+					if part.starts_with('name=') || part.starts_with('alias=') {
+						alias = part.all_after('=')
+					}
+					if part.starts_with('version=') {
+						version = part.all_after('=').int()
+					}
+				}
+			}
+			if alias == '' {
+				return http.Response{ status_code: 400, body: '{"error": "missing alias name"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			ok := db_create_alias(alias, slug, version, auth_uid)
+			if ok {
+				return http.Response{ status_code: 201, body: '{"alias": "${alias}", "slug": "${slug}", "version": ${version}}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			return http.Response{ status_code: 400, body: '{"error": "failed to create alias"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 	}
 
@@ -809,6 +879,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			mut method := 'GET'
 			mut name := ''
+			mut timeout := 0
+			mut memory_mb := 0
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
@@ -818,9 +890,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					if part.starts_with('name=') {
 						name = part.all_after('=')
 					}
+					if part.starts_with('timeout=') {
+						timeout = part.all_after('=').int()
+					}
+					if part.starts_with('memory_mb=') {
+						memory_mb = part.all_after('=').int()
+					}
 				}
 			}
-			ok := db_update_lambda(slug, name, code, method, auth_uid)
+			ok := db_update_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
 			if ok {
 				prewarm_lambda(code)
 				return http.Response{
@@ -893,20 +971,36 @@ pub fn auth_verify_token(token string) int {
 }
 
 @[vc_fn]
-pub fn db_create_lambda(slug string, name string, code string, method string, owner_id int) bool {
+pub fn db_create_lambda(slug string, name string, code string, method string, owner_id int, timeout int, memory_mb int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
-	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?);',
-		[slug, name, code, method, owner_id.str(), '2026-01-01T00:00:00Z']) or { return false }
+	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at, timeout, memory_mb, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1);',
+		[slug, name, code, method, owner_id.str(), '2026-01-01T00:00:00Z', timeout.str(), memory_mb.str()]) or { return false }
+	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) VALUES (?, 1, ?, ?, "", "", "code", ?);',
+		[slug, code, method, '2026-01-01T00:00:00Z']) or {}
 	vlambda_missing_cache.delete(slug)
 	return true
 }
 
 @[vc_fn]
-pub fn db_update_lambda(slug string, name string, code string, method string, owner_id int) bool {
+pub fn db_update_lambda(slug string, name string, code string, method string, owner_id int, timeout int, memory_mb int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
-	db.exec_param_many('UPDATE lambdas SET name = ?, code = ?, method = ? WHERE slug = ? AND owner_id = ?;', [name, code, method, slug, owner_id.str()]) or { return false }
+	// Bump version and store previous version.
+	mut version := 1
+	rowsv := db.exec_param_many('SELECT version, code, method FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { [] }
+	if rowsv.len > 0 {
+		v := rowsv[0].vals[2] or { '1' }
+		// rows: code, method, version depending query; adjust below
+	}
+	// Simpler: read current version first.
+	version = 1
+	current_rows := db.exec_param_many('SELECT version FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { [] }
+	if current_rows.len > 0 {
+		version = (current_rows[0].vals[0] or { '1' }).int() + 1
+	}
+	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) SELECT slug, version, code, method, entrypoint, project_dir, kind, created_at FROM lambdas WHERE slug = ? AND owner_id = ? AND NOT EXISTS (SELECT 1 FROM lambda_versions WHERE slug = ? AND version = (SELECT version FROM lambdas WHERE slug = ? AND owner_id = ?));', [slug, owner_id.str(), slug, slug, owner_id.str()]) or {}
+	db.exec_param_many('UPDATE lambdas SET name = ?, code = ?, method = ?, timeout = ?, memory_mb = ?, version = ? WHERE slug = ? AND owner_id = ?;', [name, code, method, timeout.str(), memory_mb.str(), version.str(), slug, owner_id.str()]) or { return false }
 	// Invalidate cache
 	vlambda_code_cache.delete(slug)
 	return true
@@ -942,7 +1036,7 @@ pub fn db_get_lambda_code(slug string) string {
 	if vlambda_missing_cache[slug] {
 		return ''
 	}
-	rows := db.exec_param('SELECT code, method FROM lambdas WHERE slug = ?;', slug) or { return '' }
+	rows := db.exec_param('SELECT code, method, timeout, memory_mb FROM lambdas WHERE slug = ?;', slug) or { return '' }
 	if rows.len == 0 {
 		vlambda_missing_cache[slug] = true
 		if vlambda_missing_cache.len > 10000 {
@@ -952,7 +1046,9 @@ pub fn db_get_lambda_code(slug string) string {
 	}
 	code := rows[0].vals[0] or { return '' }
 	method := rows[0].vals[1] or { return '' }
-	result := code + '|' + method
+	timeout := rows[0].vals[2] or { '0' }
+	memory_mb := rows[0].vals[3] or { '0' }
+	result := code + '|' + method + '|' + timeout + '|' + memory_mb
 	vlambda_code_cache[slug] = result
 	return result
 }
@@ -970,8 +1066,10 @@ pub fn db_get_lambda_name(slug string) string {
 pub fn db_create_project(slug string, name string, method string, entrypoint string, project_dir string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
-	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at, kind, entrypoint, project_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);',
+	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at, kind, entrypoint, project_dir, timeout, memory_mb, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1);',
 		[slug, name, '', method, owner_id.str(), '2026-01-01T00:00:00Z', 'project', entrypoint, project_dir]) or { return false }
+	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) VALUES (?, 1, ?, ?, ?, ?, "project", ?);',
+		[slug, '', method, entrypoint, project_dir, '2026-01-01T00:00:00Z']) or {}
 	return true
 }
 
@@ -995,6 +1093,47 @@ pub fn db_get_lambda_owner(slug string) int {
 	if rows.len == 0 { return -1 }
 	n := rows[0].vals[0] or { return -1 }
 	return n.int()
+}
+
+@[vc_fn]
+pub fn db_create_alias(alias string, slug string, version int, owner_id int) bool {
+	mut db := init_db(vlambda_db_path) or { return false }
+	defer { db.close() or {} }
+	// Only the owner may create an alias for a lambda.
+	owner := db.exec_param('SELECT owner_id FROM lambdas WHERE slug = ?;', slug) or { return false }
+	if owner.len == 0 { return false }
+	o := owner[0].vals[0] or { return false }
+	if o.int() != owner_id { return false }
+	ver := if version > 0 { version } else {
+		r := db.exec_param('SELECT version FROM lambdas WHERE slug = ?;', slug) or { return false }
+		if r.len == 0 { return false }
+		(r[0].vals[0] or { '1' }).int()
+	}
+	db.exec_param_many('INSERT OR REPLACE INTO lambda_aliases (alias, slug, version, owner_id) VALUES (?, ?, ?, ?);',
+		[alias, slug, ver.str(), owner_id.str()]) or { return false }
+	return true
+}
+
+@[vc_fn]
+pub fn db_resolve_alias(alias string) string {
+	mut db := init_db(vlambda_db_path) or { return '' }
+	defer { db.close() or {} }
+	rows := db.exec_param('SELECT slug, version FROM lambda_aliases WHERE alias = ?;', alias) or { return '' }
+	if rows.len == 0 { return '' }
+	slug := rows[0].vals[0] or { return '' }
+	version := rows[0].vals[1] or { return '' }
+	return slug + '|' + version
+}
+
+@[vc_fn]
+pub fn db_get_version_code(slug string, version int) string {
+	mut db := init_db(vlambda_db_path) or { return '' }
+	defer { db.close() or {} }
+	rows := db.exec_param_many('SELECT code, method FROM lambda_versions WHERE slug = ? AND version = ?;', [slug, version.str()]) or { return '' }
+	if rows.len == 0 { return '' }
+	code := rows[0].vals[0] or { return '' }
+	method := rows[0].vals[1] or { return '' }
+	return code + '|' + method + '|0|0' 
 }
 
 @[vc_fn]
@@ -1063,10 +1202,10 @@ fn body_to_py_bytes(body string) vcraft.PyObj {
 	}
 }
 
-pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string) string {
+pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int) string {
 	vlambda_result_str = '{"error": "not started"}'
 	start_time := time.now()
-	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, start_time] () {
+	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, start_time] () {
 		if vlambda_executor == unsafe { nil } {
 			vlambda_result_str = '{"error": "no executor registered"}'
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
@@ -1078,7 +1217,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			}
 			return
 		}
-		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr]
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {

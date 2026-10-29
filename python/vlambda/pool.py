@@ -53,7 +53,7 @@ class Worker:
 
     _SINGLE_FLIGHT = __import__("os").environ.get("VLAMBDA_SINGLE_FLIGHT", "0") == "1"
 
-    def submit(self, code, method, path, query, body) -> Any:
+    def submit(self, code, method, path, query, body, timeout=0) -> Any:
         if not Worker._SINGLE_FLIGHT:
             result_queue = queue.Queue(1)
             try:
@@ -61,7 +61,8 @@ class Worker:
             except queue.Full:
                 return {"error": "server busy, try again later"}
             try:
-                return result_queue.get(timeout=int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
+                _t = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+                return result_queue.get(timeout=_t)
             except queue.Empty:
                 return {"error": "invocation timeout"}
 
@@ -79,7 +80,7 @@ class Worker:
                 is_leader = True
 
         if not is_leader:
-            event.wait(timeout=int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
+            event.wait(timeout=timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
             return container.get("result", {"error": "timeout"})
 
         # Leader executes
@@ -92,7 +93,8 @@ class Worker:
             event.set()
             return {"error": "server busy, try again later"}
         try:
-            result = result_queue.get(timeout=int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30")))
+            _t = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+            result = result_queue.get(timeout=_t)
         except queue.Empty:
             result = {"error": "invocation timeout"}
         container["result"] = result
@@ -112,7 +114,7 @@ class Pool:
         self._lock = threading.Lock()
         self._counter = itertools.count()
 
-    def execute(self, code, method, path, query, body) -> Any:
+    def execute(self, code, method, path, query, body, timeout=0) -> Any:
         # Auto-scale: if queue is deep, add a worker up to the configured cap.
         with self._lock:
             if len(self._workers) < self._max_workers and self._queue_depth() > len(self._workers) * 2:
@@ -120,7 +122,7 @@ class Pool:
             workers = list(self._workers)
         # Atomic round-robin selection without holding the lock during submit.
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body)
+        return workers[idx].submit(code, method, path, query, body, timeout)
 
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)

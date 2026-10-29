@@ -207,3 +207,14 @@ def delete_project(project_dir: str):
         for key in [k for k in _cache if k[0] == project_dir]:
             del _cache[key]
     shutil.rmtree(project_dir, ignore_errors=True)
+
+
+def schedule_delete(project_dir: str):
+    """Delete a project directory without blocking the request thread."""
+    def _run():
+        try:
+            delete_project(project_dir)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
+    return None

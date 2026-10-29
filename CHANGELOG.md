@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Multi-file project uploads as ZIP archives with configurable entrypoint.
+- Per-project dependencies from `requirements.txt` and `pyproject.toml`, installed into an isolated `vendor/` directory.
+- Shared dependency store keyed by dependency set, with size-based pruning.
+- Token-bucket rate limiting per IP with configurable burst.
+- Persistent invocation metrics and logs in a separate SQLite database.
+- `/metrics/history` and `/metrics/stats` endpoints with retention and percentiles.
+- Dead-letter queue and retries for asynchronous tasks.
+- Ownership enforcement for lambda get/delete operations.
+- Memory pressure handling with `503` responses and configurable hard limits.
+- Atomic pool round-robin, configurable worker cap, queue size and backpressure.
+- Free-threaded (`cp314t`, `cp315t`) Linux wheels.
+- Unit and integration test suites, including concurrency, projects, rate limiting, metrics persistence and sandbox checks.
+- Project cache prewarming and async task thread pool.
+
+### Changed
+- Project layout moved from `vlambda/` to the repository root.
+- vcraft updated from 1.7.0 to 1.7.2.
+- CI and release workflows now use the prebuilt manylinux container.
+- Response cache stores serialized payloads for GET requests.
+- Compiled handlers are cached and executed without per-request `exec`.
+- Metrics are optional and sampled via environment variables.
+- In-memory lambda metrics are optional.
+- Async tasks no longer spawn one thread per task.
+- Removed optional Nuitka compilation path.
+- Release workflow now includes provenance attestation.
+
+### Fixed
+- Unchecked `db.close()` results that broke release (`-prod`) builds.
+- Worker threads terminating on response-cache hits.
+- Platform tags for Linux wheels (`manylinux_2_28`).
+- Source distribution format converted to PAX for PyPI (handled by vcraft 1.7.2).
+- Ownership checks for lambda deletion.
+- Rate limiter burst sizing to avoid blocking normal setup requests.
+
+### Performance
+- Response cache returns cached serialized payloads.
+- Handler compilation is cached across requests and warm starts.
+- Atomic pool selection reduces lock contention.
+- Benchmarks after optimizations: ~2293-3019 req/s at concurrency 10.
+
 ## [0.1.0] - 2026-10-28
 
 ### Added

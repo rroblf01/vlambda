@@ -48,7 +48,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_run_project, register_create_project, register_delete_project, register_get_dlq, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -223,7 +223,7 @@ def main() -> None:
 
     register_query_stats(_query_stats)
 
-    from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl
+    from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl, schedule_delete as _schedule_delete_impl
 
     def _run_project(project_dir, entrypoint, request_dict):
         from vlambda.request import Request
@@ -253,6 +253,12 @@ def main() -> None:
     register_run_project(_run_project)
     register_create_project(_create_project)
     register_delete_project(_delete_project)
+
+    def _schedule_delete(project_dir):
+        _schedule_delete_impl(project_dir)
+        return None
+
+    register_schedule_delete(_schedule_delete)
 
     def _get_dlq():
         import json

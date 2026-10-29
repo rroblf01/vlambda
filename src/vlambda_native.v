@@ -27,6 +27,7 @@ __global (
 	vlambda_run_project = voidptr(0)
 	vlambda_create_project = voidptr(0)
 	vlambda_delete_project = voidptr(0)
+	vlambda_schedule_delete = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -760,11 +761,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if project_info != '' {
 				pparts := project_info.split('|')
 				if pparts.len > 0 {
-					project_dir := pparts[0]
-					if vlambda_delete_project != unsafe { nil } {
+					project_dir := pparts[0] + ''
+					if vlambda_schedule_delete != unsafe { nil } {
 						vcraft.with_gil(fn [project_dir] () {
 							args := [vcraft.to_py_string(project_dir).ptr]
-							r := vcraft.call(vlambda_delete_project, args)
+							r := vcraft.call(vlambda_schedule_delete, args)
 							vcraft.borrow(args[0]).decref()
 							if !r.is_null() { r.decref() }
 						})
@@ -1305,6 +1306,11 @@ pub fn register_run_project(cb voidptr) {
 @[vc_fn]
 pub fn register_delete_project(cb voidptr) {
 	vlambda_delete_project = cb
+}
+
+@[vc_fn]
+pub fn register_schedule_delete(cb voidptr) {
+	vlambda_schedule_delete = cb
 }
 
 @[vc_fn]

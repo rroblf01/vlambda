@@ -61,9 +61,13 @@ def main() -> None:
     import gc
     gc.set_threshold(0, 0, 0)  # disable automatic GC during requests
 
+    metrics_enabled = os.environ.get("VLAMBDA_METRICS_ENABLED", "1") == "1"
+    metrics_sample = int(os.environ.get("VLAMBDA_METRICS_SAMPLE", "1"))
+
     configure(
         args.max_body_size, args.rate_limit, args.invoke_timeout,
         args.max_memory_mb, args.cors_origin, args.cert, args.key,
+        metrics_enabled, metrics_sample,
     )
 
     metrics_db = os.environ.get("VLAMBDA_METRICS_DB", args.sqlite_path.replace(".db", "_metrics.db"))

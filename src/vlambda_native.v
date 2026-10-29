@@ -31,6 +31,9 @@ __global (
 	vlambda_rate_limit = 100          // req/s per IP
 	vlambda_invoke_timeout = 30       // seconds
 	vlambda_max_memory_mb = 0         // 0 = unlimited
+	vlambda_metrics_enabled = true
+	vlambda_metrics_sample = 1
+	vlambda_metric_counter = u64(0)
 	vlambda_cors_origin = '*'        // CORS origin
 	vlambda_cert_path = ''
 	vlambda_key_path = ''
@@ -53,6 +56,8 @@ __global (
 	// Shutdown
 	vlambda_shutdown = false
 	vlambda_overloaded = false
+	// Rate limiter (token bucket per IP)
+	vlambda_rate_buckets = map[string]TokenBucket{}
 )
 
 // ---- SQLite helpers ----
@@ -95,6 +100,12 @@ fn make_slug(code string) string {
 	return 'l${h:016x}'
 }
 
+struct TokenBucket {
+mut:
+	tokens f64
+	last   f64
+}
+
 // ---- HTTP Handler ----
 
 struct VlambdaHandler {
@@ -108,10 +119,33 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		vlambda_req_total++
 	}
 	start_time := time.now()
-	// Rate limiting (simple per-IP, resets each second via counter)
-	// For simplicity, track total requests per IP in a map; reset not implemented for brevity
-	// (production would use token bucket with timestamps)
-
+	// Rate limiting: token bucket per IP (skip health/metrics endpoints).
+	if vlambda_rate_limit > 0 && req.url != '/health' && req.url != '/metrics' && req.url != '/metrics/json' && req.url != '/favicon.ico' {
+		ip := req.remote_addr.all_before(':')
+		now := f64(time.now().unix())
+		mut bucket := vlambda_rate_buckets[ip] or { TokenBucket{ tokens: f64(vlambda_rate_limit * 2), last: now } }
+		elapsed := now - bucket.last
+		if elapsed > 0 {
+			bucket.tokens += elapsed * f64(vlambda_rate_limit)
+			if bucket.tokens > f64(vlambda_rate_limit * 2) {
+				bucket.tokens = f64(vlambda_rate_limit * 2)
+			}
+		}
+		bucket.last = now
+		if bucket.tokens < 1 {
+			vlambda_rate_buckets[ip] = bucket
+			return http.Response{
+				status_code: 429
+				body: '{"error": "rate limit exceeded"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		bucket.tokens -= 1
+		vlambda_rate_buckets[ip] = bucket
+		if vlambda_rate_buckets.len > 10000 {
+			vlambda_rate_buckets = map[string]TokenBucket{}
+		}
+	}
 
 	// Memory pressure (set by Python monitor)
 	if vlambda_overloaded {
@@ -913,7 +947,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 	vcraft.with_gil(fn [slug, code, method, path, query, body, start_time] () {
 		if vlambda_executor == unsafe { nil } {
 			vlambda_result_str = '{"error": "no executor registered"}'
-			if vlambda_record_metric != unsafe { nil } {
+			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
 				r := vcraft.call(vlambda_record_metric, args)
@@ -928,7 +962,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 		if result.is_null() {
 			vcraft.clear_error()
 			vlambda_result_str = '{"error": "execution failed"}'
-			if vlambda_record_metric != unsafe { nil } {
+			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
 				r := vcraft.call(vlambda_record_metric, margs)
@@ -941,7 +975,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 			ss := vcraft.from_py_string(result, 'result') or { '{"error": "bad result"}' }
 			result.decref()
 			vlambda_result_str = ss + ''
-			if vlambda_record_metric != unsafe { nil } {
+			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
 				r := vcraft.call(vlambda_record_metric, margs)
@@ -954,7 +988,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 			ss := vcraft.from_py_bytes(result, 'result') or { '{"error": "bad result"}' }
 			result.decref()
 			vlambda_result_str = ss + ''
-			if vlambda_record_metric != unsafe { nil } {
+			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
 				r := vcraft.call(vlambda_record_metric, margs)
@@ -966,7 +1000,7 @@ pub fn run_lambda(slug string, code string, method string, path string, query st
 		ss := result.str()
 		result.decref()
 		vlambda_result_str = ss + ''
-		if vlambda_record_metric != unsafe { nil } {
+		if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 			elapsed := time.since(start_time).microseconds()
 			margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
 			r := vcraft.call(vlambda_record_metric, margs)
@@ -1081,11 +1115,13 @@ pub fn auth_login_user(username string, password string) string {
 }
 
 @[vc_fn]
-pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memory_mb int, cors_origin string, cert_path string, key_path string) {
+pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memory_mb int, cors_origin string, cert_path string, key_path string, metrics_enabled bool, metrics_sample int) {
 	if max_body_size > 0 { vlambda_max_body_size = max_body_size }
 	if rate_limit > 0 { vlambda_rate_limit = rate_limit }
 	if invoke_timeout > 0 { vlambda_invoke_timeout = invoke_timeout }
 	vlambda_max_memory_mb = max_memory_mb
+	vlambda_metrics_enabled = metrics_enabled
+	if metrics_sample > 0 { vlambda_metrics_sample = metrics_sample }
 	if cors_origin != '' { vlambda_cors_origin = cors_origin }
 	vlambda_cert_path = cert_path
 	vlambda_key_path = key_path

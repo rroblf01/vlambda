@@ -8,8 +8,16 @@
 <script src="/assets/app.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-:root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --green:#238636; --red:#da3633; }
-body.light { --bg:#f6f8fa; --panel:#ffffff; --border:#d0d7de; --text:#1f2328; --muted:#57606a; --accent:#0969da; --green:#1a7f37; --red:#cf222e; }
+:root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --green:#238636; --red:#da3633;
+  --ed-bg:#0d1117; --ed-panel:#161b22; --ed-border:#30363d; --ed-fg:#c9d1d9; --ed-gutter:#6e7681; --ed-gutter-bg:#0d1117;
+  --ed-active:rgba(88,166,255,.07); --ed-active-gutter:#161b22; --ed-selection:#264f78; --ed-cursor:#58a6ff;
+  --syn-keyword:#ff7b72; --syn-name:#c9d1d9; --syn-function:#d2a8ff; --syn-constant:#79c0ff; --syn-type:#ffa657;
+  --syn-operator:#79c0ff; --syn-comment:#8b949e; --syn-string:#a5d6ff; --syn-invalid:#f85149; }
+body.light { --bg:#f6f8fa; --panel:#ffffff; --border:#d0d7de; --text:#1f2328; --muted:#57606a; --accent:#0969da; --green:#1a7f37; --red:#cf222e;
+  --ed-bg:#ffffff; --ed-panel:#f6f8fa; --ed-border:#d0d7de; --ed-fg:#1f2328; --ed-gutter:#6e7781; --ed-gutter-bg:#ffffff;
+  --ed-active:rgba(9,105,218,.06); --ed-active-gutter:#f6f8fa; --ed-selection:#b6d7ff; --ed-cursor:#0969da;
+  --syn-keyword:#cf222e; --syn-name:#1f2328; --syn-function:#8250df; --syn-constant:#0550ae; --syn-type:#953800;
+  --syn-operator:#0550ae; --syn-comment:#6e7781; --syn-string:#0a3069; --syn-invalid:#cf222e; }
 body.light h1, body.light h2 { color:#1f2328; }
 body.light .btn { background:#f6f8fa; color:#1f2328; }
 body.light .btn:hover { background:#eaeef2; }
@@ -50,7 +58,7 @@ tr:hover { background: #1c2128; }
 .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, monospace; }
-.grid2 { display: grid; grid-template-columns: 260px 1fr; gap: 14px; }
+.grid2 { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: start; }
 .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 12px; }
 .chart-wrap { position: relative; width: 100%; height: 260px; min-height: 260px; max-height: 260px; }
 .chart-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
@@ -69,6 +77,27 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
 .tab { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 12px; }
 .tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 .editor-host { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; min-height: 300px; }
+.editor-host .cm-editor { border: 0; }
+.editor-host .cm-editor.cm-focused { outline: none; }
+
+/* ---------- IDE ---------- */
+.ide-card { padding: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--panel); }
+.ide-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, rgba(255,255,255,.025), transparent); flex-wrap: wrap; }
+body.light .ide-toolbar { background: linear-gradient(180deg, rgba(0,0,0,.015), transparent); }
+.ide-files { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ide-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); flex: none; }
+.ide-filename { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ide-chip { font-size: 11px; color: var(--muted); border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px; }
+.ide-card .editor-host { border: 0; border-radius: 0; height: calc(100vh - 340px); min-height: 420px; }
+.ide-statusbar { display: flex; align-items: center; gap: 16px; padding: 5px 12px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--panel); }
+.ide-statusbar .ide-spacer { flex: 1; }
+.ide-tabs { display: flex; gap: 2px; flex-wrap: wrap; align-items: flex-end; }
+.ide-tabs .tab { border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 6px 12px; background: transparent; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ide-tabs .tab:hover { background: rgba(255,255,255,.05); color: var(--text); }
+.ide-tabs .tab.active { background: var(--ed-bg); border-color: var(--border); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
+.ide-output { margin-top: 12px; }
+.ide-output pre { margin-top: 6px; max-height: 280px; }
 .log-drawer { position: fixed; right: 0; bottom: 0; width: 460px; max-width: 100%; height: 300px; background: #0b0f14; border-left: 1px solid var(--border); border-top: 1px solid var(--border); z-index: 300; display: flex; flex-direction: column; font-family: ui-monospace, monospace; font-size: 11px; }
 .log-drawer .log-body { overflow: auto; flex: 1; padding: 6px; }
 .log-line { padding: 1px 0; border-bottom: 1px solid #11161d; word-break: break-word; }
@@ -225,10 +254,27 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
             <div id="packages-list" class="muted" style="margin-top:8px;">—</div>
           </div>
         </div>
-        <div class="card">
-          <div id="editor-code" class="editor-host" style="min-height:520px;"></div>
-          <div id="run-result" style="margin-top:10px;"></div>
+        <div class="card ide-card">
+          <div class="ide-toolbar">
+            <div class="ide-files">
+              <span class="ide-dot"></span>
+              <span id="editor-filename" class="ide-filename">lambda.py</span>
+            </div>
+            <div class="flex">
+              <span class="ide-chip">Python</span>
+              <button class="btn btn-sm" onclick="runCurrent()">Run</button>
+              <button class="btn btn-sm btn-primary" onclick="saveCodeLambda()">Save</button>
+            </div>
+          </div>
+          <div id="editor-code" class="editor-host"></div>
+          <div class="ide-statusbar">
+            <span id="editor-status-pos">Ln 1, Col 1</span>
+            <span class="ide-spacer"></span>
+            <span>UTF-8</span>
+            <span>Python 3.14</span>
+          </div>
         </div>
+        <div id="run-result" class="ide-output"></div>
       </div>
     </div>
   </div>
@@ -266,11 +312,23 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
           <div id="project-packages-list" class="muted" style="margin-top:8px;">—</div>
         </div>
       </div>
-      <div class="card">
-        <div id="project-tabs" class="tabs"></div>
-        <div id="project-editor" class="editor-host" style="min-height:520px;"></div>
-        <div id="project-result" style="margin-top:10px;"></div>
+      <div class="card ide-card">
+        <div class="ide-toolbar">
+          <div id="project-tabs" class="ide-tabs"></div>
+          <div class="flex">
+            <button class="btn btn-sm" onclick="runProject()">Run</button>
+            <button class="btn btn-sm btn-primary" onclick="saveProject()">Save</button>
+          </div>
+        </div>
+        <div id="project-editor" class="editor-host"></div>
+        <div class="ide-statusbar">
+          <span id="project-status-pos">Ln 1, Col 1</span>
+          <span class="ide-spacer"></span>
+          <span id="project-filename">—</span>
+          <span>Python 3.14</span>
+        </div>
       </div>
+      <div id="project-result" class="ide-output"></div>
     </div>
   </div>
 
@@ -471,6 +529,15 @@ function setInvokeUrl(inputId, openId, slug) {
   const url = lambdaUrl(slug);
   if (input) input.value = url;
   if (open) open.href = url;
+}
+function attachCursorStatus(hostId, statusId) {
+  const host = document.getElementById(hostId);
+  if (!host || host.dataset.cursorBound) return;
+  host.dataset.cursorBound = '1';
+  host.addEventListener('cm-cursor', e => {
+    const el = document.getElementById(statusId);
+    if (el) el.textContent = 'Ln ' + e.detail.line + ', Col ' + e.detail.col;
+  });
 }
 function hide(id) { document.getElementById(id).classList.add('hidden'); }
 function show(id) { document.getElementById(id).classList.remove('hidden'); }
@@ -676,6 +743,9 @@ async function editLambda(slug, kind) {
     if (!codeEditor) codeEditor = VLambdaEditor.createEditor(document.getElementById('editor-code'), code);
     else VLambdaEditor.setValue(codeEditor, code);
     const l = lambdas.find(x => x.slug === slug) || {};
+    document.getElementById('editor-filename').textContent = (l.name || slug) + '.py';
+    document.getElementById('editor-status-pos').textContent = 'Ln 1, Col 1';
+    attachCursorStatus('editor-code', 'editor-status-pos');
     document.getElementById('edit-name').value = l.name || '';
     document.getElementById('edit-method').value = l.method || 'GET';
     document.getElementById('edit-timeout').value = '30';
@@ -796,6 +866,9 @@ async function openProject(slug) {
     document.getElementById('project-reqs').value = projectFiles['requirements.txt'] || '';
     const names = Object.keys(projectFiles).sort();
     activeProjectFile = names[0] || null;
+    document.getElementById('project-filename').textContent = activeProjectFile || '—';
+    document.getElementById('project-status-pos').textContent = 'Ln 1, Col 1';
+    attachCursorStatus('project-editor', 'project-status-pos');
     renderProjectTree();
     renderProjectTabs();
     if (!projectEditor) projectEditor = VLambdaEditor.createEditor(document.getElementById('project-editor'), activeProjectFile ? projectFiles[activeProjectFile] : '');
@@ -820,6 +893,8 @@ function selectProjectFile(name) {
   if (activeProjectFile && projectEditor) projectFiles[activeProjectFile] = VLambdaEditor.getValue(projectEditor);
   activeProjectFile = name;
   if (projectEditor) VLambdaEditor.setValue(projectEditor, projectFiles[name] || '');
+  document.getElementById('project-filename').textContent = name || '—';
+  document.getElementById('project-status-pos').textContent = 'Ln 1, Col 1';
   renderProjectTree(); renderProjectTabs();
   flog('debug', 'selected file', name);
 }

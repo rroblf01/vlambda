@@ -188,6 +188,13 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
           <div class="card">
             <h3>Metadata</h3>
             <div class="form-group"><label>Name</label><input id="edit-name"></div>
+            <div class="form-group"><label>Invoke URL</label>
+              <div class="flex">
+                <input id="edit-url" readonly style="flex:1;">
+                <button class="btn btn-sm" onclick="copyLambdaUrl(currentSlug)">Copy</button>
+                <a class="btn btn-sm" id="edit-url-open" target="_blank" rel="noopener" style="text-decoration:none;">Open</a>
+              </div>
+            </div>
             <div class="flex">
               <div class="form-group" style="flex:1;"><label>Method</label><select id="edit-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
               <div class="form-group" style="flex:1;"><label>Timeout</label><input id="edit-timeout" type="number"></div>
@@ -245,6 +252,13 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
         </div>
         <div class="card">
           <h3>Project</h3>
+          <div class="form-group"><label>Invoke URL</label>
+            <div class="flex">
+              <input id="project-url" readonly style="flex:1;">
+              <button class="btn btn-sm" onclick="copyLambdaUrl(currentSlug)">Copy</button>
+              <a class="btn btn-sm" id="project-url-open" target="_blank" rel="noopener" style="text-decoration:none;">Open</a>
+            </div>
+          </div>
           <div class="form-group"><label>Entrypoint</label><input id="project-entry"></div>
           <div class="form-group"><label>Requirements</label><textarea id="project-reqs" rows="5" style="width:100%"></textarea></div>
           <div class="flex"><button class="btn btn-primary" onclick="saveProject()">Save</button><button class="btn" onclick="runProject()">Run</button><button class="btn" onclick="installPackages()">Install deps</button></div>
@@ -404,6 +418,59 @@ window.addEventListener('unhandledrejection', e => flog('error', 'unhandled reje
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function lambdaUrl(slug) { return location.origin + '/f/' + encodeURIComponent(slug); }
+function notify(msg, type) {
+  const el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9999;padding:10px 14px;border-radius:6px;' +
+    'font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.4);color:#fff;background:' +
+    (type === 'error' ? '#da3633' : '#238636') + ';';
+  document.body.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .3s';
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 300);
+  }, 2500);
+}
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (e) { /* fall back to execCommand below */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+  if (!ok) throw new Error('clipboard not available');
+}
+async function copyLambdaUrl(slug) {
+  try {
+    await copyText(lambdaUrl(slug));
+    notify('Invoke URL copied: ' + lambdaUrl(slug));
+    flog('info', 'invoke URL copied', { slug });
+    return true;
+  } catch (e) {
+    notify('Could not copy the URL', 'error');
+    flog('warn', 'copy failed', e.message);
+    return false;
+  }
+}
+function setInvokeUrl(inputId, openId, slug) {
+  const input = document.getElementById(inputId);
+  const open = document.getElementById(openId);
+  if (!slug) return;
+  const url = lambdaUrl(slug);
+  if (input) input.value = url;
+  if (open) open.href = url;
+}
 function hide(id) { document.getElementById(id).classList.add('hidden'); }
 function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function showAlert(id, msg, type) {
@@ -533,14 +600,16 @@ function renderLambdaTable() {
     .forEach(l => {
       const tr = document.createElement('tr');
       const badge = l.kind === 'project' ? '<span class="badge badge-project">project</span>' : '<span class="badge">code</span>';
-      tr.innerHTML = '<td><strong>' + escapeHtml(l.name || l.slug) + '</strong></td>' +
-        '<td class="mono">' + escapeHtml(l.slug) + '</td>' +
+      const url = '/f/' + encodeURIComponent(l.slug);
+      tr.innerHTML = '<td><a href="' + url + '" target="_blank" rel="noopener"><strong>' + escapeHtml(l.name || l.slug) + '</strong></a></td>' +
+        '<td class="mono"><a href="' + url + '" target="_blank" rel="noopener">' + escapeHtml(l.slug) + '</a></td>' +
         '<td><span class="badge badge-' + l.method.toLowerCase() + '">' + l.method + '</span></td>' +
         '<td>' + badge + '</td>' +
         '<td><span class="flex">' +
         '<button class="btn btn-sm" onclick="invokeLambda(\'' + l.slug + '\',\'' + l.method + '\')">Run</button>' +
         '<button class="btn btn-sm" onclick="editLambda(\'' + l.slug + '\',\'' + l.kind + '\')">Edit</button>' +
         '<button class="btn btn-sm" onclick="openInPlayground(\'' + l.slug + '\',\'' + l.method + '\')">Test</button>' +
+        '<button class="btn btn-sm" onclick="copyLambdaUrl(\'' + l.slug + '\')">Copy link</button>' +
         '<button class="btn btn-sm btn-danger" onclick="deleteLambda(\'' + l.slug + '\')">Del</button>' +
         '</span></td>';
       tbody.appendChild(tr);
@@ -600,6 +669,7 @@ async function editLambda(slug, kind) {
   if (kind === 'project') { await openProject(slug); return; }
   showView('editor');
   document.getElementById('editor-title').textContent = 'Edit ' + slug;
+  setInvokeUrl('edit-url', 'edit-url-open', slug);
   try {
     const code = await api('/vlambda/' + slug);
     if (!codeEditor) codeEditor = VLambdaEditor.createEditor(document.getElementById('editor-code'), code);
@@ -717,6 +787,7 @@ async function openProject(slug) {
   currentSlug = slug; currentKind = 'project';
   showView('project');
   document.getElementById('project-title').textContent = 'Project ' + slug;
+  setInvokeUrl('project-url', 'project-url-open', slug);
   try {
     const data = await api('/project/' + slug);
     projectFiles = data.files || {};

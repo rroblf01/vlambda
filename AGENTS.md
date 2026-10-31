@@ -22,6 +22,11 @@ Release build: vcraft build --release (and --free-threading for t builds). Relea
 ## Type checking
 vlambda/pyproject.toml configures pyright, mypy, ty with python/ as extra import path. Run from vlambda/.
 
+## UI
+- Source: `python/vlambda/ui.html`.
+- Bundled editor/Chart.js: `python/vlambda/static/app.js` (built from `ui/` with `npm run build`).
+- Assets served locally via `/assets/<name>`; no CDN.
+
 ## Projects
 - Upload a ZIP: `POST /vlambda?project=1&entry=main.py` with base64 body.
 - Supports multi-file projects and `requirements.txt` (installed at upload time).

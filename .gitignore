@@ -12,3 +12,5 @@ __pycache__/
 /src/_vcraft_generated.v
 python/vlambda_native.pyi
 .pytest_cache/
+
+ui/node_modules/

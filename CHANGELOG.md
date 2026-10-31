@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Full web UI revamp: local CodeMirror 6 editor, lambdas dashboard with search/filter/pagination, API playground, live metrics charts, logs viewer, system status and frontend log drawer.
+- Multi-file project editor with file tree, tabs, entrypoint and requirements editing.
+- Project file read/save endpoints (`GET/PUT /project/<slug>`), project versions and aliases listing.
 - Per-lambda timeout quotas and alias/version support.
 - Request tracing IDs and aggregated metrics endpoints (summary, stats, CSV export).
 - Pool stats endpoint and optional shared cache backend.

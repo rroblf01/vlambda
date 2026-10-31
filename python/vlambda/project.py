@@ -218,3 +218,112 @@ def schedule_delete(project_dir: str):
             pass
     threading.Thread(target=_run, daemon=True).start()
     return None
+
+
+def _project_files(project_dir: str) -> dict[str, str]:
+    files: dict[str, str] = {}
+    if not os.path.isdir(project_dir):
+        return files
+    for root, dirs, names in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if d not in ("vendor", "__pycache__", ".git")]
+        for name in names:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, project_dir)
+            try:
+                if os.path.getsize(full) > 2_000_000:
+                    files[rel] = "<file too large>"
+                    continue
+                with open(full, "r", encoding="utf-8") as f:
+                    files[rel] = f.read()
+            except (UnicodeDecodeError, OSError):
+                files[rel] = "<binary file>"
+    return files
+
+
+def get_project_json(project_dir: str, entrypoint: str, slug: str, method: str) -> str:
+    return json.dumps({
+        "slug": slug,
+        "entrypoint": entrypoint,
+        "method": method,
+        "files": _project_files(project_dir),
+    })
+
+
+def save_project_json(project_dir: str, body_json: str, default_entrypoint: str = "main.py") -> str:
+    try:
+        data = json.loads(body_json)
+    except Exception as e:
+        return json.dumps({"error": f"invalid json: {e}"})
+    files = data.get("files")
+    if not isinstance(files, dict):
+        return json.dumps({"error": "missing files"})
+    for rel, content in files.items():
+        if not isinstance(rel, str) or os.path.isabs(rel) or ".." in rel.split("/"):
+            return json.dumps({"error": f"unsafe path: {rel}"})
+        full = os.path.join(project_dir, rel)
+        os.makedirs(os.path.dirname(full) or project_dir, exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content if isinstance(content, str) else "")
+    entrypoint = data.get("entrypoint") or default_entrypoint
+    from vlambda.cache import clear as _clear_code_cache
+    _clear_code_cache()
+    with _lock:
+        for key in [k for k in _cache if k[0] == project_dir]:
+            del _cache[key]
+    return json.dumps({"saved": True, "entrypoint": entrypoint})
+
+
+def list_versions(slug: str) -> str:
+    import sqlite3
+    db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT version, created_at FROM lambda_versions WHERE slug = ? ORDER BY version DESC",
+            (slug,),
+        ).fetchall()
+        conn.close()
+        return json.dumps({"versions": [{"version": r[0], "created_at": r[1]} for r in rows]})
+    except Exception as e:
+        return json.dumps({"versions": [], "error": str(e)})
+
+
+def list_aliases(slug: str) -> str:
+    import sqlite3
+    db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT alias, version FROM lambda_aliases WHERE slug = ? ORDER BY alias",
+            (slug,),
+        ).fetchall()
+        conn.close()
+        return json.dumps({"aliases": [{"alias": r[0], "version": r[1]} for r in rows]})
+    except Exception as e:
+        return json.dumps({"aliases": [], "error": str(e)})
+
+
+def gc_orphans() -> int:
+    """Delete project directories that no lambda row references anymore."""
+    import sqlite3
+    db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    referenced = set()
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT project_dir FROM lambdas WHERE kind = 'project' AND project_dir != ''"
+        ).fetchall()
+        conn.close()
+        referenced = {os.path.abspath(r[0]) for r in rows if r[0]}
+    except Exception:
+        return 0
+    removed = 0
+    try:
+        for name in os.listdir(_PROJECTS_DIR):
+            path = os.path.abspath(os.path.join(_PROJECTS_DIR, name))
+            if path not in referenced:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+    except FileNotFoundError:
+        pass
+    return removed

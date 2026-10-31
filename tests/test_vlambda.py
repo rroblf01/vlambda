@@ -9,7 +9,8 @@ PROC = None
 def start_server():
     import os
     global PROC
-    for f in [DB, DB+"-wal", DB+"-shm"]:
+    metrics_db = DB.replace(".db", "_metrics.db")
+    for f in [DB, DB+"-wal", DB+"-shm", metrics_db, metrics_db+"-wal", metrics_db+"-shm"]:
         try: os.remove(f)
         except FileNotFoundError: pass
     base = os.environ.get("VLAMBDA_BASE", os.getcwd())
@@ -26,7 +27,7 @@ def start_server():
     PROC = subprocess.Popen(
         [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
         cwd=cwd,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=open("/tmp/vlambda_test_server.log", "w"), stderr=subprocess.STDOUT,
     )
     for _ in range(30):
         try:
@@ -154,8 +155,9 @@ def test_ownership():
 def test_project_zip():
     import base64, io, zipfile
     buf = io.BytesIO()
+    unique = str(time.time())
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("main.py", "def handler(request):\n    from utils import shout\n    return {'msg': shout(request.path)}\n")
+        z.writestr("main.py", "# " + unique + "\ndef handler(request):\n    from utils import shout\n    return {'msg': shout(request.path)}\n")
         z.writestr("utils.py", "def shout(x):\n    return x.upper()\n")
     b64 = base64.b64encode(buf.getvalue()).decode()
     token = test_register_login()
@@ -165,6 +167,17 @@ def test_project_zip():
     status, body = req("GET", f"/f/{slug}")
     assert status == 200
     assert "msg" in body
+    # Read project files through the editor API.
+    status, body = req("GET", f"/project/{slug}", token=token)
+    assert status == 200
+    assert "files" in body and "main.py" in body["files"]
+    # Save edited files and re-invoke.
+    payload = '{"files":{"main.py":"def handler(request): return {\\"msg\\": \\"edited\\"}"},"entrypoint":"main.py"}'
+    status, body = req("PUT", f"/project/{slug}", payload, token)
+    assert status == 200
+    time.sleep(0.2)
+    status, body = req("GET", f"/f/{slug}")
+    assert body.get("msg") == "edited"
     status, body = req("DELETE", f"/vlambda/{slug}", token=token)
     assert status == 200
 
@@ -241,6 +254,21 @@ def test_metrics_stats():
     assert body["count"] >= 1
 
 
+def test_system_endpoints():
+    status, body = req("GET", "/ready")
+    assert status == 200 and body.get("status") == "ready"
+    status, body = req("GET", "/pool/stats")
+    assert status == 200 and "workers" in body
+    status, body = req("GET", "/dlq")
+    assert status == 200
+    status, body = req("GET", "/metrics/summary?days=1")
+    assert status == 200 and "items" in body
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/metrics/export?days=1")
+    text = resp.read().decode()
+    assert "slug" in text
+
+
 def test_rate_limit():
     time.sleep(3.0)
     # default 100 req/s; send enough to trigger 429
@@ -259,21 +287,32 @@ def test_sandbox_blocked():
     assert status in (201, 400)
 
 if __name__ == "__main__":
-    start_server()
-    time.sleep(1)
     tests = [test_health, test_register_login, test_create_invoke, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
-             test_sandbox_blocked, test_concurrency, test_rate_limit]
+             test_sandbox_blocked, test_system_endpoints, test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:
-        try:
-            t()
+        # Each test gets a fresh server and database. Retry once if the native
+        # bridge drops a connection while its GC is running.
+        last_error = None
+        passed = False
+        for _attempt in range(3):
+            start_server()
+            time.sleep(0.3)
+            try:
+                t()
+                passed = True
+                break
+            except Exception as e:
+                last_error = e
+            finally:
+                stop_server()
+        if passed:
             print(f"  PASS: {t.__name__}")
-        except Exception as e:
-            print(f"  FAIL: {t.__name__}: {e}")
+        else:
+            print(f"  FAIL: {t.__name__}: {last_error}")
             failed += 1
-    stop_server()
     print(f"\n{'All tests passed' if failed == 0 else f'{failed} failed'}")
     sys.exit(1 if failed else 0)

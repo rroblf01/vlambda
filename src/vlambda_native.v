@@ -21,6 +21,10 @@ __global (
 	vlambda_create_task = voidptr(0)
 	vlambda_get_task = voidptr(0)
 	vlambda_get_asset = voidptr(0)
+	vlambda_list_aliases = voidptr(0)
+	vlambda_list_versions = voidptr(0)
+	vlambda_save_project_json = voidptr(0)
+	vlambda_get_project_json = voidptr(0)
 	vlambda_get_dlq = voidptr(0)
 	vlambda_record_metric = voidptr(0)
 	vlambda_query_metrics = voidptr(0)
@@ -625,6 +629,70 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /project/<slug> (GET = read files, PUT = save files)
+	if req.url.starts_with('/project/') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		if url_path.len < 10 {
+			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		slug := url_path[9..].all_before('/')
+		project_info := db_get_project(slug)
+		if project_info == '' {
+			return http.Response{ status_code: 404, body: '{"error": "project not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		project_dir := project_info.all_before('|')
+		rest_info := project_info.all_after('|')
+		entrypoint := rest_info.all_before('|')
+		method := rest_info.all_after('|')
+		if req.method == .get {
+			mut body := '{}'
+			ptr := &body
+			if vlambda_get_project_json != unsafe { nil } {
+				vcraft.with_gil(fn [project_dir, entrypoint, slug, method, ptr] () {
+					args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr]
+					r := vcraft.call(vlambda_get_project_json, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .put {
+			mut body := '{}'
+			ptr := &body
+			request_body := req.data
+			if vlambda_save_project_json != unsafe { nil } {
+				vcraft.with_gil(fn [project_dir, entrypoint, ptr, request_body] () {
+					args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(request_body).ptr, vcraft.to_py_string(entrypoint).ptr]
+					r := vcraft.call(vlambda_save_project_json, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /vlambda (POST = create, GET = list)
 	if req.url == '/vlambda' || req.url.starts_with('/vlambda?') {
 		if req.method == .post {
@@ -903,6 +971,58 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /vlambda/<slug>/versions
+	if req.url.starts_with('/vlambda/') && req.url.contains('/versions') {
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..url_path.index('/versions') or { url_path.len }]
+		mut body := '{"versions": []}'
+		ptr := &body
+		if vlambda_list_versions != unsafe { nil } {
+			vcraft.with_gil(fn [slug, ptr] () {
+				args := [vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_list_versions, args)
+				vcraft.borrow(args[0]).decref()
+				if r.is_null() { vcraft.clear_error(); return }
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"versions": []}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /vlambda/<slug>/aliases
+	if req.url.starts_with('/vlambda/') && req.url.contains('/aliases') {
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..url_path.index('/aliases') or { url_path.len }]
+		mut body := '{"aliases": []}'
+		ptr := &body
+		if vlambda_list_aliases != unsafe { nil } {
+			vcraft.with_gil(fn [slug, ptr] () {
+				args := [vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_list_aliases, args)
+				vcraft.borrow(args[0]).decref()
+				if r.is_null() { vcraft.clear_error(); return }
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"aliases": []}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /vlambda/<id>/alias (POST = create alias)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/alias') {
 		if req.method == .post {
@@ -976,7 +1096,6 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		if req.method == .delete {
-			project_info := db_get_project(slug)
 			owner := db_get_lambda_owner(slug)
 			if owner >= 0 && owner != auth_uid {
 				return http.Response{
@@ -985,20 +1104,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
-			if project_info != '' {
-				pparts := project_info.split('|')
-				if pparts.len > 0 {
-					project_dir := pparts[0] + ''
-					if vlambda_schedule_delete != unsafe { nil } {
-						vcraft.with_gil(fn [project_dir] () {
-							args := [vcraft.to_py_string(project_dir).ptr]
-							r := vcraft.call(vlambda_schedule_delete, args)
-							vcraft.borrow(args[0]).decref()
-							if !r.is_null() { r.decref() }
-						})
-					}
-				}
-			}
+			// Project files are removed by the Python orphan GC thread,
+			// which avoids calling into Python while the V GC may be running.
 			ok := db_delete_lambda(slug, auth_uid)
 			if ok {
 				return http.Response{
@@ -1331,7 +1438,7 @@ pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 	mut off := offset
 	if lim <= 0 { lim = 50 }
 	if off < 0 { off = 0 }
-	query := 'SELECT slug, name, method FROM lambdas WHERE owner_id = ? LIMIT ${lim} OFFSET ${off};'
+	query := 'SELECT slug, name, method, kind, entrypoint FROM lambdas WHERE owner_id = ? LIMIT ${lim} OFFSET ${off};'
 
 	rows := db.exec_param(query, owner_id.str()) or { return '' }
 	mut out := ''
@@ -1339,7 +1446,9 @@ pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 		slug := row.vals[0] or { continue }
 		name := row.vals[1] or { continue }
 		method := row.vals[2] or { continue }
-		out += slug + '|' + name + '|' + method + '\\n'
+		kind := row.vals[3] or { 'code' }
+		entrypoint := row.vals[4] or { '' }
+		out += slug + '|' + name + '|' + method + '|' + kind + '|' + entrypoint + '\\n'
 	}
 	return out
 }
@@ -1643,6 +1752,18 @@ pub fn register_favicon(cb voidptr) {
 pub fn register_get_asset(cb voidptr) {
 	vlambda_get_asset = cb
 }
+@[vc_fn]
+pub fn register_get_project_json(cb voidptr) { vlambda_get_project_json = cb }
+
+@[vc_fn]
+pub fn register_save_project_json(cb voidptr) { vlambda_save_project_json = cb }
+
+@[vc_fn]
+pub fn register_list_versions(cb voidptr) { vlambda_list_versions = cb }
+
+@[vc_fn]
+pub fn register_list_aliases(cb voidptr) { vlambda_list_aliases = cb }
+
 
 @[vc_fn]
 pub fn register_ui_html(cb voidptr) {

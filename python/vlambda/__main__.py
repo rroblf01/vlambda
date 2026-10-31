@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--cert", default=os.environ.get("VLAMBDA_CERT", ""))
     parser.add_argument("--key", default=os.environ.get("VLAMBDA_KEY", ""))
     args = parser.parse_args()
+    os.environ["VLAMBDA_DB"] = args.sqlite_path
 
     # Try to use jemalloc for better allocation performance
     try:
@@ -48,7 +49,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -198,6 +199,30 @@ def main() -> None:
 
     register_get_asset(_get_asset)
 
+    from vlambda.project import (
+        get_project_json as _get_project_json,
+        save_project_json as _save_project_json,
+        list_versions as _list_versions,
+        list_aliases as _list_aliases,
+    )
+
+    def _get_project_json_cb(project_dir, entrypoint, slug, method):
+        return _get_project_json(project_dir, entrypoint, slug, method)
+
+    def _save_project_json_cb(project_dir, body, entrypoint):
+        return _save_project_json(project_dir, body, entrypoint)
+
+    def _list_versions_cb(slug):
+        return _list_versions(slug)
+
+    def _list_aliases_cb(slug):
+        return _list_aliases(slug)
+
+    register_get_project_json(_get_project_json_cb)
+    register_save_project_json(_save_project_json_cb)
+    register_list_versions(_list_versions_cb)
+    register_list_aliases(_list_aliases_cb)
+
     from vlambda.assets import FAVICON as _favicon
 
     def _get_favicon():
@@ -326,6 +351,24 @@ def main() -> None:
                     pass
     except Exception as e:
         print(f"Prewarm failed: {e}", file=sys.stderr)
+
+    # Periodically remove project directories no lambda references.
+    try:
+        from vlambda.project import gc_orphans as _gc_orphans
+        def _project_gc():
+            import time, threading
+            while True:
+                try:
+                    removed = _gc_orphans()
+                    if removed:
+                        print(f"project gc removed {removed} orphan directories", file=sys.stderr)
+                except Exception as e:
+                    print(f"project gc failed: {e}", file=sys.stderr)
+                time.sleep(300)
+        import threading as _threading
+        _threading.Thread(target=_project_gc, daemon=True).start()
+    except Exception as e:
+        print(f"project gc not started: {e}", file=sys.stderr)
 
     import vlambda.tasks as _tasks
     atexit.register(lambda: _tasks._get_executor().shutdown(wait=False) if _tasks._EXECUTOR is not None else None)

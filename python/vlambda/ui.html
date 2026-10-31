@@ -8,529 +8,825 @@
 <script src="/assets/app.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; }
-a { color: #58a6ff; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.container { max-width: 960px; margin: 0 auto; padding: 20px; }
-h1 { font-size: 24px; margin-bottom: 16px; color: #f0f6fc; }
-h2 { font-size: 18px; margin-bottom: 12px; color: #f0f6fc; }
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.btn { padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; cursor: pointer; font-size: 13px; }
+:root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --green:#238636; --red:#da3633; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 22px; color: #f0f6fc; }
+h2 { font-size: 16px; color: #f0f6fc; margin-bottom: 10px; }
+h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+.btn { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: #21262d; color: var(--text); cursor: pointer; font-size: 13px; }
 .btn:hover { background: #30363d; }
-.btn-primary { background: #238636; border-color: #238636; color: #fff; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--green); border-color: var(--green); color: #fff; }
 .btn-primary:hover { background: #2ea043; }
-.btn-danger { background: #da3633; border-color: #da3633; color: #fff; }
-.btn-danger:hover { background: #f85149; }
+.btn-danger { background: var(--red); border-color: var(--red); color: #fff; }
 .btn-sm { padding: 3px 8px; font-size: 12px; }
-input, textarea { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px; border-radius: 6px; font-size: 13px; width: 100%; font-family: monospace; }
-textarea { min-height: 200px; resize: vertical; }
-label { display: block; margin-bottom: 4px; font-size: 13px; color: #8b949e; }
-.form-group { margin-bottom: 12px; }
+input, select, textarea { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 7px 9px; border-radius: 6px; font-size: 13px; }
+textarea { font-family: ui-monospace, monospace; resize: vertical; }
+label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
+.form-group { margin-bottom: 10px; }
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 8px; text-align: left; border-bottom: 1px solid #30363d; font-size: 13px; vertical-align: middle; }
-th { color: #8b949e; font-weight: 600; }
-tr:hover { background: #161b22; }
+th, td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+tr:hover { background: #1c2128; }
 .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #30363d; }
-.badge-get { background: #1f6feb; }
-.badge-post { background: #238636; }
-.alert { padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
-.alert-error { background: #3d1f1f; border: 1px solid #da3633; color: #f85149; }
-.alert-success { background: #1f3d1f; border: 1px solid #238636; color: #3fb950; }
+.badge-get { background: #1f6feb; } .badge-post { background: var(--green); } .badge-put { background: #9e6a03; } .badge-delete { background: var(--red); }
+.badge-project { background: #6e40c9; }
+.alert { padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 13px; }
+.alert-error { background: #3d1f1f; border: 1px solid var(--red); color: #f85149; }
+.alert-success { background: #1f3d1f; border: 1px solid var(--green); color: #3fb950; }
 .hidden { display: none !important; }
-.flex { display: flex; gap: 8px; align-items: center; }
-.flex-between { display: flex; justify-content: space-between; align-items: center; }
-.mt { margin-top: 12px; }
-.mb { margin-bottom: 12px; }
-pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
-.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; max-width: 400px; width: 90%; }
-.nav { display: flex; gap: 16px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid #30363d; }
-.nav a { color: #8b949e; font-size: 14px; }
-.nav a.active { color: #f0f6fc; font-weight: 600; }
+.flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, monospace; }
+.grid2 { display: grid; grid-template-columns: 260px 1fr; gap: 14px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 12px; }
+.stat { font-size: 24px; font-weight: 700; }
+pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; }
+.nav { display: flex; gap: 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; flex-wrap: wrap; }
+.nav a { color: var(--muted); font-size: 13px; padding: 4px 0; }
+.nav a.active { color: #f0f6fc; border-bottom: 2px solid var(--accent); }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px; max-width: 800px; width: 92%; max-height: 86vh; overflow: auto; }
+.tree { font-size: 13px; max-height: 420px; overflow: auto; }
+.tree div { padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.tree div:hover { background: #21262d; }
+.tree div.active { background: #1f6feb; color: #fff; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.tab { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 12px; }
+.tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.editor-host { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; min-height: 300px; }
+.log-drawer { position: fixed; right: 0; bottom: 0; width: 460px; max-width: 100%; height: 300px; background: #0b0f14; border-left: 1px solid var(--border); border-top: 1px solid var(--border); z-index: 300; display: flex; flex-direction: column; font-family: ui-monospace, monospace; font-size: 11px; }
+.log-drawer .log-body { overflow: auto; flex: 1; padding: 6px; }
+.log-line { padding: 1px 0; border-bottom: 1px solid #11161d; word-break: break-word; }
+.log-debug { color: #8b949e; } .log-info { color: #58a6ff; } .log-warn { color: #d29922; } .log-error { color: #f85149; }
+.log-toggle { position: fixed; right: 12px; bottom: 12px; z-index: 301; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #30363d; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } .log-drawer { width: 100%; height: 40vh; } }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>vlambda</h1>
+  <div class="flex-between" style="margin-bottom:8px;">
+    <h1>vlambda</h1>
+    <div class="flex">
+      <span id="status-pill" class="badge">checking…</span>
+      <a href="#" onclick="toggleLogs();return false;" class="muted" style="font-size:12px;">logs</a>
+    </div>
+  </div>
   <div class="nav" id="nav">
-    <a href="#" id="nav-dashboard" class="active" onclick="showView('dashboard');return false;">Dashboard</a>
+    <a href="#" id="nav-dashboard" class="active" onclick="showView('dashboard');return false;">Lambdas</a>
+    <a href="#" id="nav-playground" onclick="showView('playground');return false;">Playground</a>
     <a href="#" id="nav-metrics" onclick="showView('metrics');return false;">Metrics</a>
-    <a href="#" id="nav-logout" onclick="logout();return false;">Logout</a>
+    <a href="#" id="nav-logs" onclick="showView('logs');return false;">Logs</a>
+    <a href="#" id="nav-system" onclick="showView('system');return false;">System</a>
+    <a href="#" id="nav-logout" onclick="logout();return false;" style="margin-left:auto;">Logout</a>
   </div>
 
   <div id="view-login" class="hidden">
     <div class="card" style="max-width:400px;margin:40px auto;">
       <h2>Login / Register</h2>
       <div id="login-alert"></div>
-      <div class="form-group">
-        <label>Username</label>
-        <input type="text" id="username" placeholder="username">
-      </div>
-      <div class="form-group">
-        <label>Password</label>
-        <input type="password" id="password" placeholder="password">
-      </div>
-      <div class="flex">
-        <button class="btn btn-primary" onclick="doLogin()">Login</button>
-        <button class="btn" onclick="doRegister()">Register</button>
-      </div>
+      <div class="form-group"><label>Username</label><input type="text" id="username" placeholder="username"></div>
+      <div class="form-group"><label>Password</label><input type="password" id="password" placeholder="password"></div>
+      <div class="flex"><button class="btn btn-primary" onclick="doLogin()">Login</button><button class="btn" onclick="doRegister()">Register</button></div>
     </div>
   </div>
 
-  <div id="view-dashboard">
-    <div class="flex-between mb">
-      <h2>Your Lambdas</h2>
-      <button class="btn btn-primary" onclick="showCreate()">+ New Lambda</button>
-    </div>
+  <div id="view-dashboard" class="hidden">
     <div id="dashboard-alert"></div>
-    <div id="create-form" class="card hidden">
-      <h2>New Lambda</h2>
-      <div class="form-group">
-        <label>Name (optional)</label>
-        <input type="text" id="name-input" placeholder="my-lambda">
+    <div class="card">
+      <div class="flex-between mb" style="margin-bottom:10px;">
+        <div class="flex">
+          <input id="search" placeholder="Search name or slug…" oninput="renderLambdaTable()" style="width:240px;">
+          <select id="filter-method" onchange="renderLambdaTable()">
+            <option value="">All methods</option><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+          </select>
+          <select id="filter-kind" onchange="renderLambdaTable()">
+            <option value="">All types</option><option value="code">Code</option><option value="project">Project</option>
+          </select>
+          <button class="btn btn-sm" onclick="loadLambdas()">Refresh</button>
+        </div>
+        <div class="flex">
+          <button class="btn btn-primary" onclick="showCreateCode()">+ New lambda</button>
+          <button class="btn" onclick="showCreateProject()">+ Upload project</button>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Method</label>
-        <select id="method-select" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:6px;font-size:13px;width:100%;">
-          <option value="GET">GET</option>
-          <option value="POST">POST</option>
-          <option value="PUT">PUT</option>
-          <option value="PATCH">PATCH</option>
-          <option value="DELETE">DELETE</option>
-        </select>
+      <div class="flex" style="margin-bottom:10px;">
+        <span class="muted" id="lambda-count">0 lambdas</span>
+        <button class="btn btn-sm" onclick="changePage(-1)">Prev</button>
+        <button class="btn btn-sm" onclick="changePage(1)">Next</button>
+        <span class="muted" id="page-label"></span>
       </div>
-      <div class="form-group">
-        <label>Python Code</label>
-        <div id="code-input" style="border:1px solid #30363d;border-radius:6px;overflow:hidden;"></div>
-      </div>
-      <div class="flex">
-        <button class="btn btn-primary" onclick="createLambda()">Create</button>
-        <button class="btn" onclick="hideCreate()">Cancel</button>
+      <div style="overflow:auto;max-height:55vh;">
+        <table>
+          <thead><tr><th>Name</th><th>Slug</th><th>Method</th><th>Type</th><th>Actions</th></tr></thead>
+          <tbody id="lambda-list"></tbody>
+        </table>
       </div>
     </div>
-    <div class="card">
-      <table>
-        <thead><tr><th>Slug</th><th>Method</th><th>Actions</th></tr></thead>
-        <tbody id="lambda-list"></tbody>
-      </table>
+
+    <div id="create-code" class="card hidden">
+      <h2>New lambda</h2>
+      <div class="form-group"><label>Name</label><input id="new-name" placeholder="my-lambda"></div>
+      <div class="flex">
+        <div class="form-group" style="flex:1;"><label>Method</label><select id="new-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
+        <div class="form-group" style="flex:1;"><label>Timeout (s)</label><input id="new-timeout" type="number" value="30"></div>
+        <div class="form-group" style="flex:1;"><label>Memory (MB)</label><input id="new-memory" type="number" value="0"></div>
+      </div>
+      <div class="form-group"><label>Python code</label><div id="create-editor" class="editor-host"></div></div>
+      <div class="flex"><button class="btn btn-primary" onclick="createLambda()">Create</button><button class="btn" onclick="hide('create-code')">Cancel</button></div>
+    </div>
+
+    <div id="create-project" class="card hidden">
+      <h2>Upload project (.zip)</h2>
+      <div class="form-group"><label>Name</label><input id="proj-name" placeholder="my-project"></div>
+      <div class="flex">
+        <div class="form-group" style="flex:1;"><label>Entrypoint</label><input id="proj-entry" value="main.py"></div>
+        <div class="form-group" style="flex:1;"><label>Method</label><select id="proj-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
+      </div>
+      <div class="form-group"><label>ZIP file</label><input id="proj-file" type="file" accept=".zip"></div>
+      <div class="flex"><button class="btn btn-primary" onclick="createProject()">Upload</button><button class="btn" onclick="hide('create-project')">Cancel</button></div>
     </div>
   </div>
 
   <div id="view-editor" class="hidden">
-    <div class="flex-between mb">
-      <h2 id="editor-title">Edit Lambda</h2>
-      <button class="btn" onclick="showView('dashboard')">Back</button>
-    </div>
     <div id="editor-alert"></div>
-    <div class="card">
-      <div class="form-group">
-        <label>Name</label>
-        <input type="text" id="editor-name" placeholder="my-lambda">
+    <div class="flex-between" style="margin-bottom:10px;">
+      <h2 id="editor-title">Editor</h2>
+      <div class="flex">
+        <button class="btn" onclick="showView('dashboard')">Back</button>
       </div>
-      <div class="form-group">
-        <label>Method</label>
-        <select id="editor-method" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:6px;font-size:13px;width:100%;">
-          <option value="GET">GET</option>
-          <option value="POST">POST</option>
-          <option value="PUT">PUT</option>
-          <option value="PATCH">PATCH</option>
-          <option value="DELETE">DELETE</option>
-        </select>
+    </div>
+    <div id="code-editor-wrap">
+      <div class="grid2">
+        <div>
+          <div class="card">
+            <h3>Metadata</h3>
+            <div class="form-group"><label>Name</label><input id="edit-name"></div>
+            <div class="flex">
+              <div class="form-group" style="flex:1;"><label>Method</label><select id="edit-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
+              <div class="form-group" style="flex:1;"><label>Timeout</label><input id="edit-timeout" type="number"></div>
+            </div>
+            <div class="form-group"><label>Memory (MB)</label><input id="edit-memory" type="number"></div>
+            <div class="flex"><button class="btn btn-primary" onclick="saveCodeLambda()">Save</button><button class="btn" onclick="runCurrent()">Run</button></div>
+          </div>
+          <div class="card">
+            <h3>Versions</h3>
+            <div id="versions-list" class="muted">—</div>
+          </div>
+          <div class="card">
+            <h3>Aliases</h3>
+            <div id="aliases-list" class="muted">—</div>
+            <div class="flex" style="margin-top:8px;">
+              <input id="alias-name" placeholder="prod" style="width:90px;">
+              <input id="alias-version" type="number" placeholder="version" style="width:80px;">
+              <button class="btn btn-sm" onclick="createAlias()">Add</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div id="editor-code" class="editor-host" style="min-height:520px;"></div>
+          <div id="run-result" style="margin-top:10px;"></div>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Code</label>
-        <div id="editor-code" style="border:1px solid #30363d;border-radius:6px;overflow:hidden;min-height:200px;"></div>
+    </div>
+  </div>
+
+  <div id="view-project" class="hidden">
+    <div id="project-alert"></div>
+    <div class="flex-between" style="margin-bottom:10px;">
+      <h2 id="project-title">Project</h2>
+      <div class="flex">
+        <button class="btn" onclick="showView('dashboard')">Back</button>
       </div>
-      <div class="flex mb">
-        <button class="btn btn-primary" onclick="saveLambda()">Save</button>
-        <button class="btn" onclick="runLambda()">Run</button>
+    </div>
+    <div class="grid2">
+      <div>
+        <div class="card">
+          <h3>Files</h3>
+          <div id="file-tree" class="tree"></div>
+          <div class="flex" style="margin-top:8px;">
+            <input id="new-file-name" placeholder="utils.py" style="width:130px;">
+            <button class="btn btn-sm" onclick="newProjectFile()">+ File</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Project</h3>
+          <div class="form-group"><label>Entrypoint</label><input id="project-entry"></div>
+          <div class="form-group"><label>Requirements</label><textarea id="project-reqs" rows="5" style="width:100%"></textarea></div>
+          <div class="flex"><button class="btn btn-primary" onclick="saveProject()">Save</button><button class="btn" onclick="runProject()">Run</button></div>
+        </div>
       </div>
-      <div id="run-result"></div>
+      <div class="card">
+        <div id="project-tabs" class="tabs"></div>
+        <div id="project-editor" class="editor-host" style="min-height:520px;"></div>
+        <div id="project-result" style="margin-top:10px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-playground" class="hidden">
+    <div id="playground-alert"></div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Request</h2>
+        <div class="form-group"><label>Slug</label><input id="pg-slug" placeholder="l…"></div>
+        <div class="flex">
+          <div class="form-group" style="flex:1;"><label>Method</label><select id="pg-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
+          <div class="form-group" style="flex:1;"><label>Alias (optional)</label><input id="pg-alias" placeholder="prod"></div>
+        </div>
+        <div class="form-group"><label>Query string</label><input id="pg-query" placeholder="a=1&b=2"></div>
+        <div class="form-group"><label>Headers (JSON)</label><textarea id="pg-headers" rows="3" style="width:100%">{"Content-Type":"application/json"}</textarea></div>
+        <div class="form-group"><label>Body</label><textarea id="pg-body" rows="5" style="width:100%">{}</textarea></div>
+        <div class="flex"><button class="btn btn-primary" onclick="sendPlayground()">Send</button><button class="btn" onclick="loadSampleRequest()">Sample</button></div>
+      </div>
+      <div class="card">
+        <h2>Response</h2>
+        <div id="pg-meta" class="muted"></div>
+        <pre id="pg-response">—</pre>
+      </div>
     </div>
   </div>
 
   <div id="view-metrics" class="hidden">
-    <h2>Metrics</h2>
-    <div class="card" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;">
-      <div><div style="color:#8b949e;font-size:12px;">Total Requests</div><div id="m-reqs" style="font-size:24px;font-weight:700;">0</div></div>
-      <div><div style="color:#8b949e;font-size:12px;">Errors</div><div id="m-errs" style="font-size:24px;font-weight:700;color:#f85149;">0</div></div>
-      <div><div style="color:#8b949e;font-size:12px;">Lambdas Created</div><div id="m-lambdas" style="font-size:24px;font-weight:700;color:#3fb950;">0</div></div>
-      <div><div style="color:#8b949e;font-size:12px;">Avg Latency (ms)</div><div id="m-lat" style="font-size:24px;font-weight:700;">0</div></div>
+    <div id="metrics-alert"></div>
+    <div class="flex-between" style="margin-bottom:10px;">
+      <h2>Metrics</h2>
+      <div class="flex">
+        <select id="metrics-days" onchange="loadMetrics()"><option value="1">24h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
+        <button class="btn btn-sm" onclick="loadMetrics()">Refresh</button>
+        <button class="btn btn-sm" onclick="exportMetrics()">Export CSV</button>
+      </div>
     </div>
-    <div class="card">
-      <h2 style="font-size:14px;">Per-Lambda Invocations</h2>
-      <canvas id="chart-invocations" height="200"></canvas>
+    <div class="grid3">
+      <div class="card"><div class="muted">Requests</div><div class="stat" id="m-reqs">0</div></div>
+      <div class="card"><div class="muted">Errors</div><div class="stat" id="m-errs" style="color:#f85149;">0</div></div>
+      <div class="card"><div class="muted">Cold starts</div><div class="stat" id="m-cold" style="color:#d29922;">0</div></div>
+      <div class="card"><div class="muted">p50</div><div class="stat" id="m-p50">0</div></div>
+      <div class="card"><div class="muted">p95</div><div class="stat" id="m-p95">0</div></div>
+      <div class="card"><div class="muted">p99</div><div class="stat" id="m-p99">0</div></div>
     </div>
-    <div class="card">
-      <h2 style="font-size:14px;">Per-Lambda Latency (ms)</h2>
-      <canvas id="chart-latency" height="200"></canvas>
+    <div class="card"><h2>Invocations</h2><canvas id="chart-inv" height="120"></canvas></div>
+    <div class="card"><h2>Average latency (ms)</h2><canvas id="chart-lat" height="120"></canvas></div>
+  </div>
+
+  <div id="view-logs" class="hidden">
+    <div id="logs-alert"></div>
+    <div class="flex-between" style="margin-bottom:10px;">
+      <h2>Logs</h2>
+      <div class="flex">
+        <input id="logs-slug" placeholder="filter slug" style="width:160px;">
+        <select id="logs-days"><option value="1">24h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
+        <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+      </div>
     </div>
-    <button class="btn" onclick="loadMetrics()">Refresh</button>
+    <div class="card" style="overflow:auto;max-height:65vh;">
+      <table>
+        <thead><tr><th>Time</th><th>Request</th><th>Slug</th><th>Method</th><th>Latency</th><th>Error</th><th></th></tr></thead>
+        <tbody id="logs-list"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="view-system" class="hidden">
+    <div id="system-alert"></div>
+    <div class="grid3">
+      <div class="card"><h3>Health</h3><pre id="sys-health">—</pre></div>
+      <div class="card"><h3>Ready</h3><pre id="sys-ready">—</pre></div>
+      <div class="card"><h3>Pool</h3><pre id="sys-pool">—</pre></div>
+    </div>
+    <div class="card"><h3>DLQ</h3><pre id="sys-dlq">—</pre></div>
   </div>
 </div>
 
-<div id="delete-modal" class="modal-overlay hidden">
+<div id="log-drawer" class="log-drawer hidden">
+  <div class="flex-between" style="padding:6px 8px;border-bottom:1px solid #30363d;">
+    <strong>Frontend logs</strong>
+    <div class="flex"><button class="btn btn-sm" onclick="clearLogs()">Clear</button><button class="btn btn-sm" onclick="toggleLogs()">Hide</button></div>
+  </div>
+  <div id="log-body" class="log-body"></div>
+</div>
+<button id="log-toggle" class="btn btn-sm log-toggle" onclick="toggleLogs()">Logs</button>
+
+<div id="detail-modal" class="modal-overlay hidden">
   <div class="modal">
-    <h2>Delete Lambda?</h2>
-    <p style="margin:12px 0;color:#8b949e;">This action cannot be undone.</p>
-    <div class="flex">
-      <button class="btn btn-danger" onclick="confirmDelete()">Delete</button>
-      <button class="btn" onclick="closeModal()">Cancel</button>
-    </div>
+    <div class="flex-between" style="margin-bottom:10px;"><h2>Invocation</h2><button class="btn btn-sm" onclick="hide('detail-modal')">Close</button></div>
+    <pre id="detail-body">—</pre>
   </div>
 </div>
 
 <script>
 const API = '';
 let token = localStorage.getItem('vlambda_token');
-let currentSlug = null;
-let lambdaNames = {};
-let deleteTarget = null;
+let lambdas = [];
+let page = 0;
+const PAGE_SIZE = 50;
+let codeEditor = null, createEditor = null, projectEditor = null;
+let currentSlug = null, currentKind = 'code';
+let projectFiles = {}, activeProjectFile = null;
+let chartInv = null, chartLat = null;
+let logBuffer = [];
+let detailItems = [];
 
+/* ---------- frontend logging ---------- */
+function flog(level, msg, data) {
+  const entry = { ts: new Date().toISOString(), level, msg, data };
+  logBuffer.push(entry);
+  if (logBuffer.length > 500) logBuffer.shift();
+  renderLogs();
+  const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+  fn('[vlambda]', msg, data !== undefined ? data : '');
+}
+function renderLogs() {
+  const body = document.getElementById('log-body');
+  if (!body) return;
+  body.innerHTML = logBuffer.slice().reverse().map(e =>
+    '<div class="log-line log-' + e.level + '">' + e.ts.slice(11,19) + ' [' + e.level + '] ' + escapeHtml(e.msg) +
+    (e.data !== undefined ? ' ' + escapeHtml(JSON.stringify(e.data)) : '') + '</div>'
+  ).join('');
+}
+function toggleLogs() {
+  const d = document.getElementById('log-drawer');
+  d.classList.toggle('hidden');
+  flog('info', 'log drawer toggled');
+}
+function clearLogs() { logBuffer = []; renderLogs(); flog('info', 'logs cleared'); }
+window.addEventListener('error', e => flog('error', 'window error', e.message));
+window.addEventListener('unhandledrejection', e => flog('error', 'unhandled rejection', String(e.reason)));
+
+/* ---------- helpers ---------- */
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function showAlert(id, msg, type) {
   const el = document.getElementById(id);
-  el.innerHTML = '<div class="alert alert-' + type + '">' + msg + '</div>';
-  setTimeout(() => el.innerHTML = '', 4000);
+  if (!el) { flog(type === 'error' ? 'error' : 'info', msg); return; }
+  el.innerHTML = '<div class="alert alert-' + type + '">' + escapeHtml(msg) + '</div>';
+  setTimeout(() => { el.innerHTML = ''; }, 6000);
+  flog(type === 'error' ? 'error' : 'info', msg);
+}
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const t0 = performance.now();
+  flog('debug', 'request ' + (opts.method || 'GET') + ' ' + path);
+  let resp;
+  try {
+    resp = await fetch(API + path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    flog('error', 'network error ' + path, String(e));
+    throw e;
+  }
+  const ms = (performance.now() - t0).toFixed(1);
+  const text = await resp.text();
+  flog(resp.ok ? 'info' : 'warn', 'response ' + resp.status + ' ' + path + ' (' + ms + 'ms)',
+       text.slice(0, 300));
+  let data = null;
+  try { data = text ? JSON.parse(text) : {}; } catch (e) { data = text; }
+  if (!resp.ok) {
+    const msg = (data && data.error) ? data.error : ('HTTP ' + resp.status);
+    throw new Error(msg);
+  }
+  return data;
+}
+function authHeaders(json) {
+  const h = { 'Authorization': 'Bearer ' + token };
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
 }
 
-function showView(name) {
-  document.querySelectorAll('[id^="view-"]').forEach(e => e.classList.add('hidden'));
-  document.getElementById('view-' + name).classList.remove('hidden');
-  document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));
-  const nav = document.getElementById('nav-' + name);
-  if (nav) nav.classList.add('active');
-  if (name === 'dashboard') loadLambdas();
-  if (name === 'metrics') loadMetrics();
-}
-
+/* ---------- auth ---------- */
 function checkAuth() {
   if (!token) {
-    document.getElementById('view-login').classList.remove('hidden');
-    document.getElementById('view-dashboard').classList.add('hidden');
-    document.getElementById('view-editor').classList.add('hidden');
-    document.getElementById('view-metrics').classList.add('hidden');
-    document.getElementById('nav').classList.add('hidden');
+    show('view-login');
+    ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
+    hide('nav');
+    flog('info', 'not authenticated');
   } else {
-    document.getElementById('nav').classList.remove('hidden');
+    show('nav');
     showView('dashboard');
+    flog('info', 'authenticated');
   }
 }
-
 async function doLogin() {
   const u = document.getElementById('username').value;
   const p = document.getElementById('password').value;
   try {
-    const resp = await fetch(API + '/login', { method: 'POST', body: u + ':' + p });
-    const data = await resp.json();
-    if (resp.ok) {
-      token = data.token;
-      localStorage.setItem('vlambda_token', token);
-      checkAuth();
-    } else {
-      showAlert('login-alert', data.error || 'Login failed', 'error');
-    }
-  } catch (e) {
-    showAlert('login-alert', 'Network error', 'error');
-  }
+    const data = await api('/login', { method: 'POST', body: u + ':' + p });
+    token = data.token;
+    localStorage.setItem('vlambda_token', token);
+    flog('info', 'login ok', { user: u });
+    checkAuth();
+  } catch (e) { showAlert('login-alert', e.message, 'error'); }
 }
-
 async function doRegister() {
   const u = document.getElementById('username').value;
   const p = document.getElementById('password').value;
   try {
-    const resp = await fetch(API + '/register', { method: 'POST', body: u + ':' + p });
-    const data = await resp.json();
-    if (resp.ok) {
-      showAlert('login-alert', 'Registered! Please login.', 'success');
-    } else {
-      showAlert('login-alert', data.error || 'Register failed', 'error');
-    }
-  } catch (e) {
-    showAlert('login-alert', 'Network error', 'error');
-  }
+    await api('/register', { method: 'POST', body: u + ':' + p });
+    showAlert('login-alert', 'Registered. Please login.', 'success');
+  } catch (e) { showAlert('login-alert', e.message, 'error'); }
 }
-
 function logout() {
   token = null;
   localStorage.removeItem('vlambda_token');
+  flog('info', 'logged out');
   checkAuth();
 }
 
+/* ---------- views ---------- */
+function showView(name) {
+  ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
+  show('view-' + name);
+  document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));
+  const nav = document.getElementById('nav-' + name);
+  if (nav) nav.classList.add('active');
+  flog('info', 'view ' + name);
+  if (name === 'dashboard') loadLambdas();
+  if (name === 'metrics') loadMetrics();
+  if (name === 'logs') loadLogs();
+  if (name === 'system') loadSystem();
+  if (name === 'playground') loadSampleRequest();
+}
+
+/* ---------- dashboard ---------- */
 async function loadLambdas() {
   try {
-    const resp = await fetch(API + '/vlambda', { headers: { 'Authorization': 'Bearer ' + token } });
-    const data = await resp.json();
-    const tbody = document.getElementById('lambda-list');
-    tbody.innerHTML = '';
-    if (data.lambdas) {
-      data.lambdas.trim().split('\n').forEach(line => {
-        if (!line) return;
-        const parts = line.split('|');
-        const slug = parts[0];
-        const name = parts[1] || '';
-        const method = parts[2];
-        lambdaNames[slug] = name;
-        const displayName = name ? name : slug;
-        const tr = document.createElement('tr');
-        tr.innerHTML = '<td><a href="/f/' + slug + '" target="_blank">' + displayName + '</a><br><span style="font-size:11px;color:#8b949e;">' + slug + '</span></td>' +
-          '<td><span class="badge badge-' + method.toLowerCase() + '">' + method + '</span></td>' +
-          '<td><span style="display:inline-flex;gap:4px;">' +
-          '<button class="btn btn-sm" onclick="invokeLambda(\'' + slug + '\', \'' + method + '\')">Run</button>' +
-          '<button class="btn btn-sm" onclick="editLambda(\'' + slug + '\')">Edit</button>' +
-          '<button class="btn btn-sm btn-danger" onclick="openDelete(\'' + slug + '\')">Del</button>' +
-          '</span></td>';
-        tbody.appendChild(tr);
-      });
-    }
-  } catch (e) {
-    showAlert('dashboard-alert', 'Failed to load lambdas', 'error');
-  }
+    const data = await api('/vlambda?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    lambdas = (data.lambdas || '').trim().split('\n').filter(Boolean).map(line => {
+      const p = line.split('|');
+      return { slug: p[0], name: p[1] || '', method: p[2] || 'GET', kind: p[3] || 'code', entrypoint: p[4] || '' };
+    });
+    document.getElementById('lambda-count').textContent = (data.count || lambdas.length) + ' lambdas';
+    document.getElementById('page-label').textContent = 'page ' + (page + 1);
+    renderLambdaTable();
+    flog('info', 'loaded ' + lambdas.length + ' lambdas');
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
 }
-
-function showCreate() {
-  document.getElementById('create-form').classList.remove('hidden');
+function renderLambdaTable() {
+  const q = (document.getElementById('search').value || '').toLowerCase();
+  const fm = document.getElementById('filter-method').value;
+  const fk = document.getElementById('filter-kind').value;
+  const tbody = document.getElementById('lambda-list');
+  tbody.innerHTML = '';
+  lambdas.filter(l => (!q || l.name.toLowerCase().includes(q) || l.slug.includes(q)) && (!fm || l.method === fm) && (!fk || l.kind === fk))
+    .forEach(l => {
+      const tr = document.createElement('tr');
+      const badge = l.kind === 'project' ? '<span class="badge badge-project">project</span>' : '<span class="badge">code</span>';
+      tr.innerHTML = '<td><strong>' + escapeHtml(l.name || l.slug) + '</strong></td>' +
+        '<td class="mono">' + escapeHtml(l.slug) + '</td>' +
+        '<td><span class="badge badge-' + l.method.toLowerCase() + '">' + l.method + '</span></td>' +
+        '<td>' + badge + '</td>' +
+        '<td><span class="flex">' +
+        '<button class="btn btn-sm" onclick="invokeLambda(\'' + l.slug + '\',\'' + l.method + '\')">Run</button>' +
+        '<button class="btn btn-sm" onclick="editLambda(\'' + l.slug + '\',\'' + l.kind + '\')">Edit</button>' +
+        '<button class="btn btn-sm" onclick="openInPlayground(\'' + l.slug + '\',\'' + l.method + '\')">Test</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteLambda(\'' + l.slug + '\')">Del</button>' +
+        '</span></td>';
+      tbody.appendChild(tr);
+    });
+  flog('debug', 'table rendered', { visible: tbody.children.length });
 }
+function changePage(delta) { if (page + delta < 0) return; page += delta; loadLambdas(); }
 
-function hideCreate() {
-  document.getElementById('create-form').classList.add('hidden');
-  document.getElementById('code-input').value = '';
-  document.getElementById('name-input').value = '';
+/* ---------- create ---------- */
+function showCreateCode() {
+  show('create-code');
+  setTimeout(() => {
+    if (!createEditor) createEditor = VLambdaEditor.createEditor(document.getElementById('create-editor'), 'def handler(request):\n    return {"msg": "hello", "path": request.path}');
+  }, 0);
 }
-
+function showCreateProject() { show('create-project'); }
 async function createLambda() {
-  const code = getCodeValue('code-input');
-  const method = document.getElementById('method-select').value;
-  const name = document.getElementById('name-input').value;
+  const code = createEditor ? VLambdaEditor.getValue(createEditor) : '';
+  const name = document.getElementById('new-name').value;
+  const method = document.getElementById('new-method').value;
+  const timeout = document.getElementById('new-timeout').value;
+  const memory = document.getElementById('new-memory').value;
   try {
-    const resp = await fetch(API + '/vlambda?method=' + method + '&name=' + encodeURIComponent(name), {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
-      body: code
-    });
-    const data = await resp.json();
-    if (resp.ok) {
-      showAlert('dashboard-alert', 'Created: ' + data.slug, 'success');
-      hideCreate();
-      loadLambdas();
-    } else {
-      showAlert('dashboard-alert', data.error || 'Create failed', 'error');
-    }
-  } catch (e) {
-    showAlert('dashboard-alert', 'Network error', 'error');
+    const data = await api('/vlambda?method=' + encodeURIComponent(method) + '&name=' + encodeURIComponent(name) + '&timeout=' + timeout + '&memory_mb=' + memory,
+      { method: 'POST', body: code, headers: authHeaders(false) });
+    showAlert('dashboard-alert', 'Created ' + data.slug, 'success');
+    hide('create-code');
+    loadLambdas();
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+}
+async function createProject() {
+  const file = document.getElementById('proj-file').files[0];
+  if (!file) { showAlert('dashboard-alert', 'Select a .zip file', 'error'); return; }
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
+  const b64 = btoa(binary);
+  const name = document.getElementById('proj-name').value;
+  const entry = document.getElementById('proj-entry').value || 'main.py';
+  const method = document.getElementById('proj-method').value;
+  try {
+    const data = await api('/vlambda?project=1&entry=' + encodeURIComponent(entry) + '&name=' + encodeURIComponent(name) + '&method=' + method,
+      { method: 'POST', body: b64, headers: authHeaders(false) });
+    showAlert('dashboard-alert', 'Created project ' + data.slug, 'success');
+    hide('create-project');
+    loadLambdas();
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
 }
 
-async function editLambda(slug) {
-  currentSlug = slug;
-  document.getElementById('editor-title').textContent = 'Edit: ' + slug;
-  document.getElementById('editor-code').value = 'Loading...';
-  document.getElementById('editor-name').value = lambdaNames[slug] || '';
-  document.getElementById('run-result').innerHTML = '';
+/* ---------- edit code lambda ---------- */
+async function editLambda(slug, kind) {
+  currentSlug = slug; currentKind = kind;
+  if (kind === 'project') { await openProject(slug); return; }
   showView('editor');
+  document.getElementById('editor-title').textContent = 'Edit ' + slug;
   try {
-    const resp = await fetch(API + '/vlambda/' + slug, { headers: { 'Authorization': 'Bearer ' + token } });
-    if (resp.ok) {
-      const code = await resp.text();
-      setCodeValue('editor-code', code);
-    } else {
-      document.getElementById('editor-code').value = '';
-      showAlert('editor-alert', 'Failed to load code', 'error');
-    }
-  } catch (e) {
-    document.getElementById('editor-code').value = '';
-    showAlert('editor-alert', 'Network error', 'error');
-  }
+    const code = await api('/vlambda/' + slug);
+    if (!codeEditor) codeEditor = VLambdaEditor.createEditor(document.getElementById('editor-code'), code);
+    else VLambdaEditor.setValue(codeEditor, code);
+    const l = lambdas.find(x => x.slug === slug) || {};
+    document.getElementById('edit-name').value = l.name || '';
+    document.getElementById('edit-method').value = l.method || 'GET';
+    document.getElementById('edit-timeout').value = '30';
+    document.getElementById('edit-memory').value = '0';
+    await loadVersions(slug);
+    await loadAliases(slug);
+    flog('info', 'editing code lambda', { slug });
+  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+}
+async function saveCodeLambda() {
+  const code = codeEditor ? VLambdaEditor.getValue(codeEditor) : '';
+  const name = document.getElementById('edit-name').value;
+  const method = document.getElementById('edit-method').value;
+  const timeout = document.getElementById('edit-timeout').value;
+  const memory = document.getElementById('edit-memory').value;
+  try {
+    await api('/vlambda/' + currentSlug + '?method=' + method + '&name=' + encodeURIComponent(name) + '&timeout=' + timeout + '&memory_mb=' + memory,
+      { method: 'PUT', body: code, headers: authHeaders(false) });
+    showAlert('editor-alert', 'Saved', 'success');
+    await loadVersions(currentSlug);
+  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+}
+async function runCurrent() {
+  await saveCodeLambda();
+  await invokeLambda(currentSlug, document.getElementById('edit-method').value);
+}
+async function loadVersions(slug) {
+  try {
+    const data = await api('/vlambda/' + slug + '/versions');
+    document.getElementById('versions-list').innerHTML = (data.versions || []).map(v =>
+      '<div class="flex-between" style="padding:2px 0;"><span>v' + v.version + '</span><span class="muted">' + escapeHtml(v.created_at || '') + '</span></div>'
+    ).join('') || '—';
+  } catch (e) { flog('warn', 'versions failed', e.message); }
+}
+async function loadAliases(slug) {
+  try {
+    const data = await api('/vlambda/' + slug + '/aliases');
+    document.getElementById('aliases-list').innerHTML = (data.aliases || []).map(a =>
+      '<div class="flex-between" style="padding:2px 0;"><span>' + escapeHtml(a.alias) + '</span><span class="muted">v' + a.version + '</span></div>'
+    ).join('') || '—';
+  } catch (e) { flog('warn', 'aliases failed', e.message); }
+}
+async function createAlias() {
+  const name = document.getElementById('alias-name').value;
+  const version = document.getElementById('alias-version').value || '0';
+  try {
+    await api('/vlambda/' + currentSlug + '/alias?name=' + encodeURIComponent(name) + '&version=' + version, { method: 'POST', headers: authHeaders(false) });
+    showAlert('editor-alert', 'Alias saved', 'success');
+    await loadAliases(currentSlug);
+  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
 }
 
-async function saveLambda() {
-  const code = getCodeValue('editor-code');
-  const method = document.getElementById('editor-method').value;
-  const name = document.getElementById('editor-name').value;
+/* ---------- project editor ---------- */
+async function openProject(slug) {
+  currentSlug = slug; currentKind = 'project';
+  showView('project');
+  document.getElementById('project-title').textContent = 'Project ' + slug;
   try {
-    const resp = await fetch(API + '/vlambda/' + currentSlug + '?method=' + method + '&name=' + encodeURIComponent(name), {
-      method: 'PUT',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
-      body: code
+    const data = await api('/project/' + slug);
+    projectFiles = data.files || {};
+    document.getElementById('project-entry').value = data.entrypoint || 'main.py';
+    document.getElementById('project-reqs').value = projectFiles['requirements.txt'] || '';
+    const names = Object.keys(projectFiles).sort();
+    activeProjectFile = names[0] || null;
+    renderProjectTree();
+    renderProjectTabs();
+    if (!projectEditor) projectEditor = VLambdaEditor.createEditor(document.getElementById('project-editor'), activeProjectFile ? projectFiles[activeProjectFile] : '');
+    else VLambdaEditor.setValue(projectEditor, activeProjectFile ? projectFiles[activeProjectFile] : '');
+    flog('info', 'opened project', { slug, files: names.length });
+  } catch (e) { showAlert('project-alert', e.message, 'error'); }
+}
+function renderProjectTree() {
+  const tree = document.getElementById('file-tree');
+  tree.innerHTML = Object.keys(projectFiles).sort().map(name =>
+    '<div class="' + (name === activeProjectFile ? 'active' : '') + '" onclick="selectProjectFile(\'' + name.replace(/'/g, "\\'") + '\')">' + escapeHtml(name) + '</div>'
+  ).join('');
+}
+function renderProjectTabs() {
+  const tabs = document.getElementById('project-tabs');
+  tabs.innerHTML = Object.keys(projectFiles).sort().map(name =>
+    '<div class="tab ' + (name === activeProjectFile ? 'active' : '') + '" onclick="selectProjectFile(\'' + name.replace(/'/g, "\\'") + '\')">' + escapeHtml(name) + '</div>'
+  ).join('');
+}
+function selectProjectFile(name) {
+  if (activeProjectFile && projectEditor) projectFiles[activeProjectFile] = VLambdaEditor.getValue(projectEditor);
+  activeProjectFile = name;
+  if (projectEditor) VLambdaEditor.setValue(projectEditor, projectFiles[name] || '');
+  renderProjectTree(); renderProjectTabs();
+  flog('debug', 'selected file', name);
+}
+function newProjectFile() {
+  const name = document.getElementById('new-file-name').value.trim();
+  if (!name) return;
+  projectFiles[name] = '';
+  activeProjectFile = name;
+  document.getElementById('new-file-name').value = '';
+  renderProjectTree(); renderProjectTabs();
+  if (projectEditor) VLambdaEditor.setValue(projectEditor, '');
+  flog('info', 'new file', name);
+}
+async function saveProject() {
+  if (activeProjectFile && projectEditor) projectFiles[activeProjectFile] = VLambdaEditor.getValue(projectEditor);
+  projectFiles['requirements.txt'] = document.getElementById('project-reqs').value;
+  const entrypoint = document.getElementById('project-entry').value || 'main.py';
+  try {
+    const data = await api('/project/' + currentSlug, {
+      method: 'PUT', headers: authHeaders(true),
+      body: JSON.stringify({ files: projectFiles, entrypoint })
     });
-    const data = await resp.json();
-    if (resp.ok) {
-      showAlert('editor-alert', 'Saved!', 'success');
-    } else {
-      showAlert('editor-alert', data.error || 'Save failed', 'error');
-    }
-  } catch (e) {
-    showAlert('editor-alert', 'Network error', 'error');
-  }
+    showAlert('project-alert', 'Saved ' + (data.entrypoint || ''), 'success');
+  } catch (e) { showAlert('project-alert', e.message, 'error'); }
+}
+async function runProject() {
+  await saveProject();
+  await invokeLambda(currentSlug, 'GET');
 }
 
-async function runLambda() {
-  const code = getCodeValue('editor-code');
-  const resultDiv = document.getElementById('run-result');
-  resultDiv.innerHTML = '<pre>Running...</pre>';
-  const method = document.getElementById('editor-method').value;
-  try {
-    const resp = await fetch(API + '/vlambda?method=' + method, {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'text/plain' },
-      body: code
-    });
-    const data = await resp.json();
-    if (!resp.ok) {
-      resultDiv.innerHTML = '<pre style="color:#f85149">' + (data.error || 'Error') + '</pre>';
-      return;
-    }
-    const invokeOpts = { method: method };
-    if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-      invokeOpts.headers = { 'Content-Type': 'application/json' };
-      invokeOpts.body = '{}';
-    }
-    const invokeResp = await fetch(API + '/f/' + data.slug, invokeOpts);
-    const result = await invokeResp.text();
-    resultDiv.innerHTML = '<pre>' + result + '</pre>';
-    await fetch(API + '/vlambda/' + data.slug, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
-  } catch (e) {
-    resultDiv.innerHTML = '<pre style="color:#f85149">Error: ' + e.message + '</pre>';
-  }
-}
-
+/* ---------- invoke / playground ---------- */
 async function invokeLambda(slug, method) {
   method = method || 'GET';
   try {
-    const opts = { method: method };
-    if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-      opts.headers = { 'Content-Type': 'application/json' };
-      opts.body = '{}';
-    }
-    const resp = await fetch(API + '/f/' + slug, opts);
+    const opts = { method, headers: {} };
+    if (method !== 'GET' && method !== 'DELETE') { opts.headers['Content-Type'] = 'application/json'; opts.body = '{}'; }
+    const t0 = performance.now();
+    const resp = await fetch('/f/' + slug, opts);
     const text = await resp.text();
-    alert(slug + ' [' + method + ']:\n' + text);
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
+    const ms = (performance.now() - t0).toFixed(1);
+    const box = document.getElementById('run-result') || document.getElementById('project-result');
+    if (box) box.innerHTML = '<div class="muted" style="margin-bottom:4px;">' + resp.status + ' · ' + ms + 'ms</div><pre>' + escapeHtml(pretty(text)) + '</pre>';
+    flog('info', 'invoked ' + slug + ' -> ' + resp.status + ' (' + ms + 'ms)', text.slice(0, 200));
+  } catch (e) { flog('error', 'invoke failed', e.message); showAlert('dashboard-alert', e.message, 'error'); }
 }
-
-function openDelete(slug) {
-  deleteTarget = slug;
-  document.getElementById('delete-modal').classList.remove('hidden');
+function pretty(text) {
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
 }
-
-function closeModal() {
-  deleteTarget = null;
-  document.getElementById('delete-modal').classList.add('hidden');
+function openInPlayground(slug, method) {
+  showView('playground');
+  document.getElementById('pg-slug').value = slug;
+  document.getElementById('pg-method').value = method || 'GET';
 }
-
-async function confirmDelete() {
-  if (!deleteTarget) return;
+function loadSampleRequest() {
+  const first = lambdas[0];
+  if (first) document.getElementById('pg-slug').value = first.slug;
+}
+async function sendPlayground() {
+  const slug = document.getElementById('pg-slug').value.trim();
+  const method = document.getElementById('pg-method').value;
+  const alias = document.getElementById('pg-alias').value.trim();
+  const query = document.getElementById('pg-query').value.trim();
+  const headers = JSON.parse(document.getElementById('pg-headers').value || '{}');
+  const body = document.getElementById('pg-body').value;
+  let url = '/f/' + slug;
+  const params = [];
+  if (query) params.push(query);
+  if (alias) params.push('alias=' + encodeURIComponent(alias));
+  if (params.length) url += '?' + params.join('&');
   try {
-    const resp = await fetch(API + '/vlambda/' + deleteTarget, {
-      method: 'DELETE',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if (resp.ok) {
-      showAlert('dashboard-alert', 'Deleted', 'success');
-      loadLambdas();
-    } else {
-      const data = await resp.json();
-      showAlert('dashboard-alert', data.error || 'Delete failed', 'error');
-    }
+    const t0 = performance.now();
+    const opts = { method, headers };
+    if (method !== 'GET' && method !== 'DELETE' && body) opts.body = body;
+    const resp = await fetch(url, opts);
+    const text = await resp.text();
+    const ms = (performance.now() - t0).toFixed(1);
+    document.getElementById('pg-meta').textContent = resp.status + ' · ' + ms + 'ms · ' + url;
+    document.getElementById('pg-response').textContent = pretty(text);
+    flog('info', 'playground ' + method + ' ' + url + ' -> ' + resp.status, text.slice(0, 200));
   } catch (e) {
-    showAlert('dashboard-alert', 'Network error', 'error');
+    document.getElementById('pg-meta').textContent = 'error';
+    document.getElementById('pg-response').textContent = String(e);
+    flog('error', 'playground failed', e.message);
   }
-  closeModal();
 }
 
-let chartInv = null;
-let chartLat = null;
+/* ---------- delete ---------- */
+async function deleteLambda(slug) {
+  if (!confirm('Delete ' + slug + '?')) return;
+  try {
+    await api('/vlambda/' + slug, { method: 'DELETE', headers: authHeaders(false) });
+    showAlert('dashboard-alert', 'Deleted ' + slug, 'success');
+    loadLambdas();
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+}
 
+/* ---------- metrics ---------- */
 async function loadMetrics() {
+  const days = document.getElementById('metrics-days').value || '7';
   try {
-    const resp = await fetch(API + '/metrics/json');
-    const data = await resp.json();
-    document.getElementById('m-reqs').textContent = data.requests_total;
-    document.getElementById('m-errs').textContent = data.errors_total;
-    document.getElementById('m-lambdas').textContent = data.lambdas_created;
-    document.getElementById('m-lat').textContent = data.latency_avg_ms.toFixed(2);
-
-    const labels = data.per_lambda.map(l => l.slug);
-    const invocations = data.per_lambda.map(l => l.invocations);
-    const latencies = data.per_lambda.map(l => l.latency_avg_ms);
-
-    if (chartInv) chartInv.destroy();
-    if (chartLat) chartLat.destroy();
-
-    chartInv = new Chart(document.getElementById('chart-invocations'), {
-      type: 'bar',
-      data: { labels: labels, datasets: [{ label: 'Invocations', data: invocations, backgroundColor: '#1f6feb' }] },
-      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
-    });
-
-    chartLat = new Chart(document.getElementById('chart-latency'), {
-      type: 'bar',
-      data: { labels: labels, datasets: [{ label: 'Avg Latency (ms)', data: latencies, backgroundColor: '#238636' }] },
-      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
-    });
-  } catch (e) {
-    console.error('metrics error:', e);
-  }
+    const live = await api('/metrics/json');
+    const stats = await api('/metrics/stats?days=' + days);
+    document.getElementById('m-reqs').textContent = live.requests_total || 0;
+    document.getElementById('m-errs').textContent = live.errors_total || 0;
+    document.getElementById('m-cold').textContent = stats.cold_starts || 0;
+    document.getElementById('m-p50').textContent = (stats.p50_ms || 0).toFixed(2);
+    document.getElementById('m-p95').textContent = (stats.p95_ms || 0).toFixed(2);
+    document.getElementById('m-p99').textContent = (stats.p99_ms || 0).toFixed(2);
+    const labels = (live.per_lambda || []).map(l => l.slug);
+    const inv = (live.per_lambda || []).map(l => l.invocations);
+    const lat = (live.per_lambda || []).map(l => l.latency_avg_ms);
+    if (window.Chart) {
+      if (chartInv) chartInv.destroy();
+      if (chartLat) chartLat.destroy();
+      chartInv = new Chart(document.getElementById('chart-inv'), { type: 'bar', data: { labels, datasets: [{ label: 'Invocations', data: inv, backgroundColor: '#1f6feb' }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
+      chartLat = new Chart(document.getElementById('chart-lat'), { type: 'bar', data: { labels, datasets: [{ label: 'Avg ms', data: lat, backgroundColor: '#238636' }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
+    }
+    flog('info', 'metrics loaded', { days, reqs: live.requests_total, p99: stats.p99_ms });
+  } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
+}
+async function exportMetrics() {
+  const days = document.getElementById('metrics-days').value || '7';
+  try {
+    const resp = await fetch('/metrics/export?days=' + days);
+    const text = await resp.text();
+    const blob = new Blob([text], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'vlambda-metrics-' + days + 'd.csv';
+    a.click();
+    flog('info', 'metrics exported', { days, bytes: text.length });
+  } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
 }
 
-let codeEditor = null;
-let editorCodeView = null;
-
-function initEditors() {
-  const createEl = document.getElementById('code-input');
-  if (createEl && !createEl._cm) {
-    createEl._cm = VLambdaEditor.createEditor(createEl, 'def handler(request):\n    return {"msg": "hello", "path": request.path}');
-  }
-  const editorEl = document.getElementById('editor-code');
-  if (editorEl && !editorEl._cm) {
-    editorEl._cm = VLambdaEditor.createEditor(editorEl, '');
-  }
+/* ---------- logs ---------- */
+async function loadLogs() {
+  const days = document.getElementById('logs-days').value || '7';
+  const slug = document.getElementById('logs-slug').value.trim();
+  try {
+    const q = '/metrics/history?days=' + days + (slug ? '&slug=' + encodeURIComponent(slug) : '');
+    const data = await api(q);
+    const tbody = document.getElementById('logs-list');
+    detailItems = data.items || [];
+    tbody.innerHTML = detailItems.map((it, idx) => {
+      const ts = new Date(it.ts * 1000).toLocaleString();
+      return '<tr><td class="muted">' + ts + '</td>' +
+        '<td class="mono">' + escapeHtml(it.request_id || '') + '</td>' +
+        '<td class="mono">' + escapeHtml(it.slug) + '</td>' +
+        '<td>' + escapeHtml(it.method) + '</td>' +
+        '<td>' + (it.latency_ms || 0).toFixed(2) + ' ms</td>' +
+        '<td style="color:#f85149;">' + escapeHtml(it.error_type || '') + '</td>' +
+        '<td><button class="btn btn-sm" onclick="showDetailAt(' + idx + ')">View</button></td></tr>';
+    }).join('') || '<tr><td colspan="7" class="muted">No invocations</td></tr>';
+    flog('info', 'logs loaded', { count: (data.items || []).length });
+  } catch (e) { showAlert('logs-alert', e.message, 'error'); }
+}
+function showDetailAt(idx) {
+  const item = detailItems[idx];
+  document.getElementById('detail-body').textContent = JSON.stringify(item, null, 2);
+  show('detail-modal');
 }
 
-function getCodeValue(id) {
-  const el = document.getElementById(id);
-  return el && el._cm ? VLambdaEditor.getValue(el._cm) : (el ? el.value : '');
+/* ---------- system ---------- */
+async function loadSystem() {
+  try {
+    const health = await fetch('/health').then(r => r.json());
+    const ready = await fetch('/ready').then(r => r.json());
+    const pool = await fetch('/pool/stats').then(r => r.json());
+    const dlq = await fetch('/dlq').then(r => r.json());
+    document.getElementById('sys-health').textContent = JSON.stringify(health, null, 2);
+    document.getElementById('sys-ready').textContent = JSON.stringify(ready, null, 2);
+    document.getElementById('sys-pool').textContent = JSON.stringify(pool, null, 2);
+    document.getElementById('sys-dlq').textContent = JSON.stringify(dlq, null, 2);
+    const ok = health.status === 'ok' && ready.status === 'ready';
+    document.getElementById('status-pill').textContent = ok ? 'online' : 'degraded';
+    document.getElementById('status-pill').style.background = ok ? '#238636' : '#9e6a03';
+    flog('info', 'system loaded', { health: health.status, ready: ready.status, pool });
+  } catch (e) { showAlert('system-alert', e.message, 'error'); }
 }
 
-function setCodeValue(id, text) {
-  const el = document.getElementById(id);
-  if (el && el._cm) VLambdaEditor.setValue(el._cm, text);
-  else if (el) el.value = text;
-}
-
-// Wrap existing functions
-const _showCreate = showCreate;
-showCreate = function() { _showCreate(); initEditors(); };
-const _editLambda = editLambda;
-editLambda = async function(slug) {
-  await _editLambda(slug);
-  initEditors();
-  const code = document.getElementById('editor-code').value;
-  if (code && code !== 'Loading...') setCodeValue('editor-code', code);
-};
-
-const _createLambda = createLambda;
-createLambda = async function() {
-  const code = getCodeValue('code-input');
-  document.getElementById('code-input').value = code;
-  await _createLambda();
-};
-
-const _saveLambda = saveLambda;
-saveLambda = async function() {
-  document.getElementById('editor-code').value = getCodeValue('editor-code');
-  await _saveLambda();
-};
-
-const _runLambda = runLambda;
-runLambda = async function() {
-  document.getElementById('editor-code').value = getCodeValue('editor-code');
-  await _runLambda();
-};
-
+/* init */
 checkAuth();
-setTimeout(initEditors, 0);
+setTimeout(() => {
+  fetch('/health').then(r => r.json()).then(d => {
+    document.getElementById('status-pill').textContent = d.status === 'ok' ? 'online' : 'degraded';
+    document.getElementById('status-pill').style.background = d.status === 'ok' ? '#238636' : '#9e6a03';
+  }).catch(() => flog('error', 'health check failed'));
+}, 0);
 </script>
 </body>
 </html>

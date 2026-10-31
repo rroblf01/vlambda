@@ -36,13 +36,13 @@ class Worker:
             task = self._queue.get()
             if task is None:
                 break
-            code, method, path, query, body, vendor_dir, result_queue = task
+            code, method, path, query, body, vendor_dir, request_id, slug, result_queue = task
             try:
                 if vendor_dir and vendor_dir not in sys.path:
                     sys.path.insert(0, vendor_dir)
                 req_obj = Request(
                     method=method, path=path, query_string=query,
-                    headers={}, body=body,
+                    headers={}, body=body, request_id=request_id, slug=slug,
                 )
                 compiled, ns_template, handler = get_compiled(code)
                 if handler is None:
@@ -61,7 +61,7 @@ class Worker:
 
     _SINGLE_FLIGHT = __import__("os").environ.get("VLAMBDA_SINGLE_FLIGHT", "0") == "1"
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="") -> Any:
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="") -> Any:
         if memory_mb and memory_mb > 0:
             import resource
             usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
@@ -70,7 +70,7 @@ class Worker:
         if not Worker._SINGLE_FLIGHT:
             result_queue = queue.Queue(1)
             try:
-                self._queue.put((code, method, path, query, body, vendor_dir, result_queue), timeout=5)
+                self._queue.put((code, method, path, query, body, vendor_dir, request_id, slug, result_queue), timeout=5)
             except queue.Full:
                 return {"error": "server busy, try again later"}
             try:
@@ -99,7 +99,7 @@ class Worker:
         # Leader executes
         result_queue = queue.Queue(1)
         try:
-            self._queue.put((code, method, path, query, body, vendor_dir, result_queue), timeout=5)
+            self._queue.put((code, method, path, query, body, vendor_dir, request_id, slug, result_queue), timeout=5)
         except queue.Full:
             with Worker._inflight_lock:
                 Worker._inflight.pop(key, None)
@@ -127,7 +127,7 @@ class InProcessPool:
         self._lock = threading.Lock()
         self._counter = itertools.count()
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="") -> Any:
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="") -> Any:
         # Auto-scale: if queue is deep, add a worker up to the configured cap.
         with self._lock:
             if len(self._workers) < self._max_workers and self._queue_depth() > len(self._workers) * 2:
@@ -135,7 +135,7 @@ class InProcessPool:
             workers = list(self._workers)
         # Atomic round-robin selection without holding the lock during submit.
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
 
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)
@@ -201,7 +201,7 @@ class ProcessWorker:
             env=env,
         )
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
         timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:
@@ -213,6 +213,8 @@ class ProcessWorker:
                 "query_string": query,
                 "body_b64": base64.b64encode(body or b"").decode("ascii"),
                 "vendor_dir": vendor_dir or "",
+                "request_id": request_id or "",
+                "slug": slug or "",
             }
             try:
                 self._proc.stdin.write(json.dumps(payload) + "\n")
@@ -260,11 +262,11 @@ class ProcessPool:
         self._lock = threading.Lock()
         self._max_workers = len(self._workers)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
 
     def _queue_depth(self) -> int:
         return 0

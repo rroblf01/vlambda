@@ -66,7 +66,7 @@ def offline_reset(
     cache_dir: str | None = None,
 ) -> dict:
     groups = _delete_rows(db_path, ["users", "lambdas", "lambda_versions", "lambda_aliases"])
-    metrics = _delete_rows(metrics_db, ["metrics", "metrics_daily"])
+    metrics = _delete_rows(metrics_db, ["metrics", "metrics_daily", "logs"])
     removed_projects = _clear_dir(projects_dir)
     removed_packages = _clear_dir(packages_dir)
     removed_cache = _clear_dir(cache_dir) if cache_dir else 0

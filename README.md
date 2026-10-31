@@ -90,6 +90,21 @@ Then open http://localhost:8080/ in your browser.
 - `GET /metrics/json` — JSON metrics (for charts)
 - `POST /shutdown` — Graceful shutdown
 
+## Logging
+
+Lambdas can persist structured logs with `request.log()`:
+
+```python
+def handler(request):
+    request.log("processing " + request.path)
+    request.log("debug details", "debug")
+    return {"ok": True}
+```
+
+Logs are stored in the metrics database and can be queried with
+`GET /logs/history?days=1&slug=<slug>`. The UI Logs view shows them alongside
+invocations. The "Save logs" template in the editor is a ready-to-run example.
+
 ## Lambda Format
 
 Every lambda must define a `handler` function:

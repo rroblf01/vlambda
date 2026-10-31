@@ -30,6 +30,7 @@ __global (
 	vlambda_query_metrics = voidptr(0)
 	vlambda_query_summary = voidptr(0)
 	vlambda_query_aggregate = voidptr(0)
+	vlambda_query_logs = voidptr(0)
 	vlambda_export_metrics = voidptr(0)
 	vlambda_pool_stats = voidptr(0)
 	vlambda_query_stats = voidptr(0)
@@ -361,6 +362,38 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			body: icon
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'image/x-icon' })
 		}
+	}
+
+	// Route: /logs/history (persisted lambda logs)
+	if req.url.starts_with('/logs/history') {
+		mut days := 1
+		mut slug := ''
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('slug=') { slug = part.all_after('=') }
+			}
+		}
+		mut body := '{"days": ${days}, "count": 0, "items": []}'
+		ptr := &body
+		if vlambda_query_logs != unsafe { nil } {
+			vcraft.with_gil(fn [days, slug, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_query_logs, args)
+				vcraft.borrow(args[0]).decref()
+				vcraft.borrow(args[1]).decref()
+				if r.is_null() { vcraft.clear_error(); return }
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "count": 0, "items": []}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
 	// Route: /metrics/json (JSON format for UI charts)
@@ -1681,7 +1714,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			}
 			return
 		}
-		args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr]
+		args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
@@ -1909,6 +1942,11 @@ pub fn register_query_summary(cb voidptr) {
 @[vc_fn]
 pub fn register_query_aggregate(cb voidptr) {
 	vlambda_query_aggregate = cb
+}
+
+@[vc_fn]
+pub fn register_query_logs(cb voidptr) {
+	vlambda_query_logs = cb
 }
 
 @[vc_fn]

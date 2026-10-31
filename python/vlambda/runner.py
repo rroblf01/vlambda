@@ -21,12 +21,12 @@ from vlambda.request import Request
 from vlambda.sandbox import make_sandbox
 
 
-def _execute(code: str, method: str, path: str, query: str, body: bytes):
+def _execute(code: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = ""):
     compiled, ns_template, handler = get_compiled(code)
     if handler is None:
         return {"error": "no handler function defined"}
     ns = dict(ns_template)
-    req = Request(method=method, path=path, query_string=query, headers={}, body=body)
+    req = Request(method=method, path=path, query_string=query, headers={}, body=body, request_id=request_id, slug=slug)
     ns["request"] = req
     return handler(req)
 
@@ -47,7 +47,7 @@ def main() -> None:
             vendor_dir = req.get("vendor_dir", "")
             if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
                 sys.path.insert(0, vendor_dir)
-            result = _execute(code, method, path, query, body)
+            result = _execute(code, method, path, query, body, req.get("request_id",""), req.get("slug",""))
             if isinstance(result, str):
                 payload = result
             elif isinstance(result, bytes):

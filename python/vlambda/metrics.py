@@ -22,6 +22,7 @@ _BATCH_SIZE = int(os.environ.get("VLAMBDA_METRICS_BATCH", "100"))
 _FLUSH_INTERVAL = float(os.environ.get("VLAMBDA_METRICS_FLUSH", "1.0"))
 
 _queue: "queue.Queue[tuple]" = queue.Queue(maxsize=10000)
+_logs_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=10000)
 _conn: sqlite3.Connection | None = None
 _CONN_PATH: str | None = None
 _lock = threading.Lock()
@@ -76,6 +77,18 @@ def init(db_path: str | None = None, retention_days: int | None = None):
                 "cold_start INTEGER NOT NULL DEFAULT 0"
                 ")"
             )
+            _conn.execute(
+                "CREATE TABLE IF NOT EXISTS logs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "ts REAL NOT NULL,"
+                "request_id TEXT NOT NULL DEFAULT '',"
+                "slug TEXT NOT NULL,"
+                "level TEXT NOT NULL DEFAULT 'info',"
+                "message TEXT NOT NULL"
+                ")"
+            )
+            _conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts)")
+            _conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_slug ON logs(slug)")
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts)")
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_slug ON metrics(slug)")
             _conn.execute(
@@ -109,6 +122,24 @@ def record(request_id: str, slug: str, method: str, path: str, latency_ms: float
         _queue.put_nowait((time.time(), request_id, slug, method, path, latency_ms, error, error_type, cold_start))
     except queue.Full:
         pass
+
+
+def record_log(request_id: str, slug: str, level: str, message: str):
+    try:
+        _logs_queue.put_nowait((time.time(), request_id, slug, level, str(message)))
+    except queue.Full:
+        pass
+
+
+def _flush_logs(batch: list[tuple]):
+    if not batch or _conn is None:
+        return
+    with _lock:
+        _conn.executemany(
+            "INSERT INTO logs (ts, request_id, slug, level, message) VALUES (?, ?, ?, ?, ?)",
+            batch,
+        )
+        _conn.commit()
 
 
 def _flush(batch: list[tuple]):
@@ -181,6 +212,7 @@ def _cleanup():
 def _run():
     global _last_cleanup, _last_rollup
     batch: list[tuple] = []
+    log_batch: list[tuple] = []
     last_flush = time.time()
     while not _stop.is_set():
         try:
@@ -189,9 +221,16 @@ def _run():
         except queue.Empty:
             pass
         now = time.time()
-        if len(batch) >= _BATCH_SIZE or (batch and now - last_flush >= _FLUSH_INTERVAL):
+        while True:
+            try:
+                log_batch.append(_logs_queue.get_nowait())
+            except queue.Empty:
+                break
+        if len(batch) >= _BATCH_SIZE or len(log_batch) >= _BATCH_SIZE or (batch and now - last_flush >= _FLUSH_INTERVAL) or (log_batch and now - last_flush >= _FLUSH_INTERVAL):
             _flush(batch)
+            _flush_logs(log_batch)
             batch = []
+            log_batch = []
             last_flush = now
             if now - _last_rollup >= 3600:
                 _rollup()
@@ -203,8 +242,15 @@ def _run():
             batch.append(_queue.get_nowait())
         except queue.Empty:
             break
+    while True:
+        try:
+            log_batch.append(_logs_queue.get_nowait())
+        except queue.Empty:
+            break
     if batch:
         _flush(batch)
+    if log_batch:
+        _flush_logs(log_batch)
     _rollup()
     _cleanup()
 
@@ -351,6 +397,29 @@ def aggregate(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         "errors_total": int(sum(i["errors"] for i in per_lambda)),
         "cold_starts": int(sum(i["cold_starts"] for i in per_lambda)),
         "per_lambda": per_lambda,
+    }
+
+
+def query_logs(days: int = 1, slug: str | None = None, limit: int = 1000) -> dict[str, Any]:
+    if _conn is None:
+        return {"days": days, "count": 0, "items": []}
+    cutoff = time.time() - days * 86400
+    sql = "SELECT ts, request_id, slug, level, message FROM logs WHERE ts >= ?"
+    params: list[Any] = [cutoff]
+    if slug:
+        sql += " AND slug = ?"
+        params.append(slug)
+    sql += " ORDER BY ts DESC LIMIT ?"
+    params.append(max(1, min(limit, 10000)))
+    with _lock:
+        rows = _conn.execute(sql, params).fetchall()
+    return {
+        "days": days,
+        "count": len(rows),
+        "items": [
+            {"ts": r[0], "request_id": r[1], "slug": r[2], "level": r[3], "message": r[4]}
+            for r in rows
+        ],
     }
 
 

@@ -155,6 +155,7 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
           <option value="json">JSON API</option>
           <option value="echo">Echo request</option>
           <option value="math">Compute</option>
+          <option value="logging">Save logs</option>
         </select>
       </div>
       <div class="form-group"><label>Python code</label><div id="create-editor" class="editor-host"></div></div>
@@ -313,7 +314,15 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
         <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
       </div>
     </div>
-    <div class="card" style="overflow:auto;max-height:65vh;">
+    <div class="card" style="overflow:auto;max-height:35vh;margin-bottom:14px;">
+      <h2>Lambda logs</h2>
+      <table>
+        <thead><tr><th>Time</th><th>Slug</th><th>Request</th><th>Level</th><th>Message</th></tr></thead>
+        <tbody id="lambda-logs-list"></tbody>
+      </table>
+    </div>
+    <div class="card" style="overflow:auto;max-height:45vh;">
+      <h2>Invocations</h2>
       <table>
         <thead><tr><th>Time</th><th>Request</th><th>Slug</th><th>Method</th><th>Latency</th><th>Error</th><th></th></tr></thead>
         <tbody id="logs-list"></tbody>
@@ -920,7 +929,16 @@ async function loadLogs() {
         '<td style="color:#f85149;">' + escapeHtml(it.error_type || '') + '</td>' +
         '<td><button class="btn btn-sm" onclick="showDetailAt(' + idx + ')">View</button></td></tr>';
     }).join('') || '<tr><td colspan="7" class="muted">No invocations</td></tr>';
-    flog('info', 'logs loaded', { count: (data.items || []).length });
+    const logData = await api('/logs/history?days=' + days + (slug ? '&slug=' + encodeURIComponent(slug) : ''));
+    const lbody = document.getElementById('lambda-logs-list');
+    lbody.innerHTML = (logData.items || []).map(l =>
+      '<tr><td class="muted">' + new Date(l.ts * 1000).toLocaleString() + '</td>' +
+      '<td class="mono">' + escapeHtml(l.slug) + '</td>' +
+      '<td class="mono">' + escapeHtml(l.request_id || '') + '</td>' +
+      '<td>' + escapeHtml(l.level) + '</td>' +
+      '<td class="mono">' + escapeHtml(l.message) + '</td></tr>'
+    ).join('') || '<tr><td colspan="5" class="muted">No lambda logs</td></tr>';
+    flog('info', 'logs loaded', { count: (data.items || []).length, lambda_logs: (logData.items || []).length });
   } catch (e) { showAlert('logs-alert', e.message, 'error'); }
 }
 function showDetailAt(idx) {
@@ -953,6 +971,7 @@ const TEMPLATES = {
   json: 'def handler(request):\n    return {\n        "method": request.method,\n        "path": request.path,\n        "query": request.query_string,\n        "body": request.body.decode("utf-8", "replace"),\n    }\n',
   echo: 'def handler(request):\n    return {"echo": request.body, "headers": request.headers}\n',
   math: 'def handler(request):\n    n = int(request.query_string.split("n=")[-1] or 10)\n    return {"sum": sum(range(n)), "n": n}\n',
+  logging: 'def handler(request):\n    request.log("processing " + request.path)\n    request.log("method: " + request.method, "debug")\n    return {"ok": True}\n',
 };
 function applyTemplate() {
   const name = document.getElementById('template-select').value;

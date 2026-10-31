@@ -254,3 +254,16 @@ def test_metrics_aggregate(tmp_path):
     assert item["invocations"] >= 2
     assert abs(item["latency_avg_ms"] - 2.0) < 0.01
     close()
+
+
+def test_logs_persistence(tmp_path):
+    from vlambda.metrics import init, record_log, close, query_logs
+    db = str(tmp_path / "metrics.db")
+    init(db, 1)
+    record_log("req1", "slug1", "info", "hello log")
+    close()
+    init(db, 1)
+    data = query_logs(1)
+    assert data["count"] >= 1
+    assert any(i["message"] == "hello log" and i["slug"] == "slug1" for i in data["items"])
+    close()

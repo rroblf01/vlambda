@@ -287,6 +287,8 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
     <div class="flex-between" style="margin-bottom:10px;">
       <h2>Metrics</h2>
       <div class="flex">
+        <input id="metrics-filter" list="metrics-lambdas" placeholder="all lambdas (slug or name)" style="width:220px;" onchange="loadMetrics()">
+        <datalist id="metrics-lambdas"></datalist>
         <select id="metrics-days" onchange="loadMetrics()"><option value="1">24h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
         <button class="btn btn-sm" onclick="loadMetrics()">Refresh</button>
         <button class="btn btn-sm" onclick="exportMetrics()">Export CSV</button>
@@ -361,6 +363,7 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
 const API = '';
 let token = localStorage.getItem('vlambda_token');
 let lambdas = [];
+let metricLambdas = [];
 let page = 0;
 const PAGE_SIZE = 50;
 let codeEditor = null, createEditor = null, projectEditor = null;
@@ -495,7 +498,7 @@ function showView(name) {
   if (nav) nav.classList.add('active');
   flog('info', 'view ' + name);
   if (name === 'dashboard') loadLambdas();
-  if (name === 'metrics') loadMetrics();
+  if (name === 'metrics') loadMetricOptions().then(loadMetrics);
   if (name === 'logs') loadLogs();
   if (name === 'system') loadSystem();
   if (name === 'playground') loadSampleRequest();
@@ -837,13 +840,41 @@ async function deleteLambda(slug) {
 }
 
 /* ---------- metrics ---------- */
+async function loadMetricOptions() {
+  try {
+    const data = await api('/vlambda?limit=1000&offset=0');
+    metricLambdas = (data.lambdas || '').trim().split('\n').filter(Boolean).map(line => {
+      const p = line.split('|');
+      return { slug: p[0], name: p[1] || '', method: p[2] || 'GET' };
+    });
+    const dl = document.getElementById('metrics-lambdas');
+    dl.innerHTML = metricLambdas.map(l =>
+      '<option value="' + escapeHtml(l.slug) + '">' + escapeHtml(l.name || l.slug) + '</option>' +
+      (l.name ? '<option value="' + escapeHtml(l.name) + '">' + escapeHtml(l.slug) + '</option>' : '')
+    ).join('');
+    flog('info', 'metric lambda options loaded', { count: metricLambdas.length });
+  } catch (e) { flog('warn', 'metric options failed', e.message); }
+}
+
+function resolveMetricsFilter() {
+  const raw = (document.getElementById('metrics-filter').value || '').trim();
+  if (!raw) return '';
+  const bySlug = metricLambdas.find(l => l.slug === raw);
+  if (bySlug) return bySlug.slug;
+  const byName = metricLambdas.find(l => l.name && l.name.toLowerCase() === raw.toLowerCase());
+  if (byName) return byName.slug;
+  return raw;
+}
+
 async function loadMetrics() {
   if (metricsBusy) return;
   metricsBusy = true;
   const days = document.getElementById('metrics-days').value || '7';
+  const filterSlug = resolveMetricsFilter();
+  const filterQuery = filterSlug ? '&slug=' + encodeURIComponent(filterSlug) : '';
   try {
-    const agg = await api('/metrics/aggregate?days=' + days);
-    const stats = await api('/metrics/stats?days=' + days);
+    const agg = await api('/metrics/aggregate?days=' + days + filterQuery);
+    const stats = await api('/metrics/stats?days=' + days + filterQuery);
     document.getElementById('m-reqs').textContent = agg.requests_total || 0;
     document.getElementById('m-errs').textContent = agg.errors_total || 0;
     document.getElementById('m-cold').textContent = agg.cold_starts || 0;
@@ -892,14 +923,15 @@ async function loadMetrics() {
         chartLat.update('none');
       }
     }
-    flog('info', 'metrics loaded', { days, reqs: agg.requests_total, p99: stats.p99_ms });
+    flog('info', 'metrics loaded', { days, filter: filterSlug || 'all', reqs: agg.requests_total, p99: stats.p99_ms });
   } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
   finally { metricsBusy = false; }
 }
 async function exportMetrics() {
   const days = document.getElementById('metrics-days').value || '7';
+  const filterSlug = resolveMetricsFilter();
   try {
-    const resp = await fetch('/metrics/export?days=' + days);
+    const resp = await fetch('/metrics/export?days=' + days + (filterSlug ? '&slug=' + encodeURIComponent(filterSlug) : ''));
     const text = await resp.text();
     const blob = new Blob([text], { type: 'text/csv' });
     const a = document.createElement('a');

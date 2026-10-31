@@ -315,6 +315,10 @@ def test_metrics_aggregate_endpoint():
     assert status == 200
     assert body.get("requests_total", 0) >= 1
     assert any(i.get("slug") == slug for i in body.get("per_lambda", []))
+    status, body = req("GET", f"/metrics/aggregate?days=1&slug={slug}")
+    assert status == 200
+    assert body.get("requests_total", 0) >= 1
+    assert all(i.get("slug") == slug for i in body.get("per_lambda", []))
 
 
 def test_lambda_logs():

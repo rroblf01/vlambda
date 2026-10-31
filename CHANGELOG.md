@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - 2026-10-31
 
 ### Added
+- Docker deployment with a uv-managed free-threaded Python 3.14 venv, gofly, nsjail and HTTP-only operation behind Dokploy.
+- `vlambda reset` CLI and `POST /admin/reset` for weekly demo cleanup.
+- Install PyPI packages per lambda/project from the web UI.
+- Persistent lambda logs via `request.log()` and a "Save logs" template.
+- Metrics filter by lambda slug or name.
 - Full web UI revamp: local CodeMirror 6 editor, lambdas dashboard with search/filter/pagination, API playground, live metrics charts, logs viewer, system status and frontend log drawer.
 - Multi-file project editor with file tree, tabs, entrypoint and requirements editing.
 - Version viewer/rollback, aliases management, templates, theme toggle, keyboard shortcuts and live metrics polling.
@@ -31,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project cache prewarming and async task thread pool.
 
 ### Changed
+- Docker deployment is HTTP-only on port 8080; Dokploy terminates TLS.
 - Project layout moved from `vlambda/` to the repository root.
 - vcraft updated from 1.7.0 to 1.7.2.
 - CI and release workflows now use the prebuilt manylinux container.

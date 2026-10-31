@@ -49,7 +49,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh && \
     mkdir -p /data && chown -R vlambda:vlambda /data
 USER vlambda
 VOLUME ["/data"]
-EXPOSE 8080 8443
+EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/opt/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

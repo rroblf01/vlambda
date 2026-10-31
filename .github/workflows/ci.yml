@@ -39,8 +39,8 @@ jobs:
         env:
           VCRAFT_NO_MEMORY_LIMIT: 1
         run: |
-          rm -rf vlambda/.venv
-          ${{ matrix.interpreter }} -m venv vlambda/.venv
-          . vlambda/.venv/bin/activate
+          rm -rf .venv
+          ${{ matrix.interpreter }} -m venv .venv
+          . .venv/bin/activate
           vcraft develop ${{ matrix.free_threading && '--free-threading' || '' }} --interpreter ${{ matrix.interpreter }}
           python tests/test_vlambda.py

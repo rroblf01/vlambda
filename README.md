@@ -26,6 +26,11 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **Metrics** — Prometheus-compatible + Chart.js dashboard
 - **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
 - **Naming** — Human-readable names for lambdas
+- **Multi-file projects** — ZIP uploads, file editor, `requirements.txt`/`pyproject.toml`
+- **Versions and aliases** — rollback and `prod`/`staging` aliases
+- **PyPI packages** — install per lambda/project from the UI
+- **Persistent metrics and logs** — survive restarts, queryable by slug/name
+- **Free-threaded builds** — `cp314t`/`cp315t` wheels
 
 ## Installation
 
@@ -50,6 +55,24 @@ VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambd
 ```
 
 Then open http://localhost:8080/ in your browser.
+
+## Docker + Dokploy
+
+The repository includes a production image (`Dockerfile`, installs from PyPI) and
+a development image (`Dockerfile.dev`, builds the local wheel). Both run gofly +
+vlambda + nsjail inside one container and expose plain HTTP on port `8080`.
+
+```bash
+export VLAMBDA_SECRET="$(openssl rand -hex 32)"
+export VLAMBDA_ADMIN_TOKEN="$(openssl rand -hex 32)"
+docker compose -f docker/compose.yml up -d --build
+```
+
+With Dokploy, create an application from the image, map the domain to container
+port `8080`, and set `VLAMBDA_SECRET` and `VLAMBDA_ADMIN_TOKEN`. Dokploy terminates
+TLS, so the container does not manage certificates.
+
+See `docker/README.md` for details, limits and the weekly reset command.
 
 ## CLI Options
 
@@ -84,10 +107,35 @@ Then open http://localhost:8080/ in your browser.
 - `POST /async/<slug>` — Async invoke (returns task_id)
 - `GET /task/<id>` — Get async task result
 
-### Monitoring
+### Projects
+- `POST /vlambda?project=1&entry=main.py` — Upload a ZIP project (base64 body)
+- `GET /project/<slug>` — Read project files
+- `PUT /project/<slug>` — Save project files
+
+### Versions and aliases
+- `GET /vlambda/<slug>/versions` — List versions
+- `GET /vlambda/<slug>/version/<n>` — Read a version
+- `POST /vlambda/<slug>/rollback?version=<n>` — Roll back
+- `GET /vlambda/<slug>/aliases` — List aliases
+- `POST /vlambda/<slug>/alias?name=prod&version=<n>` — Create alias
+- `GET /f/<slug>?alias=prod` — Invoke an alias
+
+### Packages
+- `GET /vlambda/<slug>/packages` — List requirements
+- `POST /vlambda/<slug>/packages` — Install PyPI packages into the vendor dir
+
+### Monitoring (requires auth)
 - `GET /health` — Health check
+- `GET /ready` — Readiness
 - `GET /metrics` — Prometheus metrics
-- `GET /metrics/json` — JSON metrics (for charts)
+- `GET /metrics/json` — Live JSON metrics
+- `GET /metrics/history?days=N&slug=` — Raw persisted metrics
+- `GET /metrics/stats?days=N&slug=` — p50/p95/p99
+- `GET /metrics/aggregate?days=N&slug=` — Per-lambda aggregates
+- `GET /metrics/summary?days=N&slug=` — Daily rollups
+- `GET /metrics/export?days=N&slug=` — CSV export
+- `GET /logs/history?days=N&slug=` — Persisted lambda logs
+- `GET /pool/stats`, `GET /dlq`
 - `POST /shutdown` — Graceful shutdown
 
 ## Logging
@@ -126,10 +174,29 @@ Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `fun
 
 Open http://localhost:8080/ in your browser for the dashboard:
 - Login/Register
-- List, create, edit, delete lambdas
-- Code editor with syntax highlighting
-- Run lambdas in-browser
-- Metrics with Chart.js charts
+- Lambda dashboard with search, filter and pagination
+- CodeMirror editor with Python highlighting
+- Multi-file project editor and ZIP upload
+- Versions, rollback and aliases
+- PyPI package installation
+- API playground
+- Persistent metrics with charts and filters
+- Logs viewer with `request.log()`
+- System status and frontend log drawer
+
+## Reset
+
+The demo can be wiped with:
+
+```bash
+python -m vlambda reset --yes --url http://127.0.0.1:8081 --token "$VLAMBDA_ADMIN_TOKEN"
+```
+
+For the weekly demo reset, run it from cron every Monday:
+
+```cron
+0 0 * * 1 docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container>   /opt/venv/bin/python -m vlambda reset --yes   --url http://127.0.0.1:8081
+```
 
 ## Performance
 

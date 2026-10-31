@@ -73,7 +73,6 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: the wheel was written
-        working-directory: vlambda
         shell: bash
         run: |
           ls -la dist || true
@@ -87,7 +86,6 @@ jobs:
 
       - name: test (POSIX)
         if: ${{ runner.os != 'Windows' && matrix.check != '' }}
-        working-directory: vlambda
         env:
           CONTAINER: ${{ matrix.container }}
           CHECK: ${{ matrix.check }}

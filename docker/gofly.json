@@ -31,10 +31,5 @@
       }
     }
   ],
-  "tls": {
-    "enabled": true,
-    "tls_port": 8443,
-    "cert_file": "/certs/fullchain.pem",
-    "key_file": "/certs/privkey.pem"
-  }
+  "tls": { "enabled": false }
 }

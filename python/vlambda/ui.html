@@ -408,6 +408,11 @@ async function api(path, opts = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = text; }
   if (!resp.ok) {
+    if (resp.status === 401 && path !== '/login' && path !== '/register') {
+      token = null;
+      localStorage.removeItem('vlambda_token');
+      checkAuth();
+    }
     const msg = (data && data.error) ? data.error : ('HTTP ' + resp.status);
     throw new Error(msg);
   }
@@ -422,11 +427,12 @@ function authHeaders(json) {
 /* ---------- auth ---------- */
 function checkAuth() {
   if (!token) {
-    show('view-login');
-    ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
     hide('nav');
+    ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
+    show('view-login');
     flog('info', 'not authenticated');
   } else {
+    hide('view-login');
     show('nav');
     showView('dashboard');
     flog('info', 'authenticated');
@@ -460,6 +466,7 @@ function logout() {
 
 /* ---------- views ---------- */
 function showView(name) {
+  hide('view-login');
   ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
   show('view-' + name);
   document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));

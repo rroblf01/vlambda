@@ -23,6 +23,7 @@ _FLUSH_INTERVAL = float(os.environ.get("VLAMBDA_METRICS_FLUSH", "1.0"))
 
 _queue: "queue.Queue[tuple]" = queue.Queue(maxsize=10000)
 _conn: sqlite3.Connection | None = None
+_CONN_PATH: str | None = None
 _lock = threading.Lock()
 _stop = threading.Event()
 _worker: threading.Thread | None = None
@@ -32,15 +33,23 @@ _seen_slugs: set[str] = set()
 
 
 def init(db_path: str | None = None, retention_days: int | None = None):
-    global _DB_PATH, _RETENTION_DAYS, _conn, _worker, _last_cleanup, _last_rollup
+    global _DB_PATH, _RETENTION_DAYS, _conn, _CONN_PATH, _worker, _last_cleanup, _last_rollup
     if db_path is not None:
         _DB_PATH = db_path
     if retention_days is not None:
         _RETENTION_DAYS = retention_days
-    os.makedirs(os.path.dirname(os.path.abspath(_DB_PATH)), exist_ok=True)
+    target = os.path.abspath(_DB_PATH)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
     with _lock:
+        if _conn is not None and _CONN_PATH != target:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
         if _conn is None:
             _conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+            _CONN_PATH = target
             try:
                 _conn.execute("ALTER TABLE metrics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError:
@@ -188,6 +197,12 @@ def _run():
                 _rollup()
             if now - _last_cleanup >= 3600:
                 _cleanup()
+    # Drain anything queued between the last loop iteration and stop.
+    while True:
+        try:
+            batch.append(_queue.get_nowait())
+        except queue.Empty:
+            break
     if batch:
         _flush(batch)
     _rollup()
@@ -279,6 +294,66 @@ def export_csv(days: int = 1, slug: str | None = None) -> str:
     return out.getvalue()
 
 
+def aggregate(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+    """Aggregate persisted metrics per lambda, including daily rollups."""
+    if _conn is None:
+        return {"days": days, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}
+    cutoff = time.time() - days * 86400
+    cutoff_day = time.strftime("%Y-%m-%d", time.gmtime(cutoff))
+    combined: dict[str, dict[str, float]] = {}
+
+    def add(key: str, invocations: float, errors: float, latency_sum: float, cold_starts: float):
+        item = combined.setdefault(key, {"invocations": 0.0, "errors": 0.0, "latency_sum": 0.0, "cold_starts": 0.0})
+        item["invocations"] += invocations
+        item["errors"] += errors
+        item["latency_sum"] += latency_sum
+        item["cold_starts"] += cold_starts
+
+    with _lock:
+        raw_sql = (
+            "SELECT slug, COUNT(*), SUM(CASE WHEN error != '' THEN 1 ELSE 0 END), "
+            "AVG(latency_ms), SUM(cold_start) FROM metrics WHERE ts >= ?"
+        )
+        params: list[Any] = [cutoff]
+        if slug:
+            raw_sql += " AND slug = ?"
+            params.append(slug)
+        raw_sql += " GROUP BY slug"
+        for key, count, errors, avg_latency, cold in _conn.execute(raw_sql, params).fetchall():
+            add(key, float(count), float(errors or 0), float(avg_latency or 0) * float(count), float(cold or 0))
+
+        daily_sql = (
+            "SELECT slug, SUM(requests), SUM(errors), SUM(avg_latency_ms * requests), SUM(cold_starts) "
+            "FROM metrics_daily WHERE day >= ?"
+        )
+        dparams: list[Any] = [cutoff_day]
+        if slug:
+            daily_sql += " AND slug = ?"
+            dparams.append(slug)
+        daily_sql += " GROUP BY slug"
+        for key, requests, errors, latency_sum, cold in _conn.execute(daily_sql, dparams).fetchall():
+            add(key, float(requests or 0), float(errors or 0), float(latency_sum or 0), float(cold or 0))
+
+    per_lambda = []
+    for key, item in combined.items():
+        n = item["invocations"]
+        per_lambda.append({
+            "slug": key,
+            "invocations": int(n),
+            "errors": int(item["errors"]),
+            "latency_avg_ms": (item["latency_sum"] / n) if n else 0.0,
+            "cold_starts": int(item["cold_starts"]),
+        })
+    per_lambda.sort(key=lambda x: x["invocations"], reverse=True)
+    return {
+        "days": days,
+        "requests_total": int(sum(i["invocations"] for i in per_lambda)),
+        "errors_total": int(sum(i["errors"] for i in per_lambda)),
+        "cold_starts": int(sum(i["cold_starts"] for i in per_lambda)),
+        "per_lambda": per_lambda,
+    }
+
+
 def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     if _conn is None:
         return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0, "cold_starts": 0}
@@ -314,6 +389,13 @@ def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
 
 
 def close():
+    global _conn
     _stop.set()
     if _worker is not None and _worker.is_alive():
         _worker.join(timeout=5)
+    if _conn is not None:
+        try:
+            _conn.close()
+        except Exception:
+            pass
+        _conn = None

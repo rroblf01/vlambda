@@ -833,17 +833,17 @@ async function loadMetrics() {
   metricsBusy = true;
   const days = document.getElementById('metrics-days').value || '7';
   try {
-    const live = await api('/metrics/json');
+    const agg = await api('/metrics/aggregate?days=' + days);
     const stats = await api('/metrics/stats?days=' + days);
-    document.getElementById('m-reqs').textContent = live.requests_total || 0;
-    document.getElementById('m-errs').textContent = live.errors_total || 0;
-    document.getElementById('m-cold').textContent = stats.cold_starts || 0;
+    document.getElementById('m-reqs').textContent = agg.requests_total || 0;
+    document.getElementById('m-errs').textContent = agg.errors_total || 0;
+    document.getElementById('m-cold').textContent = agg.cold_starts || 0;
     document.getElementById('m-p50').textContent = (stats.p50_ms || 0).toFixed(2);
     document.getElementById('m-p95').textContent = (stats.p95_ms || 0).toFixed(2);
     document.getElementById('m-p99').textContent = (stats.p99_ms || 0).toFixed(2);
-    const labels = (live.per_lambda || []).map(l => l.slug);
-    const inv = (live.per_lambda || []).map(l => l.invocations);
-    const lat = (live.per_lambda || []).map(l => l.latency_avg_ms);
+    const labels = (agg.per_lambda || []).map(l => l.slug);
+    const inv = (agg.per_lambda || []).map(l => l.invocations);
+    const lat = (agg.per_lambda || []).map(l => l.latency_avg_ms);
     const invCanvas = document.getElementById('chart-inv');
     const latCanvas = document.getElementById('chart-lat');
     if (window.Chart && invCanvas && latCanvas) {
@@ -883,7 +883,7 @@ async function loadMetrics() {
         chartLat.update('none');
       }
     }
-    flog('info', 'metrics loaded', { days, reqs: live.requests_total, p99: stats.p99_ms });
+    flog('info', 'metrics loaded', { days, reqs: agg.requests_total, p99: stats.p99_ms });
   } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
   finally { metricsBusy = false; }
 }

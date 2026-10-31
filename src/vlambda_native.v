@@ -29,6 +29,7 @@ __global (
 	vlambda_record_metric = voidptr(0)
 	vlambda_query_metrics = voidptr(0)
 	vlambda_query_summary = voidptr(0)
+	vlambda_query_aggregate = voidptr(0)
 	vlambda_export_metrics = voidptr(0)
 	vlambda_pool_stats = voidptr(0)
 	vlambda_query_stats = voidptr(0)
@@ -482,6 +483,38 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+
+	// Route: /metrics/aggregate (persisted per-lambda aggregates)
+	if req.url.starts_with('/metrics/aggregate') {
+		mut days := 7
+		mut slug := ''
+		if req.url.contains('?') {
+			qs := req.url.all_after('?')
+			for part in qs.split('&') {
+				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('slug=') { slug = part.all_after('=') }
+			}
+		}
+		mut body := '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}'
+		ptr := &body
+		if vlambda_query_aggregate != unsafe { nil } {
+			vcraft.with_gil(fn [days, slug, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				r := vcraft.call(vlambda_query_aggregate, args)
+				vcraft.borrow(args[0]).decref()
+				vcraft.borrow(args[1]).decref()
+				if r.is_null() { vcraft.clear_error(); return }
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
 
 	// Route: /metrics/summary (aggregated persisted metrics)
 	if req.url.starts_with('/metrics/summary') {
@@ -1871,6 +1904,11 @@ pub fn register_query_metrics(cb voidptr) {
 @[vc_fn]
 pub fn register_query_summary(cb voidptr) {
 	vlambda_query_summary = cb
+}
+
+@[vc_fn]
+pub fn register_query_aggregate(cb voidptr) {
+	vlambda_query_aggregate = cb
 }
 
 @[vc_fn]

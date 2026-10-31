@@ -238,3 +238,19 @@ def test_package_spec_validation():
         _validate("../evil")
     with pytest.raises(ValueError):
         _validate("-e .")
+
+
+def test_metrics_aggregate(tmp_path):
+    from vlambda.metrics import init, record, close, aggregate
+    db = str(tmp_path / "metrics.db")
+    init(db, 1)
+    record("r1", "slug1", "GET", "/f/x", 1.0, "")
+    record("r2", "slug1", "GET", "/f/x", 3.0, "")
+    close()
+    init(db, 1)
+    data = aggregate(1)
+    assert data["requests_total"] >= 2
+    item = next(i for i in data["per_lambda"] if i["slug"] == "slug1")
+    assert item["invocations"] >= 2
+    assert abs(item["latency_avg_ms"] - 2.0) < 0.01
+    close()

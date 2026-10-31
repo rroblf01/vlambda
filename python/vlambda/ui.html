@@ -356,6 +356,7 @@ let codeEditor = null, createEditor = null, projectEditor = null;
 let currentSlug = null, currentKind = 'code';
 let projectFiles = {}, activeProjectFile = null;
 let chartInv = null, chartLat = null;
+let metricsBusy = false;
 let logBuffer = [];
 let detailItems = [];
 
@@ -826,6 +827,8 @@ async function deleteLambda(slug) {
 
 /* ---------- metrics ---------- */
 async function loadMetrics() {
+  if (metricsBusy) return;
+  metricsBusy = true;
   const days = document.getElementById('metrics-days').value || '7';
   try {
     const live = await api('/metrics/json');
@@ -839,14 +842,28 @@ async function loadMetrics() {
     const labels = (live.per_lambda || []).map(l => l.slug);
     const inv = (live.per_lambda || []).map(l => l.invocations);
     const lat = (live.per_lambda || []).map(l => l.latency_avg_ms);
-    if (window.Chart) {
-      if (chartInv) chartInv.destroy();
-      if (chartLat) chartLat.destroy();
-      chartInv = new Chart(document.getElementById('chart-inv'), { type: 'bar', data: { labels, datasets: [{ label: 'Invocations', data: inv, backgroundColor: '#1f6feb' }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
-      chartLat = new Chart(document.getElementById('chart-lat'), { type: 'bar', data: { labels, datasets: [{ label: 'Avg ms', data: lat, backgroundColor: '#238636' }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
+    const invCanvas = document.getElementById('chart-inv');
+    const latCanvas = document.getElementById('chart-lat');
+    if (window.Chart && invCanvas && latCanvas) {
+      // Destroy both the tracked instance and any chart still bound to the canvas.
+      const oldInv = chartInv || Chart.getChart(invCanvas);
+      if (oldInv) oldInv.destroy();
+      const oldLat = chartLat || Chart.getChart(latCanvas);
+      if (oldLat) oldLat.destroy();
+      chartInv = new Chart(invCanvas, {
+        type: 'bar',
+        data: { labels, datasets: [{ label: 'Invocations', data: inv, backgroundColor: '#1f6feb' }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+      });
+      chartLat = new Chart(latCanvas, {
+        type: 'bar',
+        data: { labels, datasets: [{ label: 'Avg ms', data: lat, backgroundColor: '#238636' }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+      });
     }
     flog('info', 'metrics loaded', { days, reqs: live.requests_total, p99: stats.p99_ms });
   } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
+  finally { metricsBusy = false; }
 }
 async function exportMetrics() {
   const days = document.getElementById('metrics-days').value || '7';

@@ -1,6 +1,6 @@
 import { EditorView, basicSetup } from 'codemirror';
 import { python } from '@codemirror/lang-python';
-import { Chart } from 'chart.js';
+import { Chart } from 'chart.js/auto';
 
 window.Chart = Chart;
 

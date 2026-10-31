@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Production image: installs vlambda from PyPI.
-ARG VLAMBDA_VERSION=0.1.0
+ARG VLAMBDA_VERSION=0.2.0
 ARG PYTHON_VERSION=3.14t
 
 FROM debian:bookworm-slim AS python-env

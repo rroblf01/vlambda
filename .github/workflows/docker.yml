@@ -8,7 +8,7 @@ on:
       vlambda_version:
         description: "vlambda version to install from PyPI"
         required: false
-        default: "0.1.0"
+        default: "0.2.0"
 
 permissions:
   contents: read

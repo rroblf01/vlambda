@@ -52,6 +52,8 @@ tr:hover { background: #1c2128; }
 .mono { font-family: ui-monospace, monospace; }
 .grid2 { display: grid; grid-template-columns: 260px 1fr; gap: 14px; }
 .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 12px; }
+.chart-wrap { position: relative; width: 100%; height: 260px; min-height: 260px; max-height: 260px; }
+.chart-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
 .stat { font-size: 24px; font-weight: 700; }
 pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; }
 .nav { display: flex; gap: 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; flex-wrap: wrap; }
@@ -297,8 +299,8 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
       <div class="card"><div class="muted">p95</div><div class="stat" id="m-p95">0</div></div>
       <div class="card"><div class="muted">p99</div><div class="stat" id="m-p99">0</div></div>
     </div>
-    <div class="card"><h2>Invocations</h2><canvas id="chart-inv" height="120"></canvas></div>
-    <div class="card"><h2>Average latency (ms)</h2><canvas id="chart-lat" height="120"></canvas></div>
+    <div class="card"><h2>Invocations</h2><div class="chart-wrap"><canvas id="chart-inv"></canvas></div></div>
+    <div class="card"><h2>Average latency (ms)</h2><div class="chart-wrap"><canvas id="chart-lat"></canvas></div></div>
   </div>
 
   <div id="view-logs" class="hidden">
@@ -845,21 +847,41 @@ async function loadMetrics() {
     const invCanvas = document.getElementById('chart-inv');
     const latCanvas = document.getElementById('chart-lat');
     if (window.Chart && invCanvas && latCanvas) {
-      // Destroy both the tracked instance and any chart still bound to the canvas.
-      const oldInv = chartInv || Chart.getChart(invCanvas);
-      if (oldInv) oldInv.destroy();
-      const oldLat = chartLat || Chart.getChart(latCanvas);
-      if (oldLat) oldLat.destroy();
-      chartInv = new Chart(invCanvas, {
-        type: 'bar',
-        data: { labels, datasets: [{ label: 'Invocations', data: inv, backgroundColor: '#1f6feb' }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
-      });
-      chartLat = new Chart(latCanvas, {
-        type: 'bar',
-        data: { labels, datasets: [{ label: 'Avg ms', data: lat, backgroundColor: '#238636' }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
-      });
+      // Reuse the existing charts so the canvases do not grow on each refresh.
+      if (!chartInv) {
+        const oldInv = Chart.getChart(invCanvas);
+        if (oldInv) oldInv.destroy();
+        chartInv = new Chart(invCanvas, {
+          type: 'bar',
+          data: { labels, datasets: [{ label: 'Invocations', data: inv, backgroundColor: '#1f6feb' }] },
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+          }
+        });
+      } else {
+        chartInv.data.labels = labels;
+        chartInv.data.datasets[0].data = inv;
+        chartInv.update('none');
+      }
+      if (!chartLat) {
+        const oldLat = Chart.getChart(latCanvas);
+        if (oldLat) oldLat.destroy();
+        chartLat = new Chart(latCanvas, {
+          type: 'bar',
+          data: { labels, datasets: [{ label: 'Avg ms', data: lat, backgroundColor: '#238636' }] },
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true } }
+          }
+        });
+      } else {
+        chartLat.data.labels = labels;
+        chartLat.data.datasets[0].data = lat;
+        chartLat.update('none');
+      }
     }
     flog('info', 'metrics loaded', { days, reqs: live.requests_total, p99: stats.p99_ms });
   } catch (e) { showAlert('metrics-alert', e.message, 'error'); }

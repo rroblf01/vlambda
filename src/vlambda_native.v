@@ -1023,6 +1023,57 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
+	// Route: /vlambda/<slug>/version/<n> (GET = read version code)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/version/') {
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/version/')
+		ver_str := url_path.all_after('/version/')
+		version := ver_str.int()
+		code_info := db_get_version_code(slug, version)
+		if code_info == '' {
+			return http.Response{ status_code: 404, body: '{"error": "version not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		code := code_info.all_before('|')
+		return http.Response{ status_code: 200, body: code, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' }) }
+	}
+
+	// Route: /vlambda/<slug>/rollback?version=N (POST = restore version)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/rollback') {
+		if req.method == .post {
+			if auth_uid < 0 {
+				return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			mut url_path := req.url
+			qi := url_path.index('?') or { url_path.len }
+			url_path = url_path[..qi]
+			slug := url_path[9..].all_before('/rollback')
+			mut version := 0
+			if req.url.contains('?') {
+				qs := req.url.all_after('?')
+				for part in qs.split('&') {
+					if part.starts_with('version=') { version = part.all_after('=').int() }
+				}
+			}
+			code_info := db_get_version_code(slug, version)
+			if code_info == '' {
+				return http.Response{ status_code: 404, body: '{"error": "version not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			code := code_info.all_before('|')
+			rest_info := code_info.all_after('|')
+			method := rest_info.all_before('|')
+			timeout := 0
+			memory_mb := 0
+			name := db_get_lambda_name(slug)
+			ok := db_update_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
+			if ok {
+				return http.Response{ status_code: 200, body: '{"rolled_back": true, "version": ${version}}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			return http.Response{ status_code: 500, body: '{"error": "rollback failed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+	}
+
 	// Route: /vlambda/<id>/alias (POST = create alias)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/alias') {
 		if req.method == .post {

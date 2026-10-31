@@ -9,6 +9,14 @@
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --green:#238636; --red:#da3633; }
+body.light { --bg:#f6f8fa; --panel:#ffffff; --border:#d0d7de; --text:#1f2328; --muted:#57606a; --accent:#0969da; --green:#1a7f37; --red:#cf222e; }
+body.light h1, body.light h2 { color:#1f2328; }
+body.light .btn { background:#f6f8fa; color:#1f2328; }
+body.light .btn:hover { background:#eaeef2; }
+body.light th { background:#ffffff; }
+body.light tr:hover { background:#f6f8fa; }
+body.light input, body.light select, body.light textarea { background:#ffffff; color:#1f2328; }
+body.light pre { background:#f6f8fa; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
 a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
 .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
@@ -84,7 +92,8 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
     <a href="#" id="nav-metrics" onclick="showView('metrics');return false;">Metrics</a>
     <a href="#" id="nav-logs" onclick="showView('logs');return false;">Logs</a>
     <a href="#" id="nav-system" onclick="showView('system');return false;">System</a>
-    <a href="#" id="nav-logout" onclick="logout();return false;" style="margin-left:auto;">Logout</a>
+    <a href="#" id="nav-theme" onclick="toggleTheme();return false;" style="margin-left:auto;">Theme</a>
+    <a href="#" id="nav-logout" onclick="logout();return false;">Logout</a>
   </div>
 
   <div id="view-login" class="hidden">
@@ -137,6 +146,14 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
         <div class="form-group" style="flex:1;"><label>Method</label><select id="new-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
         <div class="form-group" style="flex:1;"><label>Timeout (s)</label><input id="new-timeout" type="number" value="30"></div>
         <div class="form-group" style="flex:1;"><label>Memory (MB)</label><input id="new-memory" type="number" value="0"></div>
+      </div>
+      <div class="form-group"><label>Template</label>
+        <select id="template-select" onchange="applyTemplate()">
+          <option value="hello">Hello world</option>
+          <option value="json">JSON API</option>
+          <option value="echo">Echo request</option>
+          <option value="math">Compute</option>
+        </select>
       </div>
       <div class="form-group"><label>Python code</label><div id="create-editor" class="editor-host"></div></div>
       <div class="flex"><button class="btn btn-primary" onclick="createLambda()">Create</button><button class="btn" onclick="hide('create-code')">Cancel</button></div>
@@ -582,10 +599,29 @@ async function loadVersions(slug) {
   try {
     const data = await api('/vlambda/' + slug + '/versions');
     document.getElementById('versions-list').innerHTML = (data.versions || []).map(v =>
-      '<div class="flex-between" style="padding:2px 0;"><span>v' + v.version + '</span><span class="muted">' + escapeHtml(v.created_at || '') + '</span></div>'
+      '<div class="flex-between" style="padding:2px 0;"><span>v' + v.version + '</span>' +
+      '<span class="flex"><button class="btn btn-sm" onclick="viewVersion(' + v.version + ')">View</button>' +
+      '<button class="btn btn-sm" onclick="rollbackVersion(' + v.version + ')">Restore</button></span></div>'
     ).join('') || '—';
   } catch (e) { flog('warn', 'versions failed', e.message); }
 }
+async function viewVersion(version) {
+  try {
+    const code = await api('/vlambda/' + currentSlug + '/version/' + version);
+    document.getElementById('detail-body').textContent = code;
+    show('detail-modal');
+    flog('info', 'viewed version', { slug: currentSlug, version });
+  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+}
+async function rollbackVersion(version) {
+  if (!confirm('Restore version ' + version + '?')) return;
+  try {
+    await api('/vlambda/' + currentSlug + '/rollback?version=' + version, { method: 'POST', headers: authHeaders(false) });
+    showAlert('editor-alert', 'Restored v' + version, 'success');
+    await loadVersions(currentSlug);
+  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+}
+
 async function loadAliases(slug) {
   try {
     const data = await api('/vlambda/' + slug + '/aliases');
@@ -818,6 +854,45 @@ async function loadSystem() {
     flog('info', 'system loaded', { health: health.status, ready: ready.status, pool });
   } catch (e) { showAlert('system-alert', e.message, 'error'); }
 }
+
+/* templates */
+const TEMPLATES = {
+  hello: 'def handler(request):\n    return {"msg": "hello", "path": request.path}\n',
+  json: 'def handler(request):\n    return {\n        "method": request.method,\n        "path": request.path,\n        "query": request.query_string,\n        "body": request.body,\n    }\n',
+  echo: 'def handler(request):\n    return {"echo": request.body, "headers": request.headers}\n',
+  math: 'def handler(request):\n    n = int(request.query_string.split("n=")[-1] or 10)\n    return {"sum": sum(range(n)), "n": n}\n',
+};
+function applyTemplate() {
+  const name = document.getElementById('template-select').value;
+  if (createEditor) VLambdaEditor.setValue(createEditor, TEMPLATES[name] || TEMPLATES.hello);
+  flog('info', 'template applied', name);
+}
+
+/* theme */
+function toggleTheme() {
+  document.body.classList.toggle('light');
+  localStorage.setItem('vlambda_theme', document.body.classList.contains('light') ? 'light' : 'dark');
+  flog('info', 'theme toggled', document.body.classList.contains('light') ? 'light' : 'dark');
+}
+if (localStorage.getItem('vlambda_theme') === 'light') document.body.classList.add('light');
+
+/* keyboard shortcuts */
+document.addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key === 's') {
+    if (!document.getElementById('view-editor').classList.contains('hidden')) { e.preventDefault(); saveCodeLambda(); }
+    else if (!document.getElementById('view-project').classList.contains('hidden')) { e.preventDefault(); saveProject(); }
+  }
+  if (e.key === 'Enter') {
+    if (!document.getElementById('view-editor').classList.contains('hidden')) { e.preventDefault(); runCurrent(); }
+    else if (!document.getElementById('view-project').classList.contains('hidden')) { e.preventDefault(); runProject(); }
+  }
+});
+
+/* live metrics while the view is open */
+setInterval(() => {
+  if (!document.getElementById('view-metrics').classList.contains('hidden')) loadMetrics();
+}, 5000);
 
 /* init */
 checkAuth();

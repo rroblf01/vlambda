@@ -11,6 +11,11 @@ import time
 import queue
 import itertools
 import os
+import sys
+import json
+import base64
+import select
+import subprocess
 from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
@@ -112,7 +117,7 @@ class Worker:
         self._queue.put(None)
 
 
-class Pool:
+class InProcessPool:
     def __init__(self, size: int):
         self._max_workers = max(size, int(os.environ.get("VLAMBDA_MAX_WORKERS", "64")))
         self._workers = [Worker(i) for i in range(size)]
@@ -142,3 +147,105 @@ class Pool:
     def stop(self):
         for w in self._workers:
             w.stop()
+
+
+class ProcessWorker:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc = None
+        self._start()
+
+    def _start(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ)
+        env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+        self._proc = subprocess.Popen(
+            [sys.executable, "-m", "vlambda.runner"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            cwd=root,
+            env=env,
+        )
+
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0):
+        timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start()
+            payload = {
+                "code": code,
+                "method": method,
+                "path": path,
+                "query_string": query,
+                "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            }
+            try:
+                self._proc.stdin.write(json.dumps(payload) + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                self._start()
+                return {"error": "runner unavailable"}
+            ready, _, _ = select.select([self._proc.stdout], [], [], timeout)
+            if not ready:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+                self._proc = None
+                return {"error": "invocation timeout"}
+            line = self._proc.stdout.readline()
+            if not line:
+                self._proc = None
+                return {"error": "runner exited"}
+            try:
+                envelope = json.loads(line)
+            except json.JSONDecodeError:
+                self._proc = None
+                return {"error": "invalid runner response"}
+            if envelope.get("ok"):
+                return envelope.get("payload")
+            return {"error": envelope.get("error", "execution failed")}
+
+    def stop(self):
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+
+
+class ProcessPool:
+    def __init__(self, size: int):
+        self._workers = [ProcessWorker() for _ in range(max(1, size))]
+        self._counter = itertools.count()
+        self._lock = threading.Lock()
+        self._max_workers = len(self._workers)
+
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0):
+        with self._lock:
+            workers = list(self._workers)
+        idx = next(self._counter) % len(workers)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb)
+
+    def _queue_depth(self) -> int:
+        return 0
+
+    def stats(self):
+        return {"workers": len(self._workers), "max_workers": self._max_workers, "queue_depth": 0, "mode": "process"}
+
+    def stop(self):
+        for worker in self._workers:
+            worker.stop()
+
+
+if os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
+    Pool = ProcessPool
+else:
+    Pool = InProcessPool

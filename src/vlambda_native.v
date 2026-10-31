@@ -71,6 +71,8 @@ __global (
 	vlambda_overloaded = false
 	vlambda_resetting = false
 	vlambda_admin_reset = voidptr(0)
+	vlambda_install_packages = voidptr(0)
+	vlambda_list_packages = voidptr(0)
 	// Rate limiter (token bucket per IP)
 	vlambda_rate_buckets = map[string]TokenBucket{}
 )
@@ -1031,6 +1033,69 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /vlambda/<slug>/packages (GET list, POST install)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/packages') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/packages')
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		project_info := db_get_project(slug)
+		kind := if project_info != '' { 'project' } else { 'code' }
+		project_dir := if project_info != '' { project_info.all_before('|') } else { '' }
+		if req.method == .get {
+			mut body := '{"packages": []}'
+			ptr := &body
+			if vlambda_list_packages != unsafe { nil } {
+				vcraft.with_gil(fn [slug, kind, project_dir, ptr] () {
+					args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(kind).ptr, vcraft.to_py_string(project_dir).ptr]
+					r := vcraft.call(vlambda_list_packages, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"packages": []}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .post {
+			request_body := req.data
+			mut body := '{"error": "install failed"}'
+			ptr := &body
+			if vlambda_install_packages != unsafe { nil } {
+				vcraft.with_gil(fn [slug, kind, project_dir, request_body, ptr] () {
+					args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(kind).ptr, vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(request_body).ptr]
+					r := vcraft.call(vlambda_install_packages, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"error": "install failed"}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /vlambda/<slug>/versions
 	if req.url.starts_with('/vlambda/') && req.url.contains('/versions') {
 		mut url_path := req.url
@@ -1583,7 +1648,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			}
 			return
 		}
-		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr]
+		args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
@@ -1862,6 +1927,13 @@ pub fn register_get_asset(cb voidptr) {
 pub fn register_admin_reset(cb voidptr) {
 	vlambda_admin_reset = cb
 }
+
+@[vc_fn]
+pub fn register_list_packages(cb voidptr) { vlambda_list_packages = cb }
+
+@[vc_fn]
+pub fn register_install_packages(cb voidptr) { vlambda_install_packages = cb }
+
 
 @[vc_fn]
 pub fn register_get_project_json(cb voidptr) { vlambda_get_project_json = cb }

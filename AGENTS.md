@@ -45,6 +45,11 @@ Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon t
 ## CI
 - .github/workflows/ci.yml runs in manylinux container (preinstalled V/vcraft) for Python 3.14 and 3.15: create venv -> vcraft develop -> integration tests.
 
+## Packages
+- Per-lambda/project PyPI packages are installed into a vendor directory via `POST /vlambda/<slug>/packages`.
+- Code lambdas use `<VLAMBDA_PACKAGES_DIR>/lambdas/<slug>`; projects use `<project_dir>/vendor`.
+- UI: Packages card in the editor and "Install deps" in the project view.
+
 ## Docker
 - `Dockerfile` installs vlambda from PyPI; `Dockerfile.dev` builds the local wheel.
 - Both use uv to create a free-threaded venv and include gofly + nsjail.

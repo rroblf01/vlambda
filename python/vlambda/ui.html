@@ -205,6 +205,14 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
               <button class="btn btn-sm" onclick="createAlias()">Add</button>
             </div>
           </div>
+          <div class="card">
+            <h3>PyPI packages</h3>
+            <textarea id="packages-input" rows="3" placeholder="six&#10;requests==2.32.0" style="width:100%"></textarea>
+            <div class="flex" style="margin-top:8px;">
+              <button class="btn btn-sm btn-primary" onclick="installPackages()">Install</button>
+            </div>
+            <div id="packages-list" class="muted" style="margin-top:8px;">—</div>
+          </div>
         </div>
         <div class="card">
           <div id="editor-code" class="editor-host" style="min-height:520px;"></div>
@@ -236,7 +244,8 @@ pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px
           <h3>Project</h3>
           <div class="form-group"><label>Entrypoint</label><input id="project-entry"></div>
           <div class="form-group"><label>Requirements</label><textarea id="project-reqs" rows="5" style="width:100%"></textarea></div>
-          <div class="flex"><button class="btn btn-primary" onclick="saveProject()">Save</button><button class="btn" onclick="runProject()">Run</button></div>
+          <div class="flex"><button class="btn btn-primary" onclick="saveProject()">Save</button><button class="btn" onclick="runProject()">Run</button><button class="btn" onclick="installPackages()">Install deps</button></div>
+          <div id="project-packages-list" class="muted" style="margin-top:8px;">—</div>
         </div>
       </div>
       <div class="card">
@@ -582,6 +591,7 @@ async function editLambda(slug, kind) {
     document.getElementById('edit-memory').value = '0';
     await loadVersions(slug);
     await loadAliases(slug);
+    await loadPackages();
     flog('info', 'editing code lambda', { slug });
   } catch (e) { showAlert('editor-alert', e.message, 'error'); }
 }
@@ -647,6 +657,41 @@ async function createAlias() {
   } catch (e) { showAlert('editor-alert', e.message, 'error'); }
 }
 
+async function loadPackages() {
+  if (!currentSlug) return;
+  try {
+    const data = await api('/vlambda/' + currentSlug + '/packages');
+    const text = (data.packages || []).join('\n') || '—';
+    const el = document.getElementById('packages-list');
+    if (el) el.textContent = text;
+    const pel = document.getElementById('project-packages-list');
+    if (pel) pel.textContent = text;
+    flog('info', 'packages loaded', { slug: currentSlug, count: (data.packages || []).length });
+  } catch (e) { flog('warn', 'packages failed', e.message); }
+}
+
+async function installPackages() {
+  if (!currentSlug) return;
+  let raw = '';
+  if (currentKind === 'project') {
+    raw = document.getElementById('project-reqs').value || '';
+  } else {
+    raw = document.getElementById('packages-input').value || '';
+  }
+  const packages = raw.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
+  if (!packages.length) { showAlert('editor-alert', 'Add at least one package', 'error'); return; }
+  try {
+    showAlert('editor-alert', 'Installing ' + packages.length + ' package(s)…', 'success');
+    const data = await api('/vlambda/' + currentSlug + '/packages', {
+      method: 'POST', headers: authHeaders(true), body: JSON.stringify({ packages })
+    });
+    if (data.error) throw new Error(data.error);
+    showAlert('editor-alert', 'Installed ' + (data.installed || []).length + ' package(s)', 'success');
+    await loadPackages();
+    flog('info', 'packages installed', data.installed);
+  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+}
+
 /* ---------- project editor ---------- */
 async function openProject(slug) {
   currentSlug = slug; currentKind = 'project';
@@ -663,6 +708,7 @@ async function openProject(slug) {
     renderProjectTabs();
     if (!projectEditor) projectEditor = VLambdaEditor.createEditor(document.getElementById('project-editor'), activeProjectFile ? projectFiles[activeProjectFile] : '');
     else VLambdaEditor.setValue(projectEditor, activeProjectFile ? projectFiles[activeProjectFile] : '');
+    await loadPackages();
     flog('info', 'opened project', { slug, files: names.length });
   } catch (e) { showAlert('project-alert', e.message, 'error'); }
 }

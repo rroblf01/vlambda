@@ -293,6 +293,20 @@ def test_request_body_echo():
     assert status == 200 and body.get("body") == "hello"
 
 
+def test_packages():
+    token = test_register_login()
+    code = "def handler(request):\n    import six\n    return {'six': six.__version__}"
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201
+    slug = body["slug"]
+    status, body = req("GET", f"/vlambda/{slug}/packages", token=token)
+    assert status == 200 and body.get("packages") == []
+    status, body = req("POST", f"/vlambda/{slug}/packages", '{"packages":["six"]}', token)
+    assert status == 200 and "six" in body.get("installed", []), body
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body.get("six"), (status, body)
+
+
 def test_admin_reset():
     token = test_register_login()
     req("POST", "/vlambda", "def handler(request): return {'ok': 1}", token)
@@ -328,7 +342,7 @@ if __name__ == "__main__":
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
-             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo,
+             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages,
              test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:

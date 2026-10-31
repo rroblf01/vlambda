@@ -225,3 +225,16 @@ def test_offline_reset(tmp_path):
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM lambdas").fetchone()[0] == 0
     conn.close()
+
+
+def test_package_spec_validation():
+    from vlambda.packages import _validate
+    assert _validate("six") == "six"
+    assert _validate("requests==2.32.0") == "requests==2.32.0"
+    assert _validate("uvicorn[standard]>=0.30") == "uvicorn[standard]>=0.30"
+    with pytest.raises(ValueError):
+        _validate("git+https://example.com/x.git")
+    with pytest.raises(ValueError):
+        _validate("../evil")
+    with pytest.raises(ValueError):
+        _validate("-e .")

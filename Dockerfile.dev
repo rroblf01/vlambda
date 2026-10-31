@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblzma5 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=gofly /gofly /usr/local/bin/gofly
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=nsjail /src/nsjail/nsjail /usr/local/bin/nsjail
 COPY --from=python-env /opt/python /opt/python
 COPY --from=python-env /opt/venv /opt/venv

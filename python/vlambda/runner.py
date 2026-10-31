@@ -44,6 +44,9 @@ def main() -> None:
             path = req.get("path", "/")
             query = req.get("query_string", "")
             body = base64.b64decode(req.get("body_b64", "")) if req.get("body_b64") else b""
+            vendor_dir = req.get("vendor_dir", "")
+            if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
+                sys.path.insert(0, vendor_dir)
             result = _execute(code, method, path, query, body)
             if isinstance(result, str):
                 payload = result

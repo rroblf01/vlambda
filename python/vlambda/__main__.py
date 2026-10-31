@@ -54,7 +54,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -105,7 +105,7 @@ def main() -> None:
             result["error"] = task["error"]
         return json.dumps(result)
 
-    def _pool_execute(code, method, path, query, body, timeout=0, memory_mb=0):
+    def _pool_execute(slug, code, method, path, query, body, timeout=0, memory_mb=0):
         method = method or "GET"
         path = path or "/"
         query = query or ""
@@ -132,7 +132,17 @@ def main() -> None:
             _dumps = orjson.dumps
         except ImportError:
             _dumps = lambda x: _json.dumps(x, default=_json_default).encode()
-        result = pool.execute(code, method, path, query, body, timeout, memory_mb)
+        vendor_dir = ""
+        if slug:
+            try:
+                from vlambda.packages import lambda_target
+                import os as _os
+                candidate = lambda_target(slug)
+                if _os.path.isdir(candidate):
+                    vendor_dir = candidate
+            except Exception:
+                pass
+        result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir)
         if isinstance(result, str):
             payload = result
         elif isinstance(result, bytes):
@@ -226,6 +236,17 @@ def main() -> None:
             return json.dumps({"error": str(e)})
 
     register_admin_reset(_admin_reset)
+
+    from vlambda.packages import list_for as _list_packages, install_for as _install_packages
+
+    def _list_packages_cb(slug, kind, project_dir):
+        return _list_packages(slug, kind, project_dir)
+
+    def _install_packages_cb(slug, kind, project_dir, body):
+        return _install_packages(slug, kind, project_dir, body)
+
+    register_list_packages(_list_packages_cb)
+    register_install_packages(_install_packages_cb)
 
     from vlambda.project import (
         get_project_json as _get_project_json,

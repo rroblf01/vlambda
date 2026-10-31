@@ -865,7 +865,7 @@ async function loadSystem() {
 /* templates */
 const TEMPLATES = {
   hello: 'def handler(request):\n    return {"msg": "hello", "path": request.path}\n',
-  json: 'def handler(request):\n    return {\n        "method": request.method,\n        "path": request.path,\n        "query": request.query_string,\n        "body": request.body,\n    }\n',
+  json: 'def handler(request):\n    return {\n        "method": request.method,\n        "path": request.path,\n        "query": request.query_string,\n        "body": request.body.decode("utf-8", "replace"),\n    }\n',
   echo: 'def handler(request):\n    return {"echo": request.body, "headers": request.headers}\n',
   math: 'def handler(request):\n    n = int(request.query_string.split("n=")[-1] or 10)\n    return {"sum": sum(range(n)), "n": n}\n',
 };

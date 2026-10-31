@@ -52,7 +52,14 @@ def main() -> None:
             elif isinstance(result, (dict, list, tuple)):
                 import json as _json
 
-                payload = _json.dumps(result)
+                def _default(value):
+                    if isinstance(value, (bytes, bytearray)):
+                        return bytes(value).decode("utf-8", "replace")
+                    if isinstance(value, set):
+                        return list(value)
+                    return str(value)
+
+                payload = _json.dumps(result, default=_default)
             else:
                 payload = str(result)
             print(json.dumps({"ok": True, "payload": payload}), flush=True)

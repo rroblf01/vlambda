@@ -274,6 +274,25 @@ def test_system_endpoints():
     assert "slug" in text
 
 
+def test_bytes_result():
+    token = test_register_login()
+    status, body = req("POST", "/vlambda", "def handler(request): return {'raw': b'hello'}", token)
+    assert status == 201
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body.get("raw") == "hello"
+
+
+def test_request_body_echo():
+    token = test_register_login()
+    code = "def handler(request): return {'body': request.body}"
+    status, body = req("POST", "/vlambda?method=POST", code, token)
+    assert status == 201
+    slug = body["slug"]
+    status, body = req("POST", f"/f/{slug}", "hello")
+    assert status == 200 and body.get("body") == "hello"
+
+
 def test_admin_reset():
     token = test_register_login()
     req("POST", "/vlambda", "def handler(request): return {'ok': 1}", token)
@@ -309,7 +328,8 @@ if __name__ == "__main__":
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
-             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_concurrency, test_rate_limit]
+             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo,
+             test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:
         # Each test gets a fresh server and database. Retry once if the native

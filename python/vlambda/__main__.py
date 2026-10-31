@@ -118,19 +118,30 @@ def main() -> None:
             cached = get_response(cache_key)
             if cached is not None:
                 return cached
+        import json as _json
+
+        def _json_default(value):
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value).decode("utf-8", "replace")
+            if isinstance(value, set):
+                return list(value)
+            return str(value)
+
         try:
             import orjson
             _dumps = orjson.dumps
         except ImportError:
-            import json
-            _dumps = lambda x: json.dumps(x).encode()
+            _dumps = lambda x: _json.dumps(x, default=_json_default).encode()
         result = pool.execute(code, method, path, query, body, timeout, memory_mb)
         if isinstance(result, str):
             payload = result
         elif isinstance(result, bytes):
-            payload = result.decode()
+            payload = result.decode("utf-8", "replace")
         else:
-            dumped = _dumps(result)
+            try:
+                dumped = _dumps(result)
+            except Exception:
+                dumped = _json.dumps(result, default=_json_default).encode()
             payload = dumped.decode() if isinstance(dumped, bytes) else dumped
         if cache_key is not None:
             from vlambda.cache import set_response

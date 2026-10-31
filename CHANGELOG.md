@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow now includes provenance attestation.
 
 ### Fixed
+- Lambda results containing `bytes` (for example `request.body`) are serialized safely instead of failing with "execution failed".
+- The JSON API template decodes the request body before returning it.
 - Unchecked `db.close()` results that broke release (`-prod`) builds.
 - Worker threads terminating on response-cache hits.
 - Platform tags for Linux wheels (`manylinux_2_28`).

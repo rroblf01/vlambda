@@ -490,6 +490,11 @@ function logout() {
 
 /* ---------- views ---------- */
 function showView(name) {
+  if (!token && name !== 'login') {
+    flog('warn', 'view blocked without authentication', { view: name });
+    checkAuth();
+    return;
+  }
   hide('view-login');
   ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
   show('view-' + name);

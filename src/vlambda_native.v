@@ -257,8 +257,24 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Extract auth token from header
+	mut auth_token := ''
+	if auth_hdr := req.header.get(.authorization) {
+		if auth_hdr.starts_with('Bearer ') {
+			auth_token = auth_hdr[7..]
+		}
+	}
+	auth_uid := if auth_token.len > 0 { auth_verify_token(auth_token) } else { -1 }
+
 	// Route: /dlq
 	if req.url == '/dlq' {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		if vlambda_get_dlq == unsafe { nil } {
 			return http.Response{ status_code: 500, body: '{"error": "not configured"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
@@ -366,6 +382,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /logs/history (persisted lambda logs)
 	if req.url.starts_with('/logs/history') {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut days := 1
 		mut slug := ''
 		if req.url.contains('?') {
@@ -398,6 +421,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics/json (JSON format for UI charts)
 	if req.url == '/metrics/json' {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
 		mut body := '{"requests_total": ${vlambda_req_total}, "errors_total": ${vlambda_req_errors}, "lambdas_created": ${vlambda_lambdas_created}, "latency_avg_ms": ${avg}, "latency_count": ${vlambda_latency_count}, "per_lambda": ['
 		mut first := true
@@ -440,6 +470,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics/history (persisted metrics from separate DB)
 	if req.url.starts_with('/metrics/history') {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut days := 7
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
@@ -479,6 +516,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics/stats (aggregated persisted metrics)
 	if req.url.starts_with('/metrics/stats') {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut days := 7
 		mut slug := ''
 		if req.url.contains('?') {
@@ -519,6 +563,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics/aggregate (persisted per-lambda aggregates)
 	if req.url.starts_with('/metrics/aggregate') {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut days := 7
 		mut slug := ''
 		if req.url.contains('?') {
@@ -551,6 +602,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics/summary (aggregated persisted metrics)
 	if req.url.starts_with('/metrics/summary') {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut days := 7
 		mut slug := ''
 		if req.url.contains('?') {
@@ -590,6 +648,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /metrics/export (CSV)
 	if req.url.starts_with('/metrics/export') {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut days := 7
 		mut slug := ''
 		if req.url.contains('?') {
@@ -629,6 +694,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /pool/stats
 	if req.url == '/pool/stats' {
+		if auth_uid < 0 {
+			return http.Response{
+				status_code: 401
+				body: '{"error": "unauthorized"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		mut body := '{}'
 		ptr := &body
 		if vlambda_pool_stats != unsafe { nil } {
@@ -654,15 +726,6 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
-
-	// Extract auth token from header
-	mut auth_token := ''
-	if auth_hdr := req.header.get(.authorization) {
-		if auth_hdr.starts_with('Bearer ') {
-			auth_token = auth_hdr[7..]
-		}
-	}
-	auth_uid := if auth_token.len > 0 { auth_verify_token(auth_token) } else { -1 }
 
 	// Route: /admin/reset (POST, token protected)
 	if req.url == '/admin/reset' && req.method == .post {
@@ -962,6 +1025,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		if req.method == .get {
+			if auth_uid < 0 {
+				return http.Response{
+					status_code: 401
+					body: '{"error": "unauthorized"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			// Parse limit/offset from query string
 			mut limit := 50
 			mut offset := 0

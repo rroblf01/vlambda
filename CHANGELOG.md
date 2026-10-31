@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow now includes provenance attestation.
 
 ### Fixed
+- Metrics, logs, pool stats and DLQ endpoints now require authentication; the UI redirects to login.
 - Metrics charts now register all Chart.js controllers, reuse canvases and keep a fixed 260px height.
 - Lambda results containing `bytes` (for example `request.body`) are serialized safely instead of failing with "execution failed".
 - The JSON API template decodes the request body before returning it.

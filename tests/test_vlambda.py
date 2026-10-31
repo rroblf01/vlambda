@@ -203,8 +203,7 @@ def test_metrics_history():
     token, slug = test_create_invoke()
     req("GET", f"/f/{slug}")
     time.sleep(1.2)
-    status, body = req("GET", "/metrics/history?days=1")
-    # endpoint may require no auth; accept 200
+    status, body = req("GET", "/metrics/history?days=1", token=token)
     assert status == 200
     assert "items" in body
 
@@ -253,24 +252,25 @@ def test_metrics_stats():
     token, slug = test_create_invoke()
     req("GET", f"/f/{slug}")
     time.sleep(1.2)
-    status, body = req("GET", "/metrics/stats?days=1")
+    status, body = req("GET", "/metrics/stats?days=1", token=token)
     assert status == 200
     assert "count" in body
     assert body["count"] >= 1
 
 
 def test_system_endpoints():
+    token = test_register_login()
     status, body = req("GET", "/ready")
     assert status == 200 and body.get("status") == "ready"
-    status, body = req("GET", "/pool/stats")
+    status, body = req("GET", "/pool/stats", token=token)
     assert status == 200 and "workers" in body
-    status, body = req("GET", "/dlq")
+    status, body = req("GET", "/dlq", token=token)
     assert status == 200
-    status, body = req("GET", "/metrics/summary?days=1")
+    status, body = req("GET", "/metrics/summary?days=1", token=token)
     assert status == 200 and "items" in body
     import urllib.request
-    resp = urllib.request.urlopen(f"http://localhost:{PORT}/metrics/export?days=1")
-    text = resp.read().decode()
+    r = urllib.request.Request(f"http://localhost:{PORT}/metrics/export?days=1", headers={"Authorization": f"Bearer {token}"})
+    text = urllib.request.urlopen(r).read().decode()
     assert "slug" in text
 
 
@@ -311,11 +311,11 @@ def test_metrics_aggregate_endpoint():
     token, slug = test_create_invoke()
     req("GET", f"/f/{slug}")
     time.sleep(1.2)
-    status, body = req("GET", "/metrics/aggregate?days=1")
+    status, body = req("GET", "/metrics/aggregate?days=1", token=token)
     assert status == 200
     assert body.get("requests_total", 0) >= 1
     assert any(i.get("slug") == slug for i in body.get("per_lambda", []))
-    status, body = req("GET", f"/metrics/aggregate?days=1&slug={slug}")
+    status, body = req("GET", f"/metrics/aggregate?days=1&slug={slug}", token=token)
     assert status == 200
     assert body.get("requests_total", 0) >= 1
     assert all(i.get("slug") == slug for i in body.get("per_lambda", []))
@@ -330,7 +330,7 @@ def test_lambda_logs():
     status, body = req("GET", f"/f/{slug}")
     assert status == 200 and body.get("ok") is True
     time.sleep(1.2)
-    status, body = req("GET", "/logs/history?days=1")
+    status, body = req("GET", "/logs/history?days=1", token=token)
     assert status == 200
     assert any(i.get("message") == "hello from lambda" and i.get("slug") == slug for i in body.get("items", []))
 

@@ -1,0 +1,34 @@
+services:
+  vlambda:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-0.1.0}
+    image: ghcr.io/rroblf01/vlambda:latest
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - vlambda-data:/data
+      - ./certs:/certs:ro
+    environment:
+      VLAMBDA_SECRET: ${VLAMBDA_SECRET:?set VLAMBDA_SECRET}
+      VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:?set VLAMBDA_ADMIN_TOKEN}
+      VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
+      VLAMBDA_NSJAIL: ${VLAMBDA_NSJAIL:-1}
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+      # nsjail needs user namespaces; keep seccomp unconfined unless your
+      # host allows them with the default Docker profile.
+      - seccomp=unconfined
+
+volumes:
+  vlambda-data:

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import sys
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+        from vlambda.reset import main as reset_main
+        raise SystemExit(reset_main(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(prog="vlambda", description="vlambda server")
     parser.add_argument("--port", type=int, default=int(os.environ.get("VLAMBDA_PORT", "8080")))
     parser.add_argument("--sqlite_path", default=os.environ.get("VLAMBDA_DB", "./vlambda.db"))
@@ -49,7 +54,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -198,6 +203,18 @@ def main() -> None:
             return ("ERR:" + str(e)).encode()
 
     register_get_asset(_get_asset)
+
+    from vlambda.reset import _admin_token_ok, in_process_reset
+
+    def _admin_reset(token):
+        if not _admin_token_ok(token):
+            return json.dumps({"error": "forbidden"})
+        try:
+            return json.dumps(in_process_reset())
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    register_admin_reset(_admin_reset)
 
     from vlambda.project import (
         get_project_json as _get_project_json,
@@ -387,14 +404,17 @@ def main() -> None:
 
     # Memory monitoring thread (if max_memory_mb > 0)
     if args.max_memory_mb > 0:
-        import resource
-        limit_bytes = args.max_memory_mb * 1024 * 1024
-        try:
-            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
-            print(f"Hard memory limit set to {args.max_memory_mb}MB", file=sys.stderr)
-        except (ValueError, OSError) as e:
-            print(f"Could not set hard memory limit: {e}", file=sys.stderr)
         import threading, time, resource
+        # A hard RLIMIT_AS for the whole process starves V/Python threads and
+        # mmap. Use cgroups or the per-worker nsjail limits instead. It can be
+        # enabled explicitly for constrained environments.
+        if os.environ.get("VLAMBDA_HARD_MEMORY_LIMIT", "0") == "1":
+            limit_bytes = args.max_memory_mb * 1024 * 1024
+            try:
+                resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+                print(f"Hard memory limit set to {args.max_memory_mb}MB", file=sys.stderr)
+            except (ValueError, OSError) as e:
+                print(f"Could not set hard memory limit: {e}", file=sys.stderr)
         def _mem_monitor():
             limit_bytes = args.max_memory_mb * 1024 * 1024
             overloaded = False

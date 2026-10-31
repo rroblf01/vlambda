@@ -24,9 +24,14 @@ def start_server():
     else:
         python_bin = "python3"
         cwd = base
+    env = os.environ.copy()
+    env["VLAMBDA_ADMIN_TOKEN"] = "test-admin"
+    env["VLAMBDA_DB"] = DB
+    env["VLAMBDA_METRICS_DB"] = DB.replace(".db", "_metrics.db")
     PROC = subprocess.Popen(
         [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
         cwd=cwd,
+        env=env,
         stdout=open("/tmp/vlambda_test_server.log", "w"), stderr=subprocess.STDOUT,
     )
     for _ in range(30):
@@ -45,9 +50,9 @@ def stop_server():
         except subprocess.TimeoutExpired: PROC.kill()
         PROC = None
 
-def req(method, path, data=None, token=None):
+def req(method, path, data=None, token=None, extra_headers=None):
     url = f"http://localhost:{PORT}{path}"
-    headers = {}
+    headers = dict(extra_headers or {})
     if token: headers["Authorization"] = f"Bearer {token}"
     body = data.encode() if isinstance(data, str) else data
     r = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -269,6 +274,19 @@ def test_system_endpoints():
     assert "slug" in text
 
 
+def test_admin_reset():
+    token = test_register_login()
+    req("POST", "/vlambda", "def handler(request): return {'ok': 1}", token)
+    status, body = req("POST", "/admin/reset", extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200
+    assert "rows" in body
+    status, body = req("GET", "/vlambda", token=token)
+    assert body.get("count") == 0
+    # Wrong token must not reset.
+    status, body = req("POST", "/admin/reset", extra_headers={"X-Admin-Token": "wrong"})
+    assert body.get("error") == "forbidden"
+
+
 def test_rate_limit():
     time.sleep(3.0)
     # default 100 req/s; send enough to trigger 429
@@ -291,7 +309,7 @@ if __name__ == "__main__":
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
-             test_sandbox_blocked, test_system_endpoints, test_concurrency, test_rate_limit]
+             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:
         # Each test gets a fresh server and database. Retry once if the native

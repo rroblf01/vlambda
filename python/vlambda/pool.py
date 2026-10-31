@@ -16,6 +16,7 @@ import json
 import base64
 import select
 import subprocess
+import shutil
 from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
@@ -149,6 +150,34 @@ class InProcessPool:
             w.stop()
 
 
+
+def _runner_command():
+    """Return the command used to start an isolated runner process."""
+    python = sys.executable
+    if os.environ.get("VLAMBDA_NSJAIL", "0") != "1":
+        return [python, "-m", "vlambda.runner"]
+    nsjail = shutil.which("nsjail")
+    if not nsjail:
+        return [python, "-m", "vlambda.runner"]
+    extra = os.environ.get("VLAMBDA_NSJAIL_ARGS", "").split()
+    return [
+        nsjail,
+        "--mode", "o",
+        "--chroot", "/",
+        "--disable_clone_newnet",
+        "--disable_proc",
+        "--rlimit_as", os.environ.get("VLAMBDA_NSJAIL_AS_MB", "80"),
+        "--rlimit_cpu", os.environ.get("VLAMBDA_NSJAIL_CPU", "5"),
+        "--rlimit_nofile", "64",
+        "--rlimit_nproc", "16",
+        "--time_limit", os.environ.get("VLAMBDA_NSJAIL_TIME", "5"),
+        "--tmpfs", "/tmp",
+        *extra,
+        "--",
+        python, "-m", "vlambda.runner",
+    ]
+
+
 class ProcessWorker:
     def __init__(self):
         self._lock = threading.Lock()
@@ -160,7 +189,7 @@ class ProcessWorker:
         env = dict(os.environ)
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
         self._proc = subprocess.Popen(
-            [sys.executable, "-m", "vlambda.runner"],
+            _runner_command(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

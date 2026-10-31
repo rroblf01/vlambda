@@ -190,3 +190,38 @@ def test_dlq_records_failed_task(monkeypatch):
     assert task["status"] == "failed"
     dlq = tasks.get_dlq()
     assert len(dlq) >= before + 1
+
+
+def test_offline_reset(tmp_path):
+    import sqlite3
+    from vlambda.reset import offline_reset
+    db = tmp_path / "vlambda.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE lambdas (id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE lambda_versions (id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE lambda_aliases (alias TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO users (id) VALUES (1)")
+    conn.execute("INSERT INTO lambdas (id) VALUES (1)")
+    conn.execute("INSERT INTO lambda_versions (id) VALUES (1)")
+    conn.commit()
+    conn.close()
+    projects = tmp_path / "projects" / "p1"
+    projects.mkdir(parents=True)
+    (projects / "main.py").write_text("x = 1")
+    packages = tmp_path / "packages" / "dep"
+    packages.mkdir(parents=True)
+    metrics = tmp_path / "metrics.db"
+    m = sqlite3.connect(metrics)
+    m.execute("CREATE TABLE metrics (id INTEGER PRIMARY KEY)")
+    m.execute("CREATE TABLE metrics_daily (id INTEGER PRIMARY KEY)")
+    m.execute("INSERT INTO metrics (id) VALUES (1)")
+    m.commit()
+    m.close()
+    result = offline_reset(str(db), str(metrics), str(tmp_path / "projects"), str(tmp_path / "packages"))
+    assert result["rows"]["users"] == 1
+    assert not (tmp_path / "projects" / "p1").exists()
+    assert not (tmp_path / "packages" / "dep").exists()
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM lambdas").fetchone()[0] == 0
+    conn.close()

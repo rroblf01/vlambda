@@ -69,6 +69,8 @@ __global (
 	// Shutdown
 	vlambda_shutdown = false
 	vlambda_overloaded = false
+	vlambda_resetting = false
+	vlambda_admin_reset = voidptr(0)
 	// Rate limiter (token bucket per IP)
 	vlambda_rate_buckets = map[string]TokenBucket{}
 )
@@ -127,6 +129,13 @@ mut:
 	last   f64
 }
 
+
+fn max_lambdas_per_user() int {
+	raw := os.getenv('VLAMBDA_MAX_LAMBDAS')
+	if raw == '' { return 20 }
+	return raw.int()
+}
+
 // ---- HTTP Handler ----
 
 struct VlambdaHandler {
@@ -165,6 +174,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		vlambda_rate_buckets[ip] = bucket
 		if vlambda_rate_buckets.len > 10000 {
 			vlambda_rate_buckets = map[string]TokenBucket{}
+		}
+	}
+
+	// A reset is in progress: reject new work briefly.
+	if vlambda_resetting {
+		return http.Response{
+			status_code: 503
+			body: '{"error": "reset in progress"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
 
@@ -578,6 +596,38 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	}
 	auth_uid := if auth_token.len > 0 { auth_verify_token(auth_token) } else { -1 }
 
+	// Route: /admin/reset (POST, token protected)
+	if req.url == '/admin/reset' && req.method == .post {
+		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
+		vlambda_resetting = true
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_admin_reset != unsafe { nil } {
+			vcraft.with_gil(fn [token, ptr] () {
+				args := [vcraft.to_py_string(token).ptr]
+				r := vcraft.call(vlambda_admin_reset, args)
+				vcraft.borrow(args[0]).decref()
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		vlambda_resetting = false
+		return http.Response{
+			status_code: 200
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /register (POST)
 	if req.url == '/register' && req.method == .post {
 		// Parse username:password from body
@@ -670,6 +720,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		if req.method == .put {
+			if req.data.len > vlambda_max_body_size * 2 {
+				return http.Response{ status_code: 413, body: '{"error": "project too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
 			mut body := '{}'
 			ptr := &body
 			request_body := req.data
@@ -811,6 +864,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				return http.Response{
 					status_code: 400
 					body: '{"error": "code must define a handler function"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			if db_count_lambdas(auth_uid) >= max_lambdas_per_user() {
+				return http.Response{
+					status_code: 429
+					body: '{"error": "lambda quota exceeded"}'
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
@@ -1296,15 +1356,8 @@ pub fn db_create_lambda(slug string, name string, code string, method string, ow
 pub fn db_update_lambda(slug string, name string, code string, method string, owner_id int, timeout int, memory_mb int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
-	// Bump version and store previous version.
+	// Bump version and store the previous version.
 	mut version := 1
-	rowsv := db.exec_param_many('SELECT version, code, method FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { [] }
-	if rowsv.len > 0 {
-		v := rowsv[0].vals[2] or { '1' }
-		// rows: code, method, version depending query; adjust below
-	}
-	// Simpler: read current version first.
-	version = 1
 	current_rows := db.exec_param_many('SELECT version FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { [] }
 	if current_rows.len > 0 {
 		version = (current_rows[0].vals[0] or { '1' }).int() + 1
@@ -1374,6 +1427,7 @@ pub fn db_get_lambda_name(slug string) string {
 
 @[vc_fn]
 pub fn db_create_project(slug string, name string, method string, entrypoint string, project_dir string, owner_id int) bool {
+	if db_count_lambdas(owner_id) >= max_lambdas_per_user() { return false }
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
 	db.exec_param_many('INSERT INTO lambdas (slug, name, code, method, owner_id, created_at, kind, entrypoint, project_dir, timeout, memory_mb, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1);',
@@ -1803,6 +1857,12 @@ pub fn register_favicon(cb voidptr) {
 pub fn register_get_asset(cb voidptr) {
 	vlambda_get_asset = cb
 }
+
+@[vc_fn]
+pub fn register_admin_reset(cb voidptr) {
+	vlambda_admin_reset = cb
+}
+
 @[vc_fn]
 pub fn register_get_project_json(cb voidptr) { vlambda_get_project_json = cb }
 
@@ -1899,6 +1959,12 @@ pub fn get_asset(name string) string {
 		r.decref()
 	})
 	return cell
+}
+
+@[vc_fn]
+pub fn clear_caches() {
+	vlambda_code_cache = map[string]string{}
+	vlambda_missing_cache = map[string]bool{}
 }
 
 @[vc_fn]

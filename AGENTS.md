@@ -25,6 +25,7 @@ vlambda/pyproject.toml configures pyright, mypy, ty with python/ as extra import
 ## UI
 - Source: `python/vlambda/ui.html`.
 - Bundled editor/Chart.js: `python/vlambda/static/app.js` (built from `ui/` with `npm run build`).
+- After changing `ui.html` or `app.js`, regenerate the packaged assets: `python scripts/embed_assets.py`.
 - Assets served locally via `/assets/<name>`; no CDN.
 
 ## Projects
@@ -43,6 +44,12 @@ Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon t
 
 ## CI
 - .github/workflows/ci.yml runs in manylinux container (preinstalled V/vcraft) for Python 3.14 and 3.15: create venv -> vcraft develop -> integration tests.
+
+## Docker
+- `Dockerfile` installs vlambda from PyPI; `Dockerfile.dev` builds the local wheel.
+- Both use uv to create a free-threaded venv and include gofly + nsjail.
+- Reset: `python -m vlambda reset --yes --url http://127.0.0.1:8081 --token $VLAMBDA_ADMIN_TOKEN`.
+- See `docker/README.md`.
 
 ## Quirks
 - `VCRAFT_NO_MEMORY_LIMIT=1` for constrained builds.

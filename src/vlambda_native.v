@@ -372,6 +372,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /favicon.ico
 	if req.url == '/favicon.ico' {
+		// The favicon belongs to the vlambda UI only. Browsers request it
+		// automatically for every page, including lambda invocations at /f/<slug>,
+		// so skip it when the request comes from a lambda page.
+		if ref := req.header.get(.referer) {
+			if ref.contains('/f/') {
+				return http.Response{
+					status_code: 404
+					body: ''
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
+				}
+			}
+		}
 		icon := get_favicon()
 		return http.Response{
 			status_code: 200

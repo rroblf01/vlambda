@@ -72,6 +72,14 @@ def test_health():
     status, body = req("GET", "/health")
     assert status == 200 and body["status"] == "ok"
 
+def test_favicon_only_for_ui():
+    status, _ = req("GET", "/favicon.ico", extra_headers={"Referer": f"http://localhost:{PORT}/"})
+    assert status == 200
+    status, _ = req("GET", "/favicon.ico")
+    assert status == 200
+    status, _ = req("GET", "/favicon.ico", extra_headers={"Referer": f"http://localhost:{PORT}/f/abc"})
+    assert status == 404
+
 _counter = [0]
 def _unique_user():
     _counter[0] += 1
@@ -366,7 +374,7 @@ def test_sandbox_blocked():
     assert status in (201, 400)
 
 if __name__ == "__main__":
-    tests = [test_health, test_register_login, test_create_invoke, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,

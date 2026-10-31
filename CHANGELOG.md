@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Persistent lambda logs via `request.log()` and a "Save logs" template.
 - Metrics filter by lambda slug or name.
 - Lambda invoke URLs in the dashboard, editor and project view, with copy/open actions.
+- HTML page template built with `str.format()`; HTML responses are served as `text/html`.
 - Full web UI revamp: local CodeMirror 6 editor, lambdas dashboard with search/filter/pagination, API playground, live metrics charts, logs viewer, system status and frontend log drawer.
 - Multi-file project editor with file tree, tabs, entrypoint and requirements editing.
 - Version viewer/rollback, aliases management, templates, theme toggle, keyboard shortcuts and live metrics polling.

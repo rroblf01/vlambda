@@ -102,6 +102,19 @@ def test_create_invoke():
     assert status == 200 and body["msg"] == "hi"
     return token, slug
 
+def test_html_lambda():
+    token = test_register_login()
+    code = 'def handler(request):\n    return "<!DOCTYPE html><html><body><h1>Hi</h1></body></html>"'
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}")
+    raw = resp.read()
+    assert resp.status == 200
+    assert "text/html" in resp.headers.get("Content-Type", "")
+    assert b"<h1>Hi</h1>" in raw
+
 def test_auth_required():
     status, body = req("POST", "/vlambda", "def handler(request): return {}")
     assert status == 401
@@ -374,7 +387,7 @@ def test_sandbox_blocked():
     assert status in (201, 400)
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_html_lambda, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,

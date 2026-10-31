@@ -1135,7 +1135,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			return http.Response{
 				status_code: 200
 				body: result
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: lambda_content_type(result) })
 			}
 		}
 		// Split code and method
@@ -1172,7 +1172,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 			}
 		}
-		mut resp_header := http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		mut resp_header := http.new_header(http.HeaderConfig{ key: .content_type, value: lambda_content_type(result) })
 		resp_header.add_custom('X-Request-Id', request_id) or {}
 		return http.Response{
 			status_code: 200
@@ -1779,6 +1779,14 @@ fn body_to_py_bytes(body string) vcraft.PyObj {
 	unsafe {
 		return vcraft.to_py_bytes_fast(&u8(body.str), body.len)
 	}
+}
+
+fn lambda_content_type(result string) string {
+	trimmed := result.trim_space().to_lower()
+	if trimmed.starts_with('<!doctype html') || trimmed.starts_with('<html') {
+		return 'text/html; charset=utf-8'
+	}
+	return 'application/json'
 }
 
 pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int) string {

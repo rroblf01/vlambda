@@ -369,25 +369,37 @@ def main() -> None:
 
     from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl, schedule_delete as _schedule_delete_impl
 
-    def _run_project(project_dir, entrypoint, request_dict):
+    # Run project handlers on Python-owned threads. Executing user code directly on a
+    # V HTTP thread lets the V GC scan a Python stack, which can corrupt the
+    # interpreter (observed as a SIGSEGV in json.loads on a later request).
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+    _project_pool = ThreadPoolExecutor(
+        max_workers=max(2, args.num_coroutines),
+        thread_name_prefix="vlambda-project",
+    )
+    atexit.register(_project_pool.shutdown, wait=False, cancel_futures=True)
+
+    def _run_project(project_dir, entrypoint, method, path, query, body):
         from vlambda.request import Request
+        import json
         req = Request(
-            method=request_dict.get("method", "GET"),
-            path=request_dict.get("path", "/"),
-            query_string=request_dict.get("query_string", ""),
+            method=method,
+            path=path,
+            query_string=query,
             headers={},
-            body=request_dict.get("body", b""),
+            body=body,
         )
+        timeout = int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         try:
-            result = _execute_project(project_dir, entrypoint, req)
-            import json
+            result = _project_pool.submit(_execute_project, project_dir, entrypoint, req).result(timeout=timeout)
             if isinstance(result, str):
                 return result
             if isinstance(result, (dict, list)):
                 return json.dumps(result)
             return str(result)
+        except FutureTimeoutError:
+            return json.dumps({"error": "invocation timeout"})
         except Exception as e:
-            import json
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     def _delete_project(project_dir):

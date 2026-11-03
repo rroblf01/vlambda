@@ -2385,21 +2385,12 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string) string {
 	vlambda_result_str = '{"error": "not started"}'
 	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body] () {
-		mut req_items := map[string]vcraft.PyObj{}
-		req_items['method'] = vcraft.to_py_string(method)
-		req_items['path'] = vcraft.to_py_string(path)
-		req_items['query_string'] = vcraft.to_py_string(query)
-		req_items['body'] = body_to_py_bytes(body)
-		req_obj := vcraft.to_py_obj_dict(req_items)
-
 		if vlambda_run_project == unsafe { nil } {
-			req_obj.decref()
 			vlambda_result_str = '{"error": "no project runner registered"}'
 			return
 		}
-		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, req_obj.ptr]
+		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr]
 		result := vcraft.call(vlambda_run_project, args)
-		req_obj.decref()
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
 			vcraft.clear_error()

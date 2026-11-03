@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Docker images now run vlambda directly on port 8080; gofly and nsjail were removed because Dokploy terminates TLS and proxies requests. Lambda isolation still uses separate runner processes inside the container.
 
+### Fixed
+- Project invocations no longer corrupt Python interpreter state and crash the server; request fields are passed to the project runner as plain strings/bytes and handlers run on Python-owned threads.
+
 ### Security
 - Lambda runner processes no longer inherit `VLAMBDA_SECRET` or `VLAMBDA_ADMIN_TOKEN`.
 - Blocked additional escape-prone modules, including `posix`, `_socket`, `resource`, `fcntl` and `sqlite3`.

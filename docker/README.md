@@ -15,7 +15,7 @@ container.
 PyPI image:
 
 ```bash
-docker build --build-arg VLAMBDA_VERSION=0.2.2 -t vlambda:latest .
+docker build --build-arg VLAMBDA_VERSION=0.2.3 -t vlambda:latest .
 ```
 
 Local development image:
@@ -82,8 +82,9 @@ Or add it to the host crontab:
 ```
 
 The command calls the running server's `/admin/reset` endpoint, which wipes users,
-lambdas, projects, packages, metrics, versions, aliases and caches. If the server
-is not reachable, it falls back to deleting the data directly.
+lambdas, projects, packages, metrics, versions, aliases and caches. It also
+invalidates existing JWT sessions and API tokens. If the server is not reachable,
+it falls back to deleting the data directly.
 
 ## Verified
 

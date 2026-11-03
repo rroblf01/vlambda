@@ -277,6 +277,8 @@ The demo can be wiped with:
 python -m vlambda reset --yes --url http://127.0.0.1:8080 --token "$VLAMBDA_ADMIN_TOKEN"
 ```
 
+A reset also invalidates existing JWT sessions and API tokens.
+
 For a disposable demo, run it from cron every day:
 
 ```cron

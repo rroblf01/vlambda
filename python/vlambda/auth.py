@@ -23,11 +23,17 @@ def _b64decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-def create_token(user_id: int, username: str, expires_in: int = 3600) -> str:
+def new_auth_epoch() -> str:
+    """Random per-user value that invalidates old tokens after a DB reset."""
+    return os.urandom(16).hex()
+
+
+def create_token(user_id: int, username: str, auth_epoch: str = "", expires_in: int = 3600) -> str:
     header = _b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     payload = _b64encode(json.dumps({
         "sub": str(user_id),
         "username": username,
+        "epoch": auth_epoch,
         "exp": int(time.time()) + expires_in,
     }).encode())
     sig_input = f"{header}.{payload}".encode()

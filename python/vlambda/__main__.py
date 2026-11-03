@@ -51,7 +51,7 @@ def main() -> None:
         if not has_handler:
             return "missing handler function"
         return ""  # valid
-    from vlambda.auth import verify_token, create_token, hash_password, check_password
+    from vlambda.auth import verify_token, create_token, hash_password, check_password, new_auth_epoch
     import sqlite3
     from vlambda.request import Request
     from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, set_overloaded
@@ -168,19 +168,32 @@ def main() -> None:
         if data is None:
             return -1
         try:
-            return int(data.get("sub", -1))
+            uid = int(data.get("sub", -1))
         except (ValueError, TypeError):
             return -1
+        epoch = str(data.get("epoch", ""))
+        if uid < 0 or not epoch:
+            return -1
+        from vlambda.dbpool import get as db_get
+        try:
+            with db_get(args.sqlite_path) as conn:
+                row = conn.execute("SELECT auth_epoch FROM users WHERE id = ?", (uid,)).fetchone()
+        except Exception:
+            return -1
+        if row is None or row[0] != epoch:
+            return -1
+        return uid
 
     register_auth_verifier(_auth_verify)
 
     # Auth: register user
     def _auth_register(username, password):
         from vlambda.dbpool import get as db_get
+        epoch = new_auth_epoch()
         try:
             with db_get(args.sqlite_path) as conn:
-                conn.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                             (username, hash_password(password)))
+                conn.execute("INSERT INTO users (username, password_hash, auth_epoch) VALUES (?, ?, ?)",
+                             (username, hash_password(password), epoch))
                 conn.commit()
                 uid = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
                 return uid
@@ -193,13 +206,17 @@ def main() -> None:
     def _auth_login(username, password):
         from vlambda.dbpool import get as db_get
         with db_get(args.sqlite_path) as conn:
-            row = conn.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,)).fetchone()
+            row = conn.execute("SELECT id, password_hash, auth_epoch FROM users WHERE username = ?", (username,)).fetchone()
             if row is None:
                 return ""
-            uid, stored = row
+            uid, stored, epoch = row
             if not check_password(password, stored):
                 return ""
-            return create_token(uid, username)
+            if not epoch:
+                epoch = new_auth_epoch()
+                conn.execute("UPDATE users SET auth_epoch = ? WHERE id = ?", (epoch, uid))
+                conn.commit()
+            return create_token(uid, username, epoch)
 
     # Register V bridges
     from vlambda_native import register_auth_register, register_auth_login

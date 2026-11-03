@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-11-03
+
+### Fixed
+- JWT sessions are invalidated when the database is reset or a user is deleted; old tokens can no longer create lambdas for a missing or recreated user.
+- API tokens now require their owning user to still exist.
+
+### Security
+- Added a random per-user `auth_epoch` to the users table and JWT payload. Tokens from a previous database generation are rejected even if SQLite reuses the same user ID.
+
 ## [0.2.2] - 2026-11-03
 
 ### Added
@@ -190,7 +199,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
-[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/rroblf01/vlambda/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/rroblf01/vlambda/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/rroblf01/vlambda/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/rroblf01/vlambda/compare/v0.1.0...v0.2.0

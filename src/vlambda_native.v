@@ -98,8 +98,10 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT UNIQUE NOT NULL,
-		password_hash TEXT NOT NULL
+		password_hash TEXT NOT NULL,
+		auth_epoch TEXT NOT NULL DEFAULT ""
 	);')!
+	db.exec('ALTER TABLE users ADD COLUMN auth_epoch TEXT NOT NULL DEFAULT "";') or {}
 	db.exec('CREATE TABLE IF NOT EXISTS lambdas (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		slug TEXT UNIQUE NOT NULL,
@@ -2345,7 +2347,7 @@ pub fn db_verify_api_token(raw string) string {
 	hash := sha256.sum256(raw.bytes()).hex()
 	mut db := init_db(vlambda_db_path) or { return '' }
 	defer { db.close() or {} }
-	rows := db.exec_param('SELECT user_id, scopes FROM api_tokens WHERE token_hash = ? AND revoked = 0;',
+	rows := db.exec_param('SELECT t.user_id, t.scopes FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.revoked = 0;',
 		hash) or { return '' }
 	if rows.len == 0 {
 		return ''

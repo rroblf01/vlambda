@@ -192,11 +192,12 @@ def test_gc_orphans_respects_grace(tmp_path, monkeypatch):
 
 def test_auth_token_roundtrip():
     from vlambda.auth import create_token, verify_token
-    token = create_token(42, "alice")
+    token = create_token(42, "alice", "epoch-1")
     data = verify_token(token)
     assert data is not None
     assert data["sub"] == "42"
     assert data["username"] == "alice"
+    assert data["epoch"] == "epoch-1"
 
 
 def test_auth_bad_token():

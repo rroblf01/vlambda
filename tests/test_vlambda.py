@@ -592,7 +592,17 @@ def test_admin_reset():
     assert status == 200
     assert "rows" in body
     status, body = req("GET", "/vlambda", token=token)
-    assert body.get("count") == 0
+    assert status == 401
+    # A newly created user gets a new ID/epoch; the old token must stay invalid.
+    u = _unique_user()
+    status, body = req("POST", "/register", f"{u}:testpass")
+    assert status == 201, body
+    status, new_token = req("POST", "/login", f"{u}:testpass")
+    assert status == 200 and "token" in new_token
+    status, body = req("GET", "/vlambda", token=token)
+    assert status == 401
+    status, body = req("GET", "/vlambda", token=new_token["token"])
+    assert status == 200 and body.get("count") == 0
     # Wrong token must not reset.
     status, body = req("POST", "/admin/reset", extra_headers={"X-Admin-Token": "wrong"})
     assert body.get("error") == "forbidden"

@@ -5,9 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-10-31
+## [0.2.0] - 2026-11-03
 
 ### Added
+- Real CORS on `/f/<slug>` responses (`--cors_origin` / `VLAMBDA_CORS`) with `OPTIONS` preflight.
+- Project static files: `/f/<slug>/<path>` serves `index.html`, CSS, JS and assets with content types and path-traversal protection; unknown paths fall through to the handler.
+- Long-lived API tokens (PAT) with hashed storage, names, `read`/`write`/`admin` scopes and revocation (`/tokens`).
+- `GET /vlambda?format=json` for clean JSON listings, while keeping the pipe-delimited format for older clients.
+- Export, import and duplicate endpoints for lambdas and projects (`/vlambda/<slug>/export`, `/vlambda/import`, `/vlambda/<slug>/duplicate`).
+- UI actions for export/import/duplicate and an API tokens manager in the System view.
+- POC templates for JSON API + CORS, webhooks and form receivers, plus `examples/` with runnable projects.
 - Docker deployment with a uv-managed free-threaded Python 3.14 venv, gofly, nsjail and HTTP-only operation behind Dokploy.
 - `vlambda reset` CLI and `POST /admin/reset` for weekly demo cleanup.
 - Install PyPI packages per lambda/project from the web UI.

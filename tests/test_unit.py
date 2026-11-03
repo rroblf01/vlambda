@@ -267,3 +267,47 @@ def test_logs_persistence(tmp_path):
     assert data["count"] >= 1
     assert any(i["message"] == "hello log" and i["slug"] == "slug1" for i in data["items"])
     close()
+
+
+def test_transfer_normalize_files():
+    from vlambda.transfer import _normalize_files
+    files, err = _normalize_files({"main.py": "x", "../evil": "y"})
+    assert err and not files
+    files, err = _normalize_files({"main.py": "x"})
+    assert not err and files["main.py"] == "x"
+
+
+def test_transfer_read_project_files(tmp_path):
+    from vlambda.transfer import _read_project_files
+    (tmp_path / "main.py").write_text("print('hi')")
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "lib.py").write_text("should be skipped")
+    (tmp_path / "logo.bin").write_bytes(b"\xff\xfe\x00")
+    files, skipped = _read_project_files(str(tmp_path))
+    assert files["main.py"] == "print('hi')"
+    assert "vendor/lib.py" not in files
+    assert "logo.bin" in skipped
+
+
+def test_transfer_export_code(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    db = tmp_path / "transfer.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE lambdas (slug TEXT, name TEXT, code TEXT, method TEXT, kind TEXT,"
+        " entrypoint TEXT, project_dir TEXT, timeout INTEGER, memory_mb INTEGER,"
+        " version INTEGER, owner_id INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO lambdas VALUES ('l1', 'demo', 'def handler(request): return 1',"
+        " 'GET', 'code', '', '', 0, 0, 1, 7)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    from vlambda.transfer import export_lambda
+    data = json.loads(export_lambda("l1", "7"))
+    assert data["code"].startswith("def handler")
+    assert data["format"] == "vlambda/v1"
+    assert export_lambda("l1", "8") == ""

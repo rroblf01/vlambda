@@ -386,12 +386,132 @@ def test_sandbox_blocked():
     # At least ensure no crash
     assert status in (201, 400)
 
+
+def _upload_project(name, files, entry="main.py"):
+    import base64, io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for path, content in files.items():
+            z.writestr(path, content)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    token = test_register_login()
+    status, body = req("POST", f"/vlambda?project=1&entry={entry}&name={name}", b64, token)
+    assert status == 201, body
+    return token, body["slug"]
+
+
+def test_cors_headers():
+    token, slug = test_create_invoke()
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}")
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Methods")
+    preflight = urllib.request.Request(f"http://localhost:{PORT}/f/{slug}", method="OPTIONS")
+    resp = urllib.request.urlopen(preflight)
+    assert resp.status == 204
+    assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+
+
+def test_json_listing():
+    token, slug = test_create_invoke()
+    status, body = req("GET", "/vlambda?format=json", token=token)
+    assert status == 200, body
+    assert isinstance(body["lambdas"], list)
+    assert any(item.get("slug") == slug for item in body["lambdas"])
+
+
+def test_api_tokens():
+    token = test_register_login()
+    status, body = req("POST", "/tokens", json.dumps({"name": "ci", "scopes": ["read", "write"]}), token)
+    assert status == 201, body
+    pat = body["token"]
+    token_id = body["id"]
+    assert pat.startswith("vl_")
+    status, body = req("GET", "/vlambda?format=json", token=pat)
+    assert status == 200
+    status, body = req("POST", "/vlambda", "def handler(request): return {}", pat)
+    assert status == 201, body
+    status, body = req("GET", "/tokens", token=pat)
+    assert status == 200 and body["tokens"][0]["id"] == token_id
+    status, body = req("DELETE", f"/tokens/{token_id}", token=token)
+    assert status == 200
+    status, body = req("GET", "/vlambda", token=pat)
+    assert status == 401
+
+    status, body = req("POST", "/tokens", json.dumps({"name": "ro", "scopes": ["read"]}), token)
+    assert status == 201, body
+    readonly = body["token"]
+    status, body = req("POST", "/vlambda", "def handler(request): return {}", readonly)
+    assert status == 403
+
+
+def test_project_static_files():
+    token, slug = _upload_project("static", {
+        "main.py": "def handler(request):\n    return {'path': request.path}\n",
+        "index.html": "<!DOCTYPE html><html><body><h1>static</h1></body></html>",
+        "app.js": "console.log('hi')",
+        "css/site.css": "body { color: red; }",
+    })
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}/")
+    assert resp.status == 200
+    assert resp.headers.get("Content-Type", "").startswith("text/html")
+    assert b"<h1>static</h1>" in resp.read()
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}/app.js")
+    assert "javascript" in resp.headers.get("Content-Type", "")
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}/css/site.css")
+    assert "text/css" in resp.headers.get("Content-Type", "")
+    status, body = req("GET", f"/f/{slug}/api")
+    assert status == 200 and body.get("path", "").endswith("/api")
+    status, body = req("GET", f"/f/{slug}/%2e%2e/%2e%2e/etc/passwd")
+    assert status == 400
+
+
+def test_export_import_duplicate():
+    token, slug = test_create_invoke()
+    status, exported = req("GET", f"/vlambda/{slug}/export", token=token)
+    assert status == 200, exported
+    assert exported["format"] == "vlambda/v1"
+    assert exported["code"].startswith("def handler")
+    status, body = req("POST", "/vlambda/import", json.dumps(exported), token)
+    assert status == 201, body
+    imported = body["slug"]
+    status, body = req("GET", f"/f/{imported}")
+    assert status == 200 and body.get("msg") == "hi"
+    status, body = req("POST", f"/vlambda/{slug}/duplicate", token=token)
+    assert status == 201, body
+    assert body["slug"] != slug
+    status, body = req("GET", f"/f/{body['slug']}")
+    assert status == 200 and body.get("msg") == "hi"
+
+
+def test_project_export_import():
+    token, slug = _upload_project("exportable", {
+        "main.py": "def handler(request):\n    return {'ok': True}\n",
+        "index.html": "<!DOCTYPE html><html><body>export me</body></html>",
+    })
+    status, exported = req("GET", f"/vlambda/{slug}/export", token=token)
+    assert status == 200, exported
+    assert exported["kind"] == "project"
+    assert "index.html" in exported["files"]
+    status, body = req("POST", "/vlambda/import", json.dumps(exported), token)
+    assert status == 201, body
+    imported = body["slug"]
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{imported}/")
+    assert b"export me" in resp.read()
+    status, body = req("GET", f"/f/{imported}")
+    assert body.get("ok") is True
+
+
 if __name__ == "__main__":
     tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_html_lambda, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs,
+             test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,
+             test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_rate_limit]
     failed = 0
     for t in tests:

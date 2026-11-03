@@ -1,0 +1,18 @@
+body {
+  font-family: system-ui, sans-serif;
+  max-width: 720px;
+  margin: 48px auto;
+  padding: 0 16px;
+  color: #1f2328;
+}
+
+button {
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+pre {
+  background: #f6f8fa;
+  padding: 12px;
+  border-radius: 6px;
+}

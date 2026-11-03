@@ -154,6 +154,8 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         <div class="flex">
           <button class="btn btn-primary" onclick="showCreateCode()">+ New lambda</button>
           <button class="btn" onclick="showCreateProject()">+ Upload project</button>
+          <button class="btn" onclick="document.getElementById('import-file').click()">Import</button>
+          <input id="import-file" type="file" accept=".json,application/json" style="display:none" onchange="importLambda(event)">
         </div>
       </div>
       <div class="flex" style="margin-bottom:10px;">
@@ -182,6 +184,9 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         <select id="template-select" onchange="applyTemplate()">
           <option value="hello">Hello world</option>
           <option value="json">JSON API</option>
+          <option value="cors">JSON API + CORS</option>
+          <option value="webhook">Webhook receiver</option>
+          <option value="form">Form receiver</option>
           <option value="echo">Echo request</option>
           <option value="math">Compute</option>
           <option value="html">HTML page</option>
@@ -411,6 +416,25 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
       <div class="card"><h3>Health</h3><pre id="sys-health">—</pre></div>
       <div class="card"><h3>Ready</h3><pre id="sys-ready">—</pre></div>
       <div class="card"><h3>Pool</h3><pre id="sys-pool">—</pre></div>
+    </div>
+    <div class="card">
+      <h3>API tokens</h3>
+      <p class="muted" style="margin-bottom:8px;">Long-lived tokens for scripts and CI. Send them as <span class="mono">Authorization: Bearer vl_…</span>. The value is shown only once.</p>
+      <div class="flex" style="margin-bottom:10px;">
+        <input id="token-name" placeholder="token name" style="width:180px;">
+        <select id="token-scopes">
+          <option value="read,write">read + write</option>
+          <option value="read">read only</option>
+          <option value="read,write,admin">admin</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="createToken()">Create token</button>
+        <button class="btn btn-sm" onclick="loadTokens()">Refresh</button>
+      </div>
+      <div id="token-new" class="mono" style="margin-bottom:10px;"></div>
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+        <tbody id="token-list"></tbody>
+      </table>
     </div>
     <div class="card"><h3>DLQ</h3><pre id="sys-dlq">—</pre></div>
   </div>
@@ -647,11 +671,15 @@ function showView(name) {
 /* ---------- dashboard ---------- */
 async function loadLambdas() {
   try {
-    const data = await api('/vlambda?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
-    lambdas = (data.lambdas || '').trim().split('\n').filter(Boolean).map(line => {
-      const p = line.split('|');
-      return { slug: p[0], name: p[1] || '', method: p[2] || 'GET', kind: p[3] || 'code', entrypoint: p[4] || '' };
-    });
+    const data = await api('/vlambda?format=json&limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    if (Array.isArray(data.lambdas)) {
+      lambdas = data.lambdas;
+    } else {
+      lambdas = (data.lambdas || '').trim().split('\n').filter(Boolean).map(line => {
+        const p = line.split('|');
+        return { slug: p[0], name: p[1] || '', method: p[2] || 'GET', kind: p[3] || 'code', entrypoint: p[4] || '' };
+      });
+    }
     document.getElementById('lambda-count').textContent = (data.count || lambdas.length) + ' lambdas';
     document.getElementById('page-label').textContent = 'page ' + (page + 1);
     renderLambdaTable();
@@ -678,6 +706,8 @@ function renderLambdaTable() {
         '<button class="btn btn-sm" onclick="editLambda(\'' + l.slug + '\',\'' + l.kind + '\')">Edit</button>' +
         '<button class="btn btn-sm" onclick="openInPlayground(\'' + l.slug + '\',\'' + l.method + '\')">Test</button>' +
         '<button class="btn btn-sm" onclick="copyLambdaUrl(\'' + l.slug + '\')">Copy link</button>' +
+        '<button class="btn btn-sm" onclick="exportLambda(\'' + l.slug + '\')">Export</button>' +
+        '<button class="btn btn-sm" onclick="duplicateLambda(\'' + l.slug + '\')">Dup</button>' +
         '<button class="btn btn-sm btn-danger" onclick="deleteLambda(\'' + l.slug + '\')">Del</button>' +
         '</span></td>';
       tbody.appendChild(tr);
@@ -991,14 +1021,58 @@ async function deleteLambda(slug) {
   } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
 }
 
+/* ---------- export / import / duplicate ---------- */
+async function exportLambda(slug) {
+  try {
+    const resp = await fetch(API + '/vlambda/' + encodeURIComponent(slug) + '/export', { headers: authHeaders(false) });
+    if (!resp.ok) throw new Error('export failed: ' + resp.status);
+    const text = await resp.text();
+    const blob = new Blob([text], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = slug + '.vlambda.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    showAlert('dashboard-alert', 'Exported ' + slug, 'success');
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+}
+async function importLambda(event) {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = await api('/vlambda/import', {
+      method: 'POST',
+      body: text,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    showAlert('dashboard-alert', 'Imported as ' + data.slug, 'success');
+    loadLambdas();
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+}
+async function duplicateLambda(slug) {
+  try {
+    const data = await api('/vlambda/' + encodeURIComponent(slug) + '/duplicate', { method: 'POST' });
+    showAlert('dashboard-alert', 'Duplicated as ' + data.slug, 'success');
+    loadLambdas();
+  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+}
+
 /* ---------- metrics ---------- */
 async function loadMetricOptions() {
   try {
-    const data = await api('/vlambda?limit=1000&offset=0');
-    metricLambdas = (data.lambdas || '').trim().split('\n').filter(Boolean).map(line => {
-      const p = line.split('|');
-      return { slug: p[0], name: p[1] || '', method: p[2] || 'GET' };
-    });
+    const data = await api('/vlambda?format=json&limit=1000&offset=0');
+    if (Array.isArray(data.lambdas)) {
+      metricLambdas = data.lambdas;
+    } else {
+      metricLambdas = (data.lambdas || '').trim().split('\n').filter(Boolean).map(line => {
+        const p = line.split('|');
+        return { slug: p[0], name: p[1] || '', method: p[2] || 'GET' };
+      });
+    }
     const dl = document.getElementById('metrics-lambdas');
     dl.innerHTML = metricLambdas.map(l =>
       '<option value="' + escapeHtml(l.slug) + '">' + escapeHtml(l.name || l.slug) + '</option>' +
@@ -1136,8 +1210,8 @@ async function loadSystem() {
   try {
     const health = await fetch('/health').then(r => r.json());
     const ready = await fetch('/ready').then(r => r.json());
-    const pool = await fetch('/pool/stats').then(r => r.json());
-    const dlq = await fetch('/dlq').then(r => r.json());
+    const pool = await api('/pool/stats');
+    const dlq = await api('/dlq');
     document.getElementById('sys-health').textContent = JSON.stringify(health, null, 2);
     document.getElementById('sys-ready').textContent = JSON.stringify(ready, null, 2);
     document.getElementById('sys-pool').textContent = JSON.stringify(pool, null, 2);
@@ -1145,7 +1219,59 @@ async function loadSystem() {
     const ok = health.status === 'ok' && ready.status === 'ready';
     document.getElementById('status-pill').textContent = ok ? 'online' : 'degraded';
     document.getElementById('status-pill').style.background = ok ? '#238636' : '#9e6a03';
+    await loadTokens();
     flog('info', 'system loaded', { health: health.status, ready: ready.status, pool });
+  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+}
+
+/* ---------- API tokens ---------- */
+function formatUnix(value) {
+  if (!value) return '';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  return new Date(n * 1000).toLocaleString();
+}
+async function loadTokens() {
+  try {
+    const data = await api('/tokens');
+    const tbody = document.getElementById('token-list');
+    tbody.innerHTML = '';
+    (data.tokens || []).forEach(t => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td class="mono">' + t.id + '</td>' +
+        '<td>' + escapeHtml(t.name || '—') + '</td>' +
+        '<td class="mono">' + escapeHtml(t.scopes) + '</td>' +
+        '<td class="muted">' + escapeHtml(formatUnix(t.created_at)) + '</td>' +
+        '<td class="muted">' + (t.last_used_at ? escapeHtml(formatUnix(t.last_used_at)) : 'never') + '</td>' +
+        '<td>' + (t.revoked ? '<span class="badge badge-DELETE">revoked</span>' : '<span class="badge badge-GET">active</span>') + '</td>' +
+        '<td>' + (t.revoked ? '' : '<button class="btn btn-sm btn-danger" onclick="revokeToken(' + t.id + ')">Revoke</button>') + '</td>';
+      tbody.appendChild(tr);
+    });
+  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+}
+async function createToken() {
+  const name = document.getElementById('token-name').value.trim() || 'token';
+  const scopes = document.getElementById('token-scopes').value;
+  try {
+    const data = await api('/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name, scopes: scopes.split(',') }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    document.getElementById('token-new').innerHTML =
+      'Copy it now: <strong>' + escapeHtml(data.token) + '</strong> ' +
+      '<button class="btn btn-sm" onclick="copyText(\'' + data.token + '\')">Copy</button>';
+    document.getElementById('token-name').value = '';
+    showAlert('system-alert', 'Token created', 'success');
+    await loadTokens();
+  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+}
+async function revokeToken(id) {
+  if (!confirm('Revoke token ' + id + '?')) return;
+  try {
+    await api('/tokens/' + id, { method: 'DELETE' });
+    showAlert('system-alert', 'Token revoked', 'success');
+    await loadTokens();
   } catch (e) { showAlert('system-alert', e.message, 'error'); }
 }
 
@@ -1153,6 +1279,9 @@ async function loadSystem() {
 const TEMPLATES = {
   hello: 'def handler(request):\n    return {"msg": "hello", "path": request.path}\n',
   json: 'def handler(request):\n    return {\n        "method": request.method,\n        "path": request.path,\n        "query": request.query_string,\n        "body": request.body.decode("utf-8", "replace"),\n    }\n',
+  cors: 'def handler(request):\n    # vlambda adds CORS headers automatically for /f/<slug>.\n    return {\n        "ok": True,\n        "method": request.method,\n        "items": [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}],\n    }\n',
+  webhook: 'import json\n\ndef handler(request):\n    try:\n        payload = json.loads(request.body or b"{}")\n    except ValueError:\n        payload = {"raw": request.body.decode("utf-8", "replace")}\n    request.log("webhook received: " + json.dumps(payload)[:200])\n    return {"received": True, "payload": payload}\n',
+  form: 'from urllib.parse import parse_qs\n\ndef handler(request):\n    form = parse_qs(request.body.decode("utf-8", "replace"))\n    return {"fields": {k: v[0] for k, v in form.items()}}\n',
   echo: 'def handler(request):\n    return {"echo": request.body, "headers": request.headers}\n',
   math: 'def handler(request):\n    n = int(request.query_string.split("n=")[-1] or 10)\n    return {"sum": sum(range(n)), "n": n}\n',
   html: 'def handler(request):\n    items = ["alpha", "beta", "gamma"]\n    rows = "\\n    ".join("<li>{}</li>".format(item) for item in items)\n    page = """<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <title>Hello from vlambda</title>\n</head>\n<body>\n  <h1>Hello from vlambda</h1>\n  <p>Path: {path}</p>\n  <ul>\n    {rows}\n  </ul>\n</body>\n</html>""".format(path=request.path, rows=rows)\n    return page\n',

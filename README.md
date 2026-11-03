@@ -30,6 +30,11 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **Versions and aliases** — rollback and `prod`/`staging` aliases
 - **PyPI packages** — install per lambda/project from the UI
 - **Persistent metrics and logs** — survive restarts, queryable by slug/name
+- **CORS** — applied to every `/f/` response, with `OPTIONS` preflight
+- **Static files** — projects serve `index.html`, CSS, JS and assets at `/f/<slug>/<path>`
+- **API tokens** — long-lived tokens with scopes and revocation
+- **Export / import / duplicate** — move lambdas and projects as JSON
+- **POC templates** — HTML + `fetch`, webhook, JSON API, static site
 - **Free-threaded builds** — `cp314t`/`cp315t` wheels
 
 ## Installation
@@ -55,6 +60,33 @@ VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambd
 ```
 
 Then open http://localhost:8080/ in your browser.
+
+## Build a POC in five minutes
+
+1. Open the UI and log in.
+2. Pick a template in **New lambda** (`JSON API + CORS`, `Webhook receiver`,
+   `Form receiver`, `HTML page`…) and create it.
+3. Open the invoke URL `https://your-host/f/<slug>`.
+4. Need files? Upload a ZIP in **Upload project**; anything in the project is
+   served at `/f/<slug>/<path>` and any unknown path runs `handler(request)`.
+
+More complete examples live in [`examples/`](examples/): a static site, an
+HTML + `fetch` POC, a webhook receiver and a JSON API.
+
+## API tokens
+
+Create a token in **System → API tokens**, or with the API:
+
+```bash
+curl -X POST "$VLAMBDA_URL/tokens" \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ci","scopes":["read","write"]}'
+```
+
+The response contains the token (`vl_…`) once. Use it as
+`Authorization: Bearer vl_…`. Scopes are `read`, `write` and `admin`; revoke a
+token with `DELETE /tokens/<id>`. Tokens do not expire.
 
 ## Docker + Dokploy
 
@@ -97,13 +129,34 @@ See `docker/README.md` for details, limits and the weekly reset command.
 
 ### Lambdas (requires auth)
 - `POST /vlambda?method=GET&name=my-lambda` — Create lambda (body: Python code)
-- `GET /vlambda` — List lambdas
+- `GET /vlambda` — List lambdas (pipe-delimited)
+- `GET /vlambda?format=json` — List lambdas as JSON
 - `GET /vlambda/<slug>` — Get lambda code
 - `PUT /vlambda/<slug>?method=POST&name=new-name` — Update lambda
 - `DELETE /vlambda/<slug>` — Delete lambda
 
+### API tokens (requires auth)
+- `POST /tokens` — Create a token: `{"name":"ci","scopes":["read","write"]}`
+- `GET /tokens` — List tokens (never returns the secret)
+- `DELETE /tokens/<id>` — Revoke a token
+
+Tokens are accepted anywhere a JWT is accepted. `read` allows listing and
+reading, `write` allows mutating lambdas/projects, `admin` allows token
+management and admin routes.
+
+### Export / import
+- `GET /vlambda/<slug>/export` — Export code or project files as JSON
+- `POST /vlambda/import` — Create from an exported JSON body
+- `POST /vlambda/<slug>/duplicate` — Copy a lambda or project
+
+Project exports include text files. Binary files are listed in
+`skipped_files` and are not copied.
+
 ### Invocation
 - `GET/POST/PUT/PATCH/DELETE /f/<slug>` — Invoke lambda (method must match)
+- `OPTIONS /f/<slug>` — CORS preflight (returns `204`)
+- `GET /f/<slug>/<path>` — Serve a project file, or invoke the handler if the
+  file does not exist
 - `POST /async/<slug>` — Async invoke (returns task_id)
 - `GET /task/<id>` — Get async task result
 
@@ -111,6 +164,8 @@ See `docker/README.md` for details, limits and the weekly reset command.
 - `POST /vlambda?project=1&entry=main.py` — Upload a ZIP project (base64 body)
 - `GET /project/<slug>` — Read project files
 - `PUT /project/<slug>` — Save project files
+- `GET /f/<slug>/` — Serve `index.html`
+- `GET /f/<slug>/<path>` — Serve a static file (`vendor/`, `.git/` and `..` blocked)
 
 ### Versions and aliases
 - `GET /vlambda/<slug>/versions` — List versions

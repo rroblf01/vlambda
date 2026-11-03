@@ -6,6 +6,9 @@ import net.http
 import time
 import os
 import strings
+import crypto.sha256
+import rand
+import json2
 
 // ---- Global state ----
 
@@ -38,6 +41,9 @@ __global (
 	vlambda_create_project = voidptr(0)
 	vlambda_delete_project = voidptr(0)
 	vlambda_schedule_delete = voidptr(0)
+	vlambda_export_lambda = voidptr(0)
+	vlambda_import_lambda = voidptr(0)
+	vlambda_duplicate_lambda = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -108,6 +114,16 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('ALTER TABLE lambdas ADD COLUMN version INTEGER NOT NULL DEFAULT 1;') or {}
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, method TEXT NOT NULL DEFAULT "GET", entrypoint TEXT NOT NULL DEFAULT "", project_dir TEXT NOT NULL DEFAULT "", kind TEXT NOT NULL DEFAULT "code", created_at TEXT NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_aliases (alias TEXT PRIMARY KEY, slug TEXT NOT NULL, version INTEGER NOT NULL, owner_id INTEGER NOT NULL);')!
+	db.exec('CREATE TABLE IF NOT EXISTS api_tokens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL,
+		name TEXT NOT NULL DEFAULT "",
+		token_hash TEXT UNIQUE NOT NULL,
+		scopes TEXT NOT NULL DEFAULT "read,write",
+		created_at TEXT NOT NULL,
+		last_used_at TEXT NOT NULL DEFAULT "",
+		revoked INTEGER NOT NULL DEFAULT 0
+	);')!
 	db.exec('ALTER TABLE lambdas ADD COLUMN kind TEXT NOT NULL DEFAULT "code";') or {}
 	db.exec('ALTER TABLE lambdas ADD COLUMN entrypoint TEXT NOT NULL DEFAULT "";') or {}
 	db.exec('ALTER TABLE lambdas ADD COLUMN project_dir TEXT NOT NULL DEFAULT "";') or {}
@@ -127,10 +143,158 @@ fn make_slug(code string) string {
 	return 'l${h:016x}'
 }
 
+// ---- CORS / static file helpers ----
+
+fn add_cors_headers(mut hdr http.Header) {
+	hdr.add_custom('Access-Control-Allow-Origin', vlambda_cors_origin) or {}
+	hdr.add_custom('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS') or {}
+	hdr.add_custom('Access-Control-Allow-Headers', 'Content-Type, Authorization') or {}
+	hdr.add_custom('Access-Control-Expose-Headers', 'X-Request-Id') or {}
+	if vlambda_cors_origin != '*' {
+		hdr.add_custom('Vary', 'Origin') or {}
+	}
+}
+
+fn cors_response(status int, body string, content_type string) http.Response {
+	mut hdr := http.new_header(http.HeaderConfig{ key: .content_type, value: content_type })
+	add_cors_headers(mut hdr)
+	return http.Response{
+		status_code: status
+		body: body
+		header: hdr
+	}
+}
+
+fn cors_json(status int, body string) http.Response {
+	return cors_response(status, body, 'application/json')
+}
+
+fn has_scope(scopes string, want string) bool {
+	for scope in scopes.split(',') {
+		if scope.trim_space() == want {
+			return true
+		}
+	}
+	return false
+}
+
+fn hex_digit(c u8) int {
+	if c >= `0` && c <= `9` {
+		return int(c - `0`)
+	}
+	if c >= `a` && c <= `f` {
+		return int(c - `a`) + 10
+	}
+	if c >= `A` && c <= `F` {
+		return int(c - `A`) + 10
+	}
+	return -1
+}
+
+fn decode_query_value(value string) string {
+	mut out := ''
+	mut i := 0
+	for i < value.len {
+		c := value[i]
+		if c == `+` {
+			out += ' '
+		} else if c == `%` && i + 2 < value.len {
+			hi := hex_digit(value[i + 1])
+			lo := hex_digit(value[i + 2])
+			if hi >= 0 && lo >= 0 {
+				out += u8(hi * 16 + lo).ascii_str()
+				i += 2
+			} else {
+				out += u8(c).ascii_str()
+			}
+		} else {
+			out += u8(c).ascii_str()
+		}
+		i++
+	}
+	return out
+}
+
+fn json_str(value string) string {
+	return json2.encode(value, json2.EncoderOptions{})
+}
+
+fn content_type_for(path string) string {
+	ext := path.all_after_last('.').to_lower()
+	return match ext {
+		'html', 'htm' { 'text/html; charset=utf-8' }
+		'css' { 'text/css; charset=utf-8' }
+		'js', 'mjs' { 'text/javascript; charset=utf-8' }
+		'json' { 'application/json; charset=utf-8' }
+		'xml' { 'application/xml; charset=utf-8' }
+		'txt', 'md' { 'text/plain; charset=utf-8' }
+		'svg' { 'image/svg+xml' }
+		'png' { 'image/png' }
+		'jpg', 'jpeg' { 'image/jpeg' }
+		'gif' { 'image/gif' }
+		'webp' { 'image/webp' }
+		'ico' { 'image/x-icon' }
+		'woff' { 'font/woff' }
+		'woff2' { 'font/woff2' }
+		'ttf' { 'font/ttf' }
+		'wasm' { 'application/wasm' }
+		'pdf' { 'application/pdf' }
+		else { 'application/octet-stream' }
+	}
+}
+
+fn is_safe_static_path(sub string) bool {
+	if sub == '' || sub.starts_with('/') || sub.contains('\\') {
+		return false
+	}
+	low := sub.to_lower()
+	if low.contains('%2e') || low.contains('%2f') || low.contains('%5c') || low.contains('\x00') {
+		return false
+	}
+	for part in sub.split('/') {
+		if part == '' || part == '.' || part == '..' {
+			return false
+		}
+		if part == 'vendor' || part == '__pycache__' || part == '.git' {
+			return false
+		}
+	}
+	return true
+}
+
+fn serve_project_file(project_dir string, sub string) ?http.Response {
+	if !is_safe_static_path(sub) {
+		return none
+	}
+	full := os.join_path(project_dir, sub)
+	if !os.exists(full) || os.is_dir(full) {
+		return none
+	}
+	data := os.read_bytes(full) or { return none }
+	return http.Response{
+		status_code: 200
+		body: data.bytestr()
+		header: http.new_header(http.HeaderConfig{
+			key: .content_type
+			value: content_type_for(sub)
+		})
+	}
+}
+
 struct TokenBucket {
 mut:
 	tokens f64
 	last   f64
+}
+
+struct TokenCreateRequest {
+	name   string
+	scopes []string
+}
+
+struct TokenCreateRequestString {
+	name   string
+	scopes string
 }
 
 
@@ -257,14 +421,138 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
-	// Extract auth token from header
+	// Extract auth token from header. Long-lived API tokens start with "vl_"
+	// and are looked up by hash; otherwise the value is a JWT.
 	mut auth_token := ''
 	if auth_hdr := req.header.get(.authorization) {
 		if auth_hdr.starts_with('Bearer ') {
 			auth_token = auth_hdr[7..]
 		}
 	}
-	auth_uid := if auth_token.len > 0 { auth_verify_token(auth_token) } else { -1 }
+	mut auth_uid := -1
+	mut auth_scopes := ''
+	if auth_token.len > 0 {
+		if auth_token.starts_with('vl_') {
+			token_info := db_verify_api_token(auth_token)
+			if token_info != '' {
+				auth_uid = token_info.all_before('|').int()
+				auth_scopes = token_info.all_after('|')
+			}
+		} else {
+			auth_uid = auth_verify_token(auth_token)
+			if auth_uid >= 0 {
+				auth_scopes = 'read,write,admin'
+			}
+		}
+	}
+	// Scope enforcement for API tokens. JWTs get every scope.
+	if auth_uid >= 0 && auth_scopes != '' {
+		if req.url.starts_with('/admin/') && !has_scope(auth_scopes, 'admin') {
+			return http.Response{
+				status_code: 403
+				body: '{"error": "admin scope required"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		is_write := req.method == .post || req.method == .put || req.method == .patch
+			|| req.method == .delete
+		if is_write && !has_scope(auth_scopes, 'write') && !req.url.starts_with('/tokens') {
+			return http.Response{
+				status_code: 403
+				body: '{"error": "write scope required"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+	}
+
+	// Route: /tokens (GET = list, POST = create)
+	if req.url == '/tokens' || req.url.starts_with('/tokens?') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .post {
+			// Creating tokens requires the admin scope when using a PAT.
+			if auth_scopes != '' && !has_scope(auth_scopes, 'admin') {
+				return http.Response{ status_code: 403, body: '{"error": "admin scope required"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			mut token_name := ''
+			mut token_scopes := 'read,write'
+			if req.data.len > 0 {
+				parsed := json2.decode[TokenCreateRequest](req.data, json2.DecoderOptions{}) or {
+					TokenCreateRequest{}
+				}
+				token_name = parsed.name
+				if parsed.scopes.len > 0 {
+					token_scopes = parsed.scopes.join(',')
+				} else {
+					// Also accept "scopes": "read,write".
+					str_parsed := json2.decode[TokenCreateRequestString](req.data, json2.DecoderOptions{}) or {
+						TokenCreateRequestString{}
+					}
+					if str_parsed.scopes != '' && !str_parsed.scopes.starts_with('[') {
+						token_scopes = str_parsed.scopes
+					}
+				}
+			}
+			if req.url.contains('?') {
+				qs := req.url.all_after('?')
+				for part in qs.split('&') {
+					if part.starts_with('name=') {
+						token_name = decode_query_value(part.all_after('='))
+					}
+					if part.starts_with('scopes=') {
+						token_scopes = decode_query_value(part.all_after('='))
+					}
+				}
+			}
+			mut valid_scopes := []string{}
+			for scope in token_scopes.split(',') {
+				s := scope.trim_space()
+				if s == 'read' || s == 'write' || s == 'admin' {
+					if s !in valid_scopes {
+						valid_scopes << s
+					}
+				}
+			}
+			if valid_scopes.len == 0 {
+				return http.Response{ status_code: 400, body: '{"error": "no valid scopes"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			result := db_create_api_token(auth_uid, token_name, valid_scopes.join(','))
+			if result.starts_with('{"error"') {
+				return http.Response{ status_code: 500, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			return http.Response{ status_code: 201, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .get {
+			body := '{"tokens": ' + db_list_api_tokens(auth_uid) + '}'
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /tokens/<id> (DELETE = revoke)
+	if req.url.starts_with('/tokens/') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if auth_scopes != '' && !has_scope(auth_scopes, 'admin') {
+			return http.Response{ status_code: 403, body: '{"error": "admin scope required"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .delete {
+			mut url_path := req.url
+			qi := url_path.index('?') or { url_path.len }
+			url_path = url_path[..qi]
+			id := url_path[8..].int()
+			if id <= 0 {
+				return http.Response{ status_code: 400, body: '{"error": "invalid token id"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			if db_revoke_api_token(auth_uid, id) {
+				return http.Response{ status_code: 200, body: '{"revoked": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			return http.Response{ status_code: 404, body: '{"error": "token not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
 
 	// Route: /dlq
 	if req.url == '/dlq' {
@@ -1047,6 +1335,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			// Parse limit/offset from query string
 			mut limit := 50
 			mut offset := 0
+			mut as_json := false
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
@@ -1056,13 +1345,24 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					if part.starts_with('offset=') {
 						offset = part.all_after('=').int()
 					}
+					if part == 'format=json' {
+						as_json = true
+					}
+				}
+			}
+			count := db_count_lambdas(auth_uid)
+			if as_json {
+				items := db_list_lambdas_json(auth_uid, limit, offset)
+				return http.Response{
+					status_code: 200
+					body: '{"lambdas": ${items}, "count": ${count}, "limit": ${limit}, "offset": ${offset}}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
 			lambdas := db_list_lambdas_page(auth_uid, limit, offset)
-			count := db_count_lambdas(auth_uid)
 			return http.Response{
 				status_code: 200
-				body: '{"lambdas": "${lambdas}", "count": ${count}, "limit": ${limit}, "offset": ${offset}}'
+				body: '{"lambdas": ${json_str(lambdas)}, "count": ${count}, "limit": ${limit}, "offset": ${offset}}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
@@ -1073,13 +1373,22 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
-	// Route: /f/<slug> (invoke lambda)
+	// Route: /f/<slug>/<path> (invoke lambda or serve project files)
 	if req.url.starts_with('/f/') {
 		// strip query string
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
-		slug := url_path[3..]
+		rest := url_path[3..]
+		slug := rest.all_before('/')
+		mut sub := ''
+		if rest.contains('/') {
+			sub = rest.all_after('/')
+		}
+		// CORS preflight never reaches the lambda.
+		if req.method == .options {
+			return cors_response(204, '', 'text/plain')
+		}
 		mut alias := ''
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
@@ -1101,23 +1410,34 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		project_info := db_get_project(slug)
 		if code_method == '' && project_info == '' {
 			vlambda_req_errors++
-			return http.Response{
-				status_code: 404
-				body: '{"error": "lambda not found"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return cors_json(404, '{"error": "lambda not found"}')
 		}
 		if project_info != '' {
 			pparts := project_info.split('|')
 			project_dir := if pparts.len > 0 { pparts[0] } else { '' }
 			entrypoint := if pparts.len > 1 { pparts[1] } else { 'main.py' }
 			method := if pparts.len > 2 { pparts[2] } else { 'GET' }
-			if method != req.method.str() {
-				return http.Response{
-					status_code: 405
-					body: '{"error": "method not allowed, expected ${method}"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			// Serve project files: /f/<slug>/<path>, and index.html for the root.
+			if req.method == .get || req.method == .head {
+				if sub != '' {
+					if !is_safe_static_path(sub) {
+						return cors_json(400, '{"error": "invalid path"}')
+					}
+					if file_resp := serve_project_file(project_dir, sub) {
+						mut resp := file_resp
+						add_cors_headers(mut resp.header)
+						return resp
+					}
+				} else if rest.ends_with('/') {
+					if file_resp := serve_project_file(project_dir, 'index.html') {
+						mut resp := file_resp
+						add_cors_headers(mut resp.header)
+						return resp
+					}
 				}
+			}
+			if method != req.method.str() {
+				return cors_json(405, '{"error": "method not allowed, expected ${method}"}')
 			}
 			mut q := ''
 			if qi2 := req.url.index('?') {
@@ -1132,11 +1452,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if result.contains('error') {
 				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 			}
-			return http.Response{
-				status_code: 200
-				body: result
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: lambda_content_type(result) })
-			}
+			return cors_response(200, result, lambda_content_type(result))
 		}
 		// Split code and method
 		parts := code_method.split('|')
@@ -1146,11 +1462,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		memory_mb := if parts.len > 3 { parts[3].int() } else { 0 }
 		// Check method
 		if method != req.method.str() {
-			return http.Response{
-				status_code: 405
-				body: '{"error": "method not allowed, expected ${method}"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return cors_json(405, '{"error": "method not allowed, expected ${method}"}')
 		}
 		// Run lambda via Python bridge
 		// extract query string from url
@@ -1172,13 +1484,78 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 			}
 		}
-		mut resp_header := http.new_header(http.HeaderConfig{ key: .content_type, value: lambda_content_type(result) })
-		resp_header.add_custom('X-Request-Id', request_id) or {}
-		return http.Response{
-			status_code: 200
-			body: result
-			header: resp_header
+		mut resp := cors_response(200, result, lambda_content_type(result))
+		resp.header.add_custom('X-Request-Id', request_id) or {}
+		return resp
+	}
+
+	// Route: /vlambda/<slug>/export (GET = download lambda as JSON)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/export') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
+		if req.method != .get {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/export')
+		if slug == '' {
+			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		body := call_py_two_str(vlambda_export_lambda, slug, auth_uid.str())
+		if body == '' {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if body.starts_with('{"error"') {
+			return http.Response{ status_code: 500, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /vlambda/import (POST = create from exported JSON)
+	if req.url == '/vlambda/import' && req.method == .post {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.data.len == 0 {
+			return http.Response{ status_code: 400, body: '{"error": "missing json body"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.data.len > vlambda_max_body_size * 100 {
+			return http.Response{ status_code: 413, body: '{"error": "import too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		body := call_py_two_str(vlambda_import_lambda, req.data, auth_uid.str())
+		if body == '' {
+			return http.Response{ status_code: 500, body: '{"error": "import failed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		status := if body.starts_with('{"error"') { 400 } else { 201 }
+		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /vlambda/<slug>/duplicate (POST = copy lambda)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/duplicate') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method != .post {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/duplicate')
+		if slug == '' {
+			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		body := call_py_two_str(vlambda_duplicate_lambda, slug, auth_uid.str())
+		if body == '' {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if body.starts_with('{"error"') {
+			return http.Response{ status_code: 400, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 201, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
 	// Route: /vlambda/<slug>/packages (GET list, POST install)
@@ -1771,6 +2148,91 @@ pub fn db_list_lambdas_page(owner_id int, limit int, offset int) string {
 	return out
 }
 
+@[vc_fn]
+pub fn db_list_lambdas_json(owner_id int, limit int, offset int) string {
+	mut db := init_db(vlambda_db_path) or { return '[]' }
+	defer { db.close() or {} }
+	mut lim := limit
+	mut off := offset
+	if lim <= 0 { lim = 50 }
+	if off < 0 { off = 0 }
+	query := 'SELECT slug, name, method, kind, entrypoint FROM lambdas WHERE owner_id = ? LIMIT ${lim} OFFSET ${off};'
+	rows := db.exec_param(query, owner_id.str()) or { return '[]' }
+	mut items := []string{}
+	for row in rows {
+		slug := row.vals[0] or { continue }
+		name := row.vals[1] or { '' }
+		method := row.vals[2] or { 'GET' }
+		kind := row.vals[3] or { 'code' }
+		entrypoint := row.vals[4] or { '' }
+		items << '{"slug": ${json_str(slug)}, "name": ${json_str(name)}, "method": ${json_str(method)}, "kind": ${json_str(kind)}, "entrypoint": ${json_str(entrypoint)}}'
+	}
+	return '[' + items.join(',') + ']'
+}
+
+// ---- API token storage (long-lived personal access tokens) ----
+
+@[vc_fn]
+pub fn db_create_api_token(user_id int, name string, scopes string) string {
+	mut db := init_db(vlambda_db_path) or { return '{"error": "db unavailable"}' }
+	defer { db.close() or {} }
+	raw := 'vl_' + rand.string(40)
+	hash := sha256.sum256(raw.bytes()).hex()
+	created := time.now().unix().str()
+	db.exec_param_many('INSERT INTO api_tokens (user_id, name, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?);',
+		[user_id.str(), name, hash, scopes, created]) or {
+		return '{"error": "failed to store token"}'
+	}
+	rows := db.exec_param('SELECT id FROM api_tokens WHERE token_hash = ?;', hash) or { [] }
+	id := if rows.len > 0 { rows[0].vals[0] or { '0' } } else { '0' }
+	return '{"id": ${id}, "token": ${json_str(raw)}, "name": ${json_str(name)}, "scopes": ${json_str(scopes)}}'
+}
+
+@[vc_fn]
+pub fn db_list_api_tokens(user_id int) string {
+	mut db := init_db(vlambda_db_path) or { return '[]' }
+	defer { db.close() or {} }
+	rows := db.exec_param('SELECT id, name, scopes, created_at, last_used_at, revoked FROM api_tokens WHERE user_id = ? ORDER BY id DESC;',
+		user_id.str()) or { return '[]' }
+	mut items := []string{}
+	for row in rows {
+		id := row.vals[0] or { '0' }
+		name := row.vals[1] or { '' }
+		scopes := row.vals[2] or { '' }
+		created := row.vals[3] or { '' }
+		last := row.vals[4] or { '' }
+		revoked := row.vals[5] or { '0' }
+		items << '{"id": ${id}, "name": ${json_str(name)}, "scopes": ${json_str(scopes)}, "created_at": ${json_str(created)}, "last_used_at": ${json_str(last)}, "revoked": ${revoked == '1'}}'
+	}
+	return '[' + items.join(',') + ']'
+}
+
+@[vc_fn]
+pub fn db_revoke_api_token(user_id int, token_id int) bool {
+	mut db := init_db(vlambda_db_path) or { return false }
+	defer { db.close() or {} }
+	db.exec_param_many('UPDATE api_tokens SET revoked = 1 WHERE id = ? AND user_id = ?;',
+		[token_id.str(), user_id.str()]) or { return false }
+	return true
+}
+
+@[vc_fn]
+pub fn db_verify_api_token(raw string) string {
+	hash := sha256.sum256(raw.bytes()).hex()
+	mut db := init_db(vlambda_db_path) or { return '' }
+	defer { db.close() or {} }
+	rows := db.exec_param('SELECT user_id, scopes FROM api_tokens WHERE token_hash = ? AND revoked = 0;',
+		hash) or { return '' }
+	if rows.len == 0 {
+		return ''
+	}
+	uid := rows[0].vals[0] or { return '' }
+	scopes := rows[0].vals[1] or { 'read,write' }
+	db.exec_param_many('UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?;',
+		[time.now().unix().str(), hash]) or {}
+	return uid + '|' + scopes
+}
+
 // run_lambda calls Python to exe@[vc_fn]
 fn body_to_py_bytes(body string) vcraft.PyObj {
 	if body.len == 0 {
@@ -2077,6 +2539,51 @@ pub fn register_delete_project(cb voidptr) {
 @[vc_fn]
 pub fn register_schedule_delete(cb voidptr) {
 	vlambda_schedule_delete = cb
+}
+
+@[vc_fn]
+pub fn register_export_lambda(cb voidptr) {
+	vlambda_export_lambda = cb
+}
+
+@[vc_fn]
+pub fn register_import_lambda(cb voidptr) {
+	vlambda_import_lambda = cb
+}
+
+@[vc_fn]
+pub fn register_duplicate_lambda(cb voidptr) {
+	vlambda_duplicate_lambda = cb
+}
+
+// call_py_two_str invokes a Python callback with two string arguments and
+// returns its string result. Used by export/import/duplicate.
+fn call_py_two_str(cb voidptr, first string, second string) string {
+	if cb == unsafe { nil } {
+		return ''
+	}
+	mut cell := ''
+	ptr := &cell
+	vcraft.with_gil(fn [cb, first, second, ptr] () {
+		args := [vcraft.to_py_string(first).ptr, vcraft.to_py_string(second).ptr]
+		r := vcraft.call(cb, args)
+		for arg in args {
+			vcraft.borrow(arg).decref()
+		}
+		if r.is_null() {
+			vcraft.clear_error()
+			unsafe { *ptr = '' }
+			return
+		}
+		if r.type_name() == 'str' {
+			ss := vcraft.from_py_string(r, 'result') or { '' }
+			r.decref()
+			unsafe { *ptr = ss + '' }
+			return
+		}
+		r.decref()
+	})
+	return cell
 }
 
 @[vc_fn]

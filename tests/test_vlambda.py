@@ -5,15 +5,28 @@ import subprocess, time, json, urllib.request, os, signal, socket, sys
 PORT = 9799
 DB = "/tmp/test_vlambda.db"
 PROC = None
+_DB_COUNTER = [0]
+SERVER_LOG = "/tmp/vlambda_test_server.log"
 
 def start_server(extra_env=None, keep_db=False):
+    import glob
     import os
-    global PROC
-    metrics_db = DB.replace(".db", "_metrics.db")
+    global DB, PROC, SERVER_LOG
+    if PROC is not None and PROC.poll() is None:
+        stop_server()
+    if not _port_free(10.0):
+        raise RuntimeError(f"port {PORT} is still in use")
     if not keep_db:
-        for f in [DB, DB+"-wal", DB+"-shm", metrics_db, metrics_db+"-wal", metrics_db+"-shm"]:
-            try: os.remove(f)
-            except FileNotFoundError: pass
+        _DB_COUNTER[0] += 1
+        DB = f"/tmp/test_vlambda_{os.getpid()}_{_DB_COUNTER[0]}.db"
+        SERVER_LOG = f"/tmp/vlambda_test_server_{_DB_COUNTER[0]}.log"
+        if _DB_COUNTER[0] == 1:
+            for path in glob.glob("/tmp/test_vlambda_*.db*"):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+    metrics_db = DB.replace(".db", "_metrics.db")
     base = os.environ.get("VLAMBDA_BASE", os.getcwd())
     # If running from vlambda/, adjust
     if os.path.exists(os.path.join(base, "python", "vlambda")):
@@ -32,18 +45,16 @@ def start_server(extra_env=None, keep_db=False):
     env["VLAMBDA_DB"] = DB
     env["VLAMBDA_METRICS_DB"] = DB.replace(".db", "_metrics.db")
     env.update(extra_env or {})
-    if not _port_free(10.0):
-        raise RuntimeError(f"port {PORT} is still in use")
     PROC = subprocess.Popen(
         [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
         cwd=cwd,
         env=env,
-        stdout=open("/tmp/vlambda_test_server.log", "w"), stderr=subprocess.STDOUT,
+        stdout=open(SERVER_LOG, "w"), stderr=subprocess.STDOUT,
     )
     for _ in range(30):
         if PROC.poll() is not None:
             try:
-                log = open("/tmp/vlambda_test_server.log", errors="replace").read()[-3000:]
+                log = open(SERVER_LOG, errors="replace").read()[-3000:]
             except Exception:
                 log = ""
             raise RuntimeError(f"server exited during startup:\n{log}")
@@ -1475,6 +1486,12 @@ if __name__ == "__main__":
             print(f"  PASS: {t.__name__}")
         else:
             print(f"  FAIL: {t.__name__}: {last_error}")
+            try:
+                tail = open(SERVER_LOG, errors="replace").read()[-3000:]
+                if tail.strip():
+                    print("  server log:", tail.replace("\n", " | ")[-2000:])
+            except Exception:
+                pass
             failed += 1
     print(f"\n{'All tests passed' if failed == 0 else f'{failed} failed'}")
     sys.exit(1 if failed else 0)

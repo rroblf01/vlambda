@@ -482,6 +482,7 @@ let page = 0;
 const PAGE_SIZE = 50;
 let codeEditor = null, createEditor = null, projectEditor = null;
 let currentSlug = null, currentKind = 'code';
+let envLoadedSlug = null;
 let projectFiles = {}, activeProjectFile = null;
 let chartInv = null, chartLat = null;
 let metricsBusy = false;
@@ -501,7 +502,7 @@ function renderLogs() {
   const body = document.getElementById('log-body');
   if (!body) return;
   body.innerHTML = logBuffer.slice().reverse().map(e =>
-    '<div class="log-line log-' + e.level + '">' + e.ts.slice(11,19) + ' [' + e.level + '] ' + escapeHtml(e.msg) +
+    '<div class="log-line log-' + escapeHtml(String(e.level)) + '">' + e.ts.slice(11,19) + ' [' + escapeHtml(String(e.level)) + '] ' + escapeHtml(e.msg) +
     (e.data !== undefined ? ' ' + escapeHtml(JSON.stringify(e.data)) : '') + '</div>'
   ).join('');
 }
@@ -769,7 +770,7 @@ function renderLambdaTable() {
       const url = '/f/' + encodeURIComponent(l.slug);
       tr.innerHTML = '<td><a href="' + url + '" target="_blank" rel="noopener"><strong>' + escapeHtml(l.name || l.slug) + '</strong></a></td>' +
         '<td class="mono"><a href="' + url + '" target="_blank" rel="noopener">' + escapeHtml(l.slug) + '</a></td>' +
-        '<td><span class="badge badge-' + l.method.toLowerCase() + '">' + l.method + '</span></td>' +
+        '<td><span class="badge badge-' + escapeHtml(String(l.method).toLowerCase()) + '">' + escapeHtml(l.method) + '</span></td>' +
         '<td>' + badge + '</td>' +
         '<td><span class="flex">' +
         '<button class="btn btn-sm" onclick="invokeLambda(\'' + l.slug + '\',\'' + l.method + '\')">Run</button>' +
@@ -960,8 +961,9 @@ async function loadPackages() {
 function parseEnvLines(text) {
   const out = {};
   (text || '').split('\n').forEach(line => {
+    if (!line.trim()) return;
     const i = line.indexOf('=');
-    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1);
   });
   return out;
 }
@@ -979,9 +981,15 @@ async function loadEnv(slug) {
       if (v) v.value = envLines(items, false);
       if (s) s.value = envLines(items, true);
     }
+    envLoadedSlug = slug;
   } catch (e) { flog('warn', 'env load failed', e.message); }
 }
 async function saveEnv() {
+  if (envLoadedSlug !== currentSlug) {
+    showAlert(currentKind === 'project' ? 'project-alert' : 'editor-alert',
+      'Environment is still loading; reopen the editor and try again', 'error');
+    return;
+  }
   const prefix = currentKind === 'project' ? 'project' : 'edit';
   const vars = parseEnvLines(document.getElementById(prefix + '-env').value);
   const secrets = parseEnvLines(document.getElementById(prefix + '-env-secrets').value);
@@ -1046,13 +1054,13 @@ async function openProject(slug) {
 function renderProjectTree() {
   const tree = document.getElementById('file-tree');
   tree.innerHTML = Object.keys(projectFiles).sort().map(name =>
-    '<div class="' + (name === activeProjectFile ? 'active' : '') + '" onclick="selectProjectFile(\'' + name.replace(/'/g, "\\'") + '\')">' + escapeHtml(name) + '</div>'
+    '<div class="' + (name === activeProjectFile ? 'active' : '') + '" onclick="selectProjectFile(' + escapeHtml(JSON.stringify(name)) + ')">' + escapeHtml(name) + '</div>'
   ).join('');
 }
 function renderProjectTabs() {
   const tabs = document.getElementById('project-tabs');
   tabs.innerHTML = Object.keys(projectFiles).sort().map(name =>
-    '<div class="tab ' + (name === activeProjectFile ? 'active' : '') + '" onclick="selectProjectFile(\'' + name.replace(/'/g, "\\'") + '\')">' + escapeHtml(name) + '</div>'
+    '<div class="tab ' + (name === activeProjectFile ? 'active' : '') + '" onclick="selectProjectFile(' + escapeHtml(JSON.stringify(name)) + ')">' + escapeHtml(name) + '</div>'
   ).join('');
 }
 function selectProjectFile(name) {

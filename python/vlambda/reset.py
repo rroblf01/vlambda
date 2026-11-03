@@ -65,7 +65,7 @@ def offline_reset(
     packages_dir: str,
     cache_dir: str | None = None,
 ) -> dict:
-    groups = _delete_rows(db_path, ["users", "lambdas", "lambda_versions", "lambda_aliases"])
+    groups = _delete_rows(db_path, ["users", "lambdas", "lambda_versions", "lambda_aliases", "lambda_env", "tasks", "dlq"])
     metrics = _delete_rows(metrics_db, ["metrics", "metrics_daily", "logs"])
     removed_projects = _clear_dir(projects_dir)
     removed_packages = _clear_dir(packages_dir)
@@ -141,12 +141,9 @@ def in_process_reset() -> dict:
     except Exception:
         pass
     try:
-        from vlambda import tasks
+        from vlambda import env
 
-        with tasks._lock:
-            tasks._tasks.clear()
-        with tasks._DLQ_LOCK:
-            tasks._DLQ.clear()
+        env.clear_cache()
     except Exception:
         pass
 

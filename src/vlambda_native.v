@@ -7,6 +7,7 @@ import time
 import os
 import strings
 import crypto.sha256
+import crypto.subtle
 import rand
 import json2
 import encoding.base64
@@ -149,7 +150,7 @@ fn make_slug(code string) string {
 	for c in code {
 		h = ((h << 5) + h) + u64(c)
 	}
-	h = h ^ (vlambda_slug_counter * 2654435761)
+	h = h ^ (vlambda_slug_counter * 2654435761) ^ rand.u64()
 	return 'l${h:016x}'
 }
 
@@ -179,6 +180,14 @@ fn cors_json(status int, body string) http.Response {
 	return cors_response(status, body, 'application/json')
 }
 
+fn normalize_method(value string) string {
+	m := value.trim_space().to_upper()
+	return match m {
+		'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS' { m }
+		else { 'GET' }
+	}
+}
+
 fn has_scope(scopes string, want string) bool {
 	for scope in scopes.split(',') {
 		if scope.trim_space() == want {
@@ -205,7 +214,10 @@ fn hex_digit(c u8) int {
 fn is_admin_request(req http.Request) bool {
 	token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
 	expected := os.getenv('VLAMBDA_ADMIN_TOKEN')
-	return expected != '' && token == expected
+	if expected == '' {
+		return false
+	}
+	return subtle.constant_time_compare(token.bytes(), expected.bytes()) == 1
 }
 
 fn request_owner(req http.Request, auth_uid int) int {
@@ -273,8 +285,17 @@ fn is_safe_static_path(sub string) bool {
 	if low.contains('%2e') || low.contains('%2f') || low.contains('%5c') || low.contains('\x00') {
 		return false
 	}
+	if low.ends_with('.py') || low.ends_with('.pyc') || low.ends_with('.pyo') {
+		return false
+	}
+	if low == 'requirements.txt' || low == 'pyproject.toml' || low == 'pipfile' || low == 'poetry.lock' {
+		return false
+	}
 	for part in sub.split('/') {
 		if part == '' || part == '.' || part == '..' {
+			return false
+		}
+		if part.starts_with('.') {
 			return false
 		}
 		if part == 'vendor' || part == '__pycache__' || part == '.git' {
@@ -318,6 +339,9 @@ struct LambdaResponse {
 fn request_meta_json(req http.Request) string {
 	mut headers := []string{}
 	for key in req.header.keys() {
+		if key.to_lower() == 'x-admin-token' {
+			continue
+		}
 		if value := req.header.get_custom(key, http.HeaderQueryConfig{}) {
 			headers << json_str(key) + ':' + json_str(value)
 		}
@@ -420,6 +444,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Reject oversized bodies before any route buffers or parses them.
+	if req.data.len > vlambda_max_body_size * 100 {
+		return http.Response{
+			status_code: 413
+			body: '{"error": "request body too large"}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// A reset is in progress: reject new work briefly.
 	if vlambda_resetting {
 		return http.Response{
@@ -451,48 +484,6 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			status_code: 200
 			body: get_ui_html()
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
-		}
-	}
-
-	// Route: /async/<slug> (fire-and-forget)
-	if req.url.starts_with('/async/') {
-		mut url_path := req.url
-		qi := url_path.index('?') or { url_path.len }
-		url_path = url_path[..qi]
-		slug := url_path[7..]
-		code_method := db_get_lambda_code(slug)
-		if code_method == '' {
-			return http.Response{
-				status_code: 404
-				body: '{"error": "lambda not found"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
-		}
-		parts := code_method.split('|')
-		code := if parts.len > 0 { parts[0] } else { '' }
-		method := if parts.len > 1 { parts[1] } else { 'GET' }
-		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
-		// memory quota stored but global enforcement only for now.
-		mut q := ''
-		if qi2 := req.url.index('?') {
-			q = req.url[qi2+1..]
-		}
-		task_id := create_task_async(code, method, req.url, q, req.data)
-		return http.Response{
-			status_code: 202
-			body: task_id
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
-	}
-
-	// Route: /task/<id>
-	if req.url.starts_with('/task/') {
-		task_id := req.url[6..]
-		result := get_task_status(task_id)
-		return http.Response{
-			status_code: 200
-			body: result
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
 
@@ -537,6 +528,68 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				body: '{"error": "write scope required"}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
+		}
+	}
+
+	// Route: /async/<slug> (fire-and-forget, owner only)
+	if req.url.starts_with('/async/') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[7..]
+		code_method := db_get_lambda_code(slug)
+		if code_method == '' {
+			return http.Response{
+				status_code: 404
+				body: '{"error": "lambda not found"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		if db_get_project(slug) != '' {
+			return http.Response{ status_code: 400, body: '{"error": "async is only supported for code lambdas"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		owner := db_get_lambda_owner(slug)
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.data.len > vlambda_max_body_size {
+			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		parts := code_method.split('|')
+		code := if parts.len > 0 { parts[0] } else { '' }
+		method := if parts.len > 1 { parts[1] } else { 'GET' }
+		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
+		// memory quota stored but global enforcement only for now.
+		mut q := ''
+		if qi2 := req.url.index('?') {
+			q = req.url[qi2+1..]
+		}
+		task_id := create_task_async(code, method, req.url, q, req.data, auth_uid, slug, request_meta_json(req))
+		return http.Response{
+			status_code: 202
+			body: task_id
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
+	// Route: /task/<id> (owner only; admin token sees everything)
+	if req.url.starts_with('/task/') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut task_id := req.url[6..]
+		if qi := task_id.index('?') {
+			task_id = task_id[..qi]
+		}
+		owner_id := request_owner(req, auth_uid)
+		result := get_task_status(task_id, owner_id)
+		return http.Response{
+			status_code: 200
+			body: result
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
 
@@ -641,11 +694,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if vlambda_get_dlq == unsafe { nil } {
 			return http.Response{ status_code: 500, body: '{"error": "not configured"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
+		owner_id := request_owner(req, auth_uid)
 		mut body := '[]'
 		ptr := &body
-		vcraft.with_gil(fn [ptr] () {
-			args := []voidptr{}
+		vcraft.with_gil(fn [owner_id, ptr] () {
+			args := [vcraft.to_py_string(owner_id.str()).ptr]
 			r := vcraft.call(vlambda_get_dlq, args)
+			for a in args { vcraft.borrow(a).decref() }
 			if r.is_null() {
 				vcraft.clear_error()
 				return
@@ -696,8 +751,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
-	// Route: /shutdown (POST)
+	// Route: /shutdown (POST, admin token)
 	if req.url == '/shutdown' && req.method == .post {
+		if !is_admin_request(req) {
+			return http.Response{
+				status_code: 403
+				body: '{"error": "forbidden"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		spawn fn () {
 			time.sleep(200 * time.millisecond)
 			C.exit(0)
@@ -831,7 +893,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
-	// Route: /metrics/json (JSON format for UI charts)
+	// Route: /metrics/json (JSON format for UI charts, owner scoped)
 	if req.url == '/metrics/json' {
 		if auth_uid < 0 {
 			return http.Response{
@@ -840,18 +902,31 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
-		mut body := '{"requests_total": ${vlambda_req_total}, "errors_total": ${vlambda_req_errors}, "lambdas_created": ${vlambda_lambdas_created}, "latency_avg_ms": ${avg}, "latency_count": ${vlambda_latency_count}, "per_lambda": ['
-		mut first := true
+		owner_id := request_owner(req, auth_uid)
+		mut allowed := map[string]bool{}
+		if owner_id != 0 {
+			for line in db_list_lambdas(owner_id).split('\n') {
+				if line != '' {
+					allowed[line.all_before('|')] = true
+				}
+			}
+		}
+		mut total_req := u64(0)
+		mut total_err := u64(0)
+		mut total_lat := f64(0)
+		mut items := []string{}
 		for slug, count in vlambda_lambda_invocations {
+			if owner_id != 0 && slug !in allowed { continue }
 			errs := vlambda_lambda_errors[slug] or { u64(0) }
 			lat := vlambda_lambda_latency[slug] or { f64(0) }
 			avg_lat := if count > 0 { lat / f64(count) } else { 0.0 }
-			if !first { body += ',' }
-			first = false
-			body += '{"slug": "${slug}", "invocations": ${count}, "errors": ${errs}, "latency_avg_ms": ${avg_lat}}'
+			total_req += count
+			total_err += errs
+			total_lat += lat
+			items << '{"slug": "${slug}", "invocations": ${count}, "errors": ${errs}, "latency_avg_ms": ${avg_lat}}'
 		}
-		body += ']}'
+		avg := if total_req > 0 { total_lat / f64(total_req) } else { 0.0 }
+		body := '{"requests_total": ${total_req}, "errors_total": ${total_err}, "lambdas_created": ${vlambda_lambdas_created}, "latency_avg_ms": ${avg}, "latency_count": ${total_req}, "per_lambda": [${items.join(',')}]}'
 		return http.Response{
 			status_code: 200
 			body: body
@@ -859,19 +934,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
-	// Route: /metrics
+	// Route: /metrics (public aggregate counters; no per-lambda labels)
 	if req.url == '/metrics' {
 		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
-		mut body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\nvlambda_latency_avg_ms ${avg}\nvlambda_latency_count ${vlambda_latency_count}\n'
-		// Per-lambda metrics
-		for slug, count in vlambda_lambda_invocations {
-			errs := vlambda_lambda_errors[slug] or { u64(0) }
-			lat := vlambda_lambda_latency[slug] or { f64(0) }
-			avg_lat := if count > 0 { lat / f64(count) } else { 0.0 }
-			body += 'vlambda_lambda_invocations{slug="${slug}"} ${count}\n'
-			body += 'vlambda_lambda_errors{slug="${slug}"} ${errs}\n'
-			body += 'vlambda_lambda_latency_avg_ms{slug="${slug}"} ${avg_lat}\n'
-		}
+		body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\nvlambda_latency_avg_ms ${avg}\nvlambda_latency_count ${vlambda_latency_count}\n'
 		return http.Response{
 			status_code: 200
 			body: body
@@ -1183,6 +1249,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /admin/reset (POST, token protected)
 	if req.url == '/admin/reset' && req.method == .post {
+		if !is_admin_request(req) {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
 		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
 		vlambda_resetting = true
 		mut body := '{"error": "not configured"}'
@@ -1215,6 +1284,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /admin/users (POST, token protected)
 	if req.url == '/admin/users' && req.method == .post {
+		if !is_admin_request(req) {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
 		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
 		parts := req.data.split(':')
 		if parts.len < 2 {
@@ -1328,6 +1400,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		slug := url_path[9..].all_before('/')
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "project not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
 		project_info := db_get_project(slug)
 		if project_info == '' {
 			return http.Response{ status_code: 404, body: '{"error": "project not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
@@ -1395,6 +1474,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			// Project upload (multi-file zip)
 			if req.url.contains('project=1') || req.url.contains('project=true') {
+				if req.data.len > vlambda_max_body_size * 100 {
+					return http.Response{ status_code: 413, body: '{"error": "project too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				}
 				mut entrypoint := 'main.py'
 				mut name := ''
 				mut method := 'GET'
@@ -1412,6 +1494,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 						}
 					}
 				}
+				method = normalize_method(method)
 				if vlambda_create_project == unsafe { nil } {
 					return http.Response{
 						status_code: 500
@@ -1487,6 +1570,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					}
 				}
 			}
+			method = normalize_method(method)
 			// Validate code syntax
 			vr := validate_code(code)
 			if vr != '' {
@@ -1591,6 +1675,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if rest.contains('/') {
 			sub = rest.all_after('/')
 		}
+		if req.data.len > vlambda_max_body_size {
+			return cors_json(413, '{"error": "request body too large"}')
+		}
 		// CORS preflight never reaches the lambda.
 		if req.method == .options {
 			return cors_response(204, '', 'text/plain')
@@ -1605,7 +1692,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		code_method := if alias != '' {
-			resolved := db_resolve_alias(alias)
+			resolved := db_resolve_alias(slug + ':' + alias)
 			if resolved == '' { '' } else {
 				aparts := resolved.split('|')
 				aslug := if aparts.len > 0 { aparts[0] } else { '' }
@@ -1739,6 +1826,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		if req.method == .put {
+			if req.data.len > vlambda_max_body_size {
+				return http.Response{ status_code: 413, body: '{"error": "environment too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
 			request_body := req.data
 			mut body := '{"error": "save failed"}'
 			ptr := &body
@@ -1757,7 +1847,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					r.decref()
 				})
 			}
-			status := if body.contains('"error"') { 400 } else { 200 }
+			status := if body.starts_with('{"env"') { 200 } else { 400 }
 			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
@@ -1901,6 +1991,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
 		slug := url_path[9..url_path.index('/versions') or { url_path.len }]
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
 		mut body := '{"versions": []}'
 		ptr := &body
 		if vlambda_list_versions != unsafe { nil } {
@@ -1927,6 +2027,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
 		slug := url_path[9..url_path.index('/aliases') or { url_path.len }]
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
 		mut body := '{"aliases": []}'
 		ptr := &body
 		if vlambda_list_aliases != unsafe { nil } {
@@ -1955,6 +2065,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[9..].all_before('/version/')
 		ver_str := url_path.all_after('/version/')
 		version := ver_str.int()
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
 		code_info := db_get_version_code(slug, version)
 		if code_info == '' {
 			return http.Response{ status_code: 404, body: '{"error": "version not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
@@ -1973,6 +2093,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qi := url_path.index('?') or { url_path.len }
 			url_path = url_path[..qi]
 			slug := url_path[9..].all_before('/rollback')
+			if auth_uid < 0 {
+				return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			owner := db_get_lambda_owner(slug)
+			if owner < 0 {
+				return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			if owner != auth_uid {
+				return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
 			mut version := 0
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
@@ -2135,6 +2265,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					}
 				}
 			}
+			method = normalize_method(method)
 			ok := db_update_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
 			if ok {
 				prewarm_lambda(code)
@@ -2341,7 +2472,7 @@ pub fn db_create_alias(alias string, slug string, version int, owner_id int) boo
 		(r[0].vals[0] or { '1' }).int()
 	}
 	db.exec_param_many('INSERT OR REPLACE INTO lambda_aliases (alias, slug, version, owner_id) VALUES (?, ?, ?, ?);',
-		[alias, slug, ver.str(), owner_id.str()]) or { return false }
+		[slug + ':' + alias, slug, ver.str(), owner_id.str()]) or { return false }
 	return true
 }
 
@@ -2371,7 +2502,15 @@ pub fn db_get_version_code(slug string, version int) string {
 pub fn db_delete_lambda(slug string, owner_id int) bool {
 	mut db := init_db(vlambda_db_path) or { return false }
 	defer { db.close() or {} }
-	db.exec_param_many('DELETE FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { return false }
+	rows := db.exec_param_many('SELECT owner_id FROM lambdas WHERE slug = ?;', [slug]) or { return false }
+	if rows.len == 0 { return false }
+	owner := rows[0].vals[0] or { return false }
+	if owner.int() != owner_id { return false }
+	db.exec_param_many('DELETE FROM lambdas WHERE slug = ?;', [slug]) or { return false }
+	// Remove per-lambda state so a future lambda cannot inherit it.
+	db.exec_param_many('DELETE FROM lambda_env WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM lambda_versions WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM lambda_aliases WHERE slug = ?;', [slug]) or {}
 	vlambda_code_cache.delete(slug)
 	vlambda_missing_cache.delete(slug)
 	return true
@@ -2917,12 +3056,12 @@ pub fn register_ui_html(cb voidptr) {
 }
 
 @[vc_fn]
-pub fn create_task_async(code string, method string, path string, query string, body string) string {
+pub fn create_task_async(code string, method string, path string, query string, body string, owner_id int, slug string, request_meta string) string {
 	if vlambda_create_task == unsafe { nil } { return '{"error": "not configured"}' }
 	mut cell := ''
 	ptr := &cell
-	vcraft.with_gil(fn [code, method, path, query, body, ptr] () {
-		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr]
+	vcraft.with_gil(fn [code, method, path, query, body, owner_id, slug, request_meta, ptr] () {
+		args := [vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_string(owner_id.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(request_meta).ptr]
 		r := vcraft.call(vlambda_create_task, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if r.is_null() {
@@ -2942,14 +3081,14 @@ pub fn create_task_async(code string, method string, path string, query string, 
 }
 
 @[vc_fn]
-pub fn get_task_status(task_id string) string {
+pub fn get_task_status(task_id string, owner_id int) string {
 	if vlambda_get_task == unsafe { nil } { return '{"error": "not configured"}' }
 	mut cell := ''
 	ptr := &cell
-	vcraft.with_gil(fn [task_id, ptr] () {
-		args := [vcraft.to_py_string(task_id).ptr]
+	vcraft.with_gil(fn [task_id, owner_id, ptr] () {
+		args := [vcraft.to_py_string(task_id).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 		r := vcraft.call(vlambda_get_task, args)
-		vcraft.borrow(args[0]).decref()
+		for a in args { vcraft.borrow(a).decref() }
 		if r.is_null() {
 			vcraft.clear_error()
 			return

@@ -18,7 +18,7 @@ _BACKEND = os.environ.get("VLAMBDA_CACHE_BACKEND", "memory").lower()
 _REDIS_URL = os.environ.get("VLAMBDA_REDIS_URL", "")
 _CACHE_DIR = os.environ.get("VLAMBDA_SHARED_CACHE_DIR", "/tmp/opencode/vlambda_shared_cache")
 _MAX_ENTRIES = int(os.environ.get("VLAMBDA_RESP_CACHE", "256"))
-_TTL = int(os.environ.get("VLAMBDA_RESP_CACHE_TTL", "5"))
+_TTL = int(os.environ.get("VLAMBDA_RESP_CACHE_TTL", "0"))
 
 _memory: OrderedDict[str, tuple[Any, float]] = OrderedDict()
 _redis = None
@@ -45,6 +45,8 @@ def _redis_client():
 
 
 def get(key: str) -> Any | None:
+    if _TTL <= 0:
+        return None
     client = _redis_client()
     if client is not None:
         try:
@@ -82,6 +84,8 @@ def get(key: str) -> Any | None:
 def set(key: str, value: Any, ttl: int | None = None):
     if ttl is None:
         ttl = _TTL
+    if ttl <= 0:
+        return
     client = _redis_client()
     if client is not None:
         try:

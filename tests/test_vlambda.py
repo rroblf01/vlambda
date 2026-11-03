@@ -242,6 +242,81 @@ def test_lambda_env():
     assert status == 200, body
     assert body["env"] == {"PLAIN": "hello", "TOKEN": "s3cret"}, body
 
+    # Partial save: only vars, the secret must survive and the cache must not
+    # serve the response from before the change.
+    status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps({"vars": {"PLAIN": "bye"}}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200, body
+    assert body["env"] == {"PLAIN": "bye", "TOKEN": "s3cret"}, body
+
+    # Partial save: only secrets, masked, keeps vars and the previous value.
+    status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps({"secrets": {"TOKEN": "********"}}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200, body
+    assert body["env"] == {"PLAIN": "bye", "TOKEN": "s3cret"}, body
+
+    # The server's own environment names are reserved.
+    status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps({"vars": {"VLAMBDA_DB": "/tmp/evil.db"}}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 400, body
+    status, body = req("GET", f"/f/{slug}")
+    assert body["env"] == {"PLAIN": "bye", "TOKEN": "s3cret"}, body
+
+
+def test_status_body_dict_is_data():
+    token = test_register_login()
+    code = 'def handler(r): return {"status": 404, "body": "x"}'
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    status, body = req("GET", f"/f/{body['slug']}")
+    assert status == 200, body
+    assert body == {"status": 404, "body": "x"}, body
+
+
+def test_header_responses_not_cached():
+    token = test_register_login()
+    code = 'def handler(r): return {"h": r.header("X-User")}'
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}", extra_headers={"X-User": "alice"})
+    assert status == 200 and body["h"] == "alice", body
+    status, body = req("GET", f"/f/{slug}", extra_headers={"X-User": "bob"})
+    assert status == 200 and body["h"] == "bob", body
+
+
+def test_response_binary():
+    token = test_register_login()
+    code = 'def handler(r): return __import__("vlambda").Response(b"\\x00\\xff")'
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{body['slug']}")
+    assert resp.status == 200
+    assert resp.headers.get("Content-Type", "").startswith("application/octet-stream")
+    assert resp.read() == b"\x00\xff"
+
+
+def test_response_injection_blocked():
+    token = test_register_login()
+    code = 'def handler(r): return __import__("vlambda").Response.text("x",headers={"X":"a\\r\\nb"})'
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    status, body = req("GET", f"/f/{body['slug']}")
+    assert status == 500, body
+    assert "invalid header value" in body.get("error", ""), body
+
+    code = 'def handler(r): return __import__("vlambda").Response("x",status=99)'
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    status, body = req("GET", f"/f/{body['slug']}")
+    assert status == 500, body
+    assert "invalid HTTP status" in body.get("error", ""), body
+
 
 def test_html_lambda():
     token = test_register_login()
@@ -274,10 +349,37 @@ def test_delete():
     status, body = req("GET", f"/f/{slug}")
     assert status == 404
 
+def test_delete_cleans_lambda_state():
+    import sqlite3
+    token = test_register_login()
+    status, body = req("POST", "/vlambda", "def handler(request): return {'ok': True}", token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps({"vars": {"A": "1"}}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    status, body = req("POST", f"/vlambda/{slug}/alias?name=prod&version=1", token=token)
+    assert status == 201, body
+    status, body = req("DELETE", f"/vlambda/{slug}", token=token)
+    assert status == 200, body
+    conn = sqlite3.connect(DB)
+    for table in ("lambdas", "lambda_env", "lambda_versions", "lambda_aliases"):
+        count = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE slug = ?", (slug,)).fetchone()[0]
+        assert count == 0, (table, count)
+    conn.close()
+
+
 def test_validation():
     token = test_register_login()
     status, body = req("POST", "/vlambda", "print('no handler')", token)
     assert status == 400
+    # Unknown HTTP methods are normalized to GET instead of being stored.
+    status, body = req("POST", "/vlambda?method=EVIL%27%3E", "def handler(request): return {}", token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, payload = req("GET", "/vlambda?format=json", token=token)
+    item = next(x for x in payload["lambdas"] if x["slug"] == slug)
+    assert item["method"] == "GET", item
 
 def test_metrics():
     import urllib.request
@@ -318,6 +420,17 @@ def test_ownership():
     assert status in (401, 403, 404)
     status, body = req("DELETE", f"/vlambda/{slug}", token=t2)
     assert status in (401, 403, 404, 500)
+    # Versions, aliases and version code are owner-only too.
+    status, body = req("PUT", f"/vlambda/{slug}", "def handler(request): return {'v': 2}", t1)
+    assert status == 200, body
+    for path in (f"/vlambda/{slug}/versions", f"/vlambda/{slug}/aliases",
+                 f"/vlambda/{slug}/version/1"):
+        status, body = req("GET", path)
+        assert status == 401, (path, body)
+        status, body = req("GET", path, token=t2)
+        assert status == 403, (path, body)
+        status, body = req("GET", path, token=t1)
+        assert status == 200, (path, body)
 
 def test_project_zip():
     import base64, io, zipfile
@@ -338,6 +451,13 @@ def test_project_zip():
     status, body = req("GET", f"/project/{slug}", token=token)
     assert status == 200
     assert "files" in body and "main.py" in body["files"]
+    other = test_register_login()
+    status, body = req("GET", f"/project/{slug}")
+    assert status == 401, body
+    status, body = req("GET", f"/project/{slug}", token=other)
+    assert status == 403, body
+    status, body = req("PUT", f"/project/{slug}", '{"files":{"main.py":"x"}}', other)
+    assert status == 403, body
     # Save edited files and re-invoke.
     payload = '{"files":{"main.py":"def handler(request): return {\\"msg\\": \\"edited\\"}"},"entrypoint":"main.py"}'
     status, body = req("PUT", f"/project/{slug}", payload, token)
@@ -531,15 +651,52 @@ def test_fork_sandbox():
 def test_async_task():
     token, slug = test_create_invoke()
     status, body = req("POST", f"/async/{slug}")
-    assert status == 202
+    assert status == 401, body
+    other = test_register_login()
+    status, body = req("POST", f"/async/{slug}", token=other)
+    assert status == 403, body
+
+    status, body = req("POST", f"/async/{slug}", token=token)
+    assert status == 202, body
     task_id = body["task_id"]
+    status, body = req("GET", f"/task/{task_id}")
+    assert status == 401, body
+    status, body = req("GET", f"/task/{task_id}", token=other)
+    assert status == 200 and body.get("error") == "task not found", body
     # poll
     for _ in range(20):
-        status, body = req("GET", f"/task/{task_id}")
+        status, body = req("GET", f"/task/{task_id}", token=token)
         if body.get("status") == "completed":
             break
         time.sleep(0.1)
-    assert body.get("status") == "completed"
+    assert body.get("status") == "completed", body
+
+    status, body = req("GET", "/dlq")
+    assert status == 401, body
+    status, body = req("GET", "/dlq", token=other)
+    assert status == 200 and body == [], body
+    status, body = req("GET", "/dlq", token=token)
+    assert status == 200, body
+
+    # Async tasks keep the slug, headers and environment of the caller.
+    code = "def handler(r): return {'env': r.env, 'slug': r.slug, 'header': r.header('X-Test')}"
+    status, body = req("POST", "/vlambda?name=async-env", code, token)
+    assert status == 201, body
+    env_slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{env_slug}/env", json.dumps({"vars": {"A": "1"}}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    status, body = req("POST", f"/async/{env_slug}", token=token, extra_headers={"X-Test": "yes"})
+    assert status == 202, body
+    env_task = body["task_id"]
+    for _ in range(30):
+        status, body = req("GET", f"/task/{env_task}", token=token)
+        if body.get("status") == "completed":
+            break
+        time.sleep(0.1)
+    assert body.get("status") == "completed", body
+    payload = json.loads(body["result"]["body"])
+    assert payload == {"env": {"A": "1"}, "slug": env_slug, "header": "yes"}, payload
 
 def test_metrics_history():
     token, slug = test_create_invoke()
@@ -588,6 +745,22 @@ def test_alias_version():
     assert body["msg"] == "v2"
     status, body = req("GET", f"/f/{slug}?alias=prod")
     assert body["msg"] == "v1"
+    status, body = req("GET", f"/vlambda/{slug}/aliases", token=token)
+    assert body["aliases"] == [{"alias": "prod", "version": 1}], body
+
+    # Alias names are scoped per lambda, not global.
+    other = test_register_login()
+    status, body = req("POST", "/vlambda", "def handler(request): return {'msg': 'other1'}", other)
+    assert status == 201, body
+    other_slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{other_slug}", "def handler(request): return {'msg': 'other2'}", other)
+    assert status == 200, body
+    status, body = req("POST", f"/vlambda/{other_slug}/alias?name=prod&version=1", token=other)
+    assert status == 201, body
+    status, body = req("GET", f"/f/{other_slug}?alias=prod")
+    assert body["msg"] == "other1", body
+    status, body = req("GET", f"/f/{slug}?alias=prod")
+    assert body["msg"] == "v1", body
 
 
 def test_metrics_stats():
@@ -864,6 +1037,10 @@ def test_project_static_files():
     assert status == 200 and body.get("path", "").endswith("/api")
     status, body = req("GET", f"/f/{slug}/%2e%2e/%2e%2e/etc/passwd")
     assert status == 400
+    status, body = req("GET", f"/f/{slug}/main.py")
+    assert status == 400, body
+    status, body = req("GET", f"/f/{slug}/.env")
+    assert status == 400, body
 
 
 def test_export_import_duplicate():
@@ -904,8 +1081,8 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_lambda_env, test_html_lambda, test_auth_required,
-             test_update, test_delete, test_validation, test_metrics, test_body_size,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_response_injection_blocked, test_html_lambda, test_auth_required,
+             test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,
              test_nsjail_sandbox,

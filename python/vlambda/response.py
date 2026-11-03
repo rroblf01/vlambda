@@ -3,6 +3,30 @@
 from __future__ import annotations
 
 import json
+import re
+
+_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_HOP_BY_HOP = {
+    "connection",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _check_header(name, value) -> tuple[str, str]:
+    name = str(name)
+    value = str(value)
+    if not _HEADER_NAME.match(name):
+        raise ValueError(f"invalid header name: {name!r}")
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"invalid header value for {name!r}")
+    return name, value
 
 
 class Response:
@@ -11,22 +35,34 @@ class Response:
     def __init__(self, body=b"", status: int = 200, headers=None, content_type: str | None = None, cookies=None):
         self.body = body
         self.status = int(status)
+        if not 100 <= self.status <= 599:
+            raise ValueError(f"invalid HTTP status: {self.status}")
         self.headers: list[tuple[str, str]] = []
         self.cookies: list[str] = []
         if content_type:
-            self.headers.append(("Content-Type", content_type))
+            self.set_header("Content-Type", content_type)
+        elif isinstance(body, (bytes, bytearray)):
+            self.set_header("Content-Type", "application/octet-stream")
         if headers:
             items = headers.items() if isinstance(headers, dict) else headers
             for key, value in items:
-                self.headers.append((str(key), str(value)))
+                self.set_header(str(key), str(value))
         if cookies:
             for cookie in cookies:
-                self.cookies.append(str(cookie))
+                self._append_cookie(str(cookie))
 
     def set_header(self, name: str, value: str):
+        name, value = _check_header(name, value)
+        if name.lower() in _HOP_BY_HOP:
+            return self
         self.headers = [(k, v) for k, v in self.headers if k.lower() != name.lower()]
-        self.headers.append((str(name), str(value)))
+        self.headers.append((name, value))
         return self
+
+    def _append_cookie(self, cookie: str):
+        if "\r" in cookie or "\n" in cookie:
+            raise ValueError("invalid cookie value")
+        self.cookies.append(cookie)
 
     def set_cookie(self, name: str, value: str, path: str = "/", **attrs):
         parts = [f"{name}={value}", f"Path={path}"]
@@ -35,7 +71,7 @@ class Response:
                 parts.append(str(key))
             elif val not in (None, False):
                 parts.append(f"{key}={val}")
-        self.cookies.append("; ".join(parts))
+        self._append_cookie("; ".join(parts))
         return self
 
     @classmethod
@@ -75,8 +111,15 @@ def serialize(result):
     else:
         response = Response(str(result), content_type="text/plain; charset=utf-8")
 
-    headers = list(response.headers)
+    headers = []
+    for name, value in response.headers:
+        name, value = _check_header(name, value)
+        if name.lower() in _HOP_BY_HOP:
+            continue
+        headers.append((name, value))
     for cookie in response.cookies:
+        if "\r" in cookie or "\n" in cookie:
+            raise ValueError("invalid cookie value")
         headers.append(("Set-Cookie", cookie))
     body = response.body
     if isinstance(body, (bytes, bytearray)):

@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-_pool: list = []
+_pools: dict[str, list] = {}
 _lock = threading.Lock()
 _MAX = 8
 
@@ -19,31 +19,41 @@ def _make_conn(db_path: str) -> sqlite3.Connection:
 
 
 def init(db_path: str):
-    """Pre-create connections."""
+    """Pre-create connections for a database path."""
     with _lock:
-        while len(_pool) < _MAX:
-            _pool.append(_make_conn(db_path))
+        pool = _pools.setdefault(db_path, [])
+        while len(pool) < _MAX:
+            pool.append(_make_conn(db_path))
 
 
 @contextmanager
 def get(db_path: str):
     with _lock:
-        if _pool:
-            conn = _pool.pop()
-        else:
-            conn = _make_conn(db_path)
+        pool = _pools.setdefault(db_path, [])
+        conn = pool.pop() if pool else _make_conn(db_path)
     try:
         yield conn
+    except BaseException:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         with _lock:
-            if len(_pool) < _MAX:
-                _pool.append(conn)
+            pool = _pools.setdefault(db_path, [])
+            if len(pool) < _MAX:
+                pool.append(conn)
             else:
                 conn.close()
 
 
 def close_all():
     with _lock:
-        for c in _pool:
-            c.close()
-        _pool.clear()
+        for pool in _pools.values():
+            for conn in pool:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        _pools.clear()

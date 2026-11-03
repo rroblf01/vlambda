@@ -27,6 +27,10 @@ def _connect():
     return conn
 
 
+def _columns(conn, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
 def _init():
     try:
         conn = _connect()
@@ -48,6 +52,13 @@ def _init():
             "ts REAL NOT NULL"
             ")"
         )
+        task_columns = _columns(conn, "tasks")
+        if "owner_id" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0")
+        if "slug" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN slug TEXT NOT NULL DEFAULT ''")
+        if "owner_id" not in _columns(conn, "dlq"):
+            conn.execute("ALTER TABLE dlq ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0")
         conn.execute("UPDATE tasks SET status='failed', error='interrupted', completed=? WHERE status='pending'",
                      (time.time(),))
         conn.commit()
@@ -59,7 +70,8 @@ def _init():
 _init()
 
 
-def create_task(code: str, method: str, path: str, query: str, body: bytes, pool) -> str:
+def create_task(code: str, method: str, path: str, query: str, body: bytes, pool,
+                owner_id: int = 0, slug: str = "", request_meta: str = "") -> str:
     task_id = str(uuid.uuid4())
     cleanup_old(3600)
     try:
@@ -72,24 +84,30 @@ def create_task(code: str, method: str, path: str, query: str, body: bytes, pool
                 (max(1, count - _MAX_TASKS + 1),),
             )
         conn.execute(
-            "INSERT INTO tasks (task_id, status, result, error, created, completed) VALUES (?, 'pending', NULL, NULL, ?, NULL)",
-            (task_id, time.time()),
+            "INSERT INTO tasks (task_id, status, result, error, created, completed, owner_id, slug)"
+            " VALUES (?, 'pending', NULL, NULL, ?, NULL, ?, ?)",
+            (task_id, time.time(), int(owner_id or 0), slug or ""),
         )
         conn.commit()
         conn.close()
     except Exception:
         return task_id
-    _get_executor().submit(_run, task_id, code, method, path, query, body, pool)
+    _get_executor().submit(_run, task_id, code, method, path, query, body, pool,
+                           int(owner_id or 0), slug or "", request_meta or "")
     return task_id
 
 
-def _run(task_id: str, code: str, method: str, path: str, query: str, body: bytes, pool):
+def _run(task_id: str, code: str, method: str, path: str, query: str, body: bytes, pool,
+         owner_id: int = 0, slug: str = "", request_meta: str = ""):
     retries = int(os.environ.get("VLAMBDA_TASK_RETRIES", "2"))
     delay = float(os.environ.get("VLAMBDA_TASK_RETRY_DELAY", "0.5"))
     last_error = None
     for attempt in range(retries + 1):
         try:
-            result = pool.execute(code, method, path, query, body)
+            result = pool.execute(code, method, path, query, body,
+                                  request_id=task_id, slug=slug, request_meta=request_meta)
+            if isinstance(result, dict) and set(result.keys()) == {"error"}:
+                raise RuntimeError(str(result.get("error")))
             from vlambda.response import serialize
             if not (isinstance(result, dict) and "status" in result):
                 result = serialize(result)
@@ -101,7 +119,7 @@ def _run(task_id: str, code: str, method: str, path: str, query: str, body: byte
             if attempt < retries:
                 time.sleep(delay * (attempt + 1))
     _update(task_id, "failed", error=str(last_error))
-    _add_dlq(task_id, str(last_error))
+    _add_dlq(task_id, str(last_error), owner_id)
 
 
 def _update(task_id: str, status: str, result: str | None = None, error: str | None = None):
@@ -117,14 +135,15 @@ def _update(task_id: str, status: str, result: str | None = None, error: str | N
         pass
 
 
-def _add_dlq(task_id: str, error: str):
+def _add_dlq(task_id: str, error: str, owner_id: int = 0):
     try:
         conn = _connect()
         count = conn.execute("SELECT COUNT(*) FROM dlq").fetchone()[0]
         if count >= _DLQ_MAX:
             conn.execute("DELETE FROM dlq WHERE id IN (SELECT id FROM dlq ORDER BY id ASC LIMIT ?)",
                          (max(1, count - _DLQ_MAX + 1),))
-        conn.execute("INSERT INTO dlq (task_id, error, ts) VALUES (?, ?, ?)", (task_id, error, time.time()))
+        conn.execute("INSERT INTO dlq (task_id, error, ts, owner_id) VALUES (?, ?, ?, ?)",
+                     (task_id, error, time.time(), int(owner_id or 0)))
         conn.commit()
         conn.close()
     except Exception:
@@ -141,12 +160,14 @@ def _get_executor():
     return _EXECUTOR
 
 
-def get_task(task_id: str) -> dict | None:
+def get_task(task_id: str, owner_id: int = 0) -> dict | None:
     try:
+        owner = int(owner_id or 0)
         conn = _connect()
         row = conn.execute(
-            "SELECT task_id, status, result, error, created, completed FROM tasks WHERE task_id=?",
-            (task_id,),
+            "SELECT task_id, status, result, error, created, completed FROM tasks"
+            " WHERE task_id=? AND (?=0 OR owner_id=?)",
+            (task_id, owner, owner),
         ).fetchone()
         conn.close()
         if row is None:
@@ -159,10 +180,14 @@ def get_task(task_id: str) -> dict | None:
         return None
 
 
-def get_dlq() -> list[dict]:
+def get_dlq(owner_id: int = 0) -> list[dict]:
     try:
+        owner = int(owner_id or 0)
         conn = _connect()
-        rows = conn.execute("SELECT task_id, error, ts FROM dlq ORDER BY id DESC LIMIT 100").fetchall()
+        rows = conn.execute(
+            "SELECT task_id, error, ts FROM dlq WHERE (?=0 OR owner_id=?) ORDER BY id DESC LIMIT 100",
+            (owner, owner),
+        ).fetchall()
         conn.close()
         return [{"task_id": r[0], "error": r[1], "ts": r[2]} for r in rows]
     except Exception:

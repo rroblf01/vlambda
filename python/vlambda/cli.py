@@ -58,8 +58,22 @@ def cmd_invoke(args):
     _print_response(status, rh, rb, args.raw)
 
 
+def _env_pairs(items, flag: str) -> dict[str, str]:
+    pairs: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise SystemExit(f"vlambda: {flag} expects KEY=value, got {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"vlambda: {flag} has an empty key in {item!r}")
+        pairs[key] = value
+    return pairs
+
+
 def cmd_deploy(args):
-    code = open(args.file, "r", encoding="utf-8").read()
+    with open(args.file, "r", encoding="utf-8") as handle:
+        code = handle.read()
     if args.slug:
         url = args.url.rstrip("/") + f"/vlambda/{args.slug}?method={args.method}&name={urllib.parse.quote(args.name or args.slug)}"
         status, _, rb = _request(url, args.token, "PUT", code.encode(), {"Content-Type": "text/plain"})
@@ -77,16 +91,34 @@ def cmd_logs(args):
     _print_response(status, {}, rb)
 
 
+def _env_items(base: str, token: str):
+    status, _, body = _request(base, token)
+    if status >= 400:
+        _print_response(status, {}, body)
+        raise SystemExit(1)
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except Exception:
+        raise SystemExit("vlambda: could not read the current environment")
+    if isinstance(data, dict) and data.get("error"):
+        print(f"vlambda: {data['error']}", file=sys.stderr)
+        raise SystemExit(1)
+    return data.get("env", []) if isinstance(data, dict) else []
+
+
 def cmd_env(args):
     base = args.url.rstrip("/") + f"/vlambda/{args.slug}/env"
     if args.set or args.secret:
-        payload = {"vars": {}, "secrets": {}}
-        for item in args.set or []:
-            key, value = item.split("=", 1)
-            payload["vars"][key] = value
-        for item in args.secret or []:
-            key, value = item.split("=", 1)
-            payload["secrets"][key] = value
+        payload = {}
+        items = _env_items(base, args.token)
+        if args.set:
+            merged = {item["key"]: item["value"] for item in items if not item.get("secret")}
+            merged.update(_env_pairs(args.set, "--set"))
+            payload["vars"] = merged
+        if args.secret:
+            merged = {item["key"]: "********" for item in items if item.get("secret")}
+            merged.update(_env_pairs(args.secret, "--secret"))
+            payload["secrets"] = merged
         status, _, rb = _request(base, args.token, "PUT", json.dumps(payload).encode(), {"Content-Type": "application/json"})
     else:
         status, _, rb = _request(base, args.token)

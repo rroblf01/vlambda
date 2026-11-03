@@ -18,7 +18,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Docker uses `VLAMBDA_SANDBOX=fork` by default. The per-invocation process is still fresh, but Python startup is no longer paid on every request.
-- Latency target for a trivial sandboxed invocation is single-digit milliseconds.
+- Latency target for a trivial sandboxed invocation is in the low-millisecond range (~10-20 ms in the Docker test image).
+- The GET response cache is opt-in (`VLAMBDA_RESP_CACHE_TTL`, default 0) and skips handlers that read request context, log, use randomness or time.
+
+### Security
+- `/async/<slug>`, `/task/<id>` and `/dlq` now require authentication; tasks and DLQ entries are scoped to their owner.
+- `Response` rejects invalid statuses, header names and CRLF injection, and drops hop-by-hop headers.
+- `request.headers` no longer exposes `X-Admin-Token` to lambda code.
+- Per-invocation environment values are cleared from persistent workers, so one lambda cannot read another's secrets; reserved `VLAMBDA_`/`VLRUN_` names are rejected.
+- Encrypted secrets fail closed per key instead of dropping plain variables when the master key is missing or rotated.
+- The web UI escapes log levels and project file names.
+- Startup prewarm and import/duplicate no longer execute lambda or project code inside the server process; project code only runs in the selected sandbox.
+- Passwords use PBKDF2-HMAC-SHA256 with a per-user salt; legacy hashes remain valid until a reset or password change.
+- Deleting a lambda also removes its environment, versions and aliases, and project slugs are unique per upload.
+- Project files, versions, aliases and version code are owner-only; public static serving excludes Python sources, dotfiles and dependency manifests.
+- In-memory metrics no longer expose other users' lambda slugs: `/metrics` is aggregate-only and `/metrics/json` is owner-scoped.
+- `/shutdown` and the admin routes require `X-Admin-Token`.
+- Runner processes get an environment allow-list instead of the whole server environment (cloud credentials and database URLs no longer leak).
+
+### Fixed
+- Async tasks keep the caller's slug, headers and decrypted environment, and their logs are attributed correctly.
+- A handler returning a dict with `status`/`body` keys is serialized as data instead of being mistaken for the internal response envelope.
+- Environment saves keep unspecified categories and masked secrets; the CLI merges individual keys, and the response cache is invalidated after a change.
 
 ## [0.2.4] - 2026-11-03
 

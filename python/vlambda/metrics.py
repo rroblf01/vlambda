@@ -144,9 +144,9 @@ def _owned_slugs(owner_id: int | None) -> list[str] | None:
     if not db_path:
         return []
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1)
-        rows = conn.execute("SELECT slug FROM lambdas WHERE owner_id = ?", (owner,)).fetchall()
-        conn.close()
+        from vlambda.dbpool import get as db_get
+        with db_get(db_path) as conn:
+            rows = conn.execute("SELECT slug FROM lambdas WHERE owner_id = ?", (owner,)).fetchall()
         return [str(row[0]) for row in rows]
     except Exception:
         return []

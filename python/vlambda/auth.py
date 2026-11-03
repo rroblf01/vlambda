@@ -10,6 +10,7 @@ import time
 import os
 
 SECRET = os.environ.get("VLAMBDA_SECRET", "change-me-in-production")
+_PBKDF2_ITERATIONS = int(os.environ.get("VLAMBDA_PBKDF2_ITERATIONS", "200000"))
 
 
 def _b64encode(data: bytes) -> str:
@@ -62,12 +63,29 @@ def verify_token(token: str) -> dict | None:
 
 def hash_password(password: str) -> str:
     salt = os.urandom(16).hex()
-    h = hashlib.sha256((salt + password).encode()).hexdigest()
-    return f"{salt}:{h}"
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), bytes.fromhex(salt), _PBKDF2_ITERATIONS
+    ).hex()
+    return f"pbkdf2:{_PBKDF2_ITERATIONS}:{salt}:{digest}"
 
 
 def check_password(password: str, stored: str) -> bool:
-    if ":" not in stored:
-        return False
-    salt, h = stored.split(":", 1)
-    return hmac.compare_digest(hashlib.sha256((salt + password).encode()).hexdigest(), h)
+    parts = stored.split(":")
+    if len(parts) == 4 and parts[0] == "pbkdf2":
+        try:
+            iterations = max(1, min(int(parts[1]), 2_000_000))
+            salt = bytes.fromhex(parts[2])
+        except (ValueError, TypeError):
+            return False
+        expected = parts[3]
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), salt, iterations
+        ).hex()
+        return hmac.compare_digest(digest, expected)
+    # Legacy unsalted-iteration SHA-256 hashes; valid only until the next reset
+    # or password change.
+    if len(parts) == 2:
+        salt, expected = parts
+        digest = hashlib.sha256((salt + password).encode()).hexdigest()
+        return hmac.compare_digest(digest, expected)
+    return False

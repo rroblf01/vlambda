@@ -30,6 +30,13 @@ def main() -> None:
     parser.add_argument("--key", default=os.environ.get("VLAMBDA_KEY", ""))
     args = parser.parse_args()
     os.environ["VLAMBDA_DB"] = args.sqlite_path
+    if not os.environ.get("VLAMBDA_SECRET"):
+        print("WARNING: VLAMBDA_SECRET is not set; using an insecure default for auth tokens.",
+              file=sys.stderr)
+    if os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail") \
+            and os.environ.get("VLAMBDA_ISOLATE", "0") != "1":
+        print("WARNING: no sandbox selected; lambda code runs in the server process.",
+              file=sys.stderr)
 
     # Try to use jemalloc for better allocation performance
     try:
@@ -91,14 +98,22 @@ def main() -> None:
 
     from vlambda.tasks import create_task, get_task
 
-    def _create_task(code, method, path, query, body):
+    def _task_owner(owner_id):
+        try:
+            return int(owner_id)
+        except (TypeError, ValueError):
+            return 0
+
+    def _create_task(code, method, path, query, body, owner_id="0", slug="", request_meta=""):
         import json
-        task_id = create_task(code, method, path, query, body, pool)
+        task_id = create_task(code, method, path, query, body, pool,
+                              owner_id=_task_owner(owner_id), slug=slug,
+                              request_meta=_meta_with_env(slug, request_meta))
         return json.dumps({"task_id": task_id, "status": "pending"})
 
-    def _get_task(task_id):
+    def _get_task(task_id, owner_id="0"):
         import json
-        task = get_task(task_id)
+        task = get_task(task_id, _task_owner(owner_id))
         if task is None:
             return json.dumps({"error": "task not found"})
         result = {"task_id": task_id, "status": task["status"]}
@@ -109,17 +124,28 @@ def main() -> None:
             result["error"] = task["error"]
         return json.dumps(result)
 
+    # A GET response is only cached when the handler does not read per-request
+    # context: headers, cookies, body, env or remote address would otherwise be
+    # shared with other callers, and logs would silently disappear.
+    _CACHE_BYPASS = (
+        ".header(", ".headers", ".cookies", ".env", ".body", ".json(", ".form(",
+        ".remote_ip", ".host", ".scheme", ".request_id", ".slug", ".log(",
+        "random", "time.time", "datetime.now", "datetime.utcnow",
+    )
+    _RESPONSE_CACHE_TTL = int(os.environ.get("VLAMBDA_RESP_CACHE_TTL", "0"))
+
+    def _response_cacheable(code):
+        return _RESPONSE_CACHE_TTL > 0 and not any(token in code for token in _CACHE_BYPASS)
+
     def _pool_execute(request_id, slug, code, method, path, query, body, timeout=0, memory_mb=0, request_meta=""):
         method = method or "GET"
         path = path or "/"
         query = query or ""
         body = body or b""
-        # Response cache for GET requests, storing the final serialized payload.
+        # Response cache for idempotent GET requests, storing the final payload.
         cache_key = None
-        # A lambda that writes logs has side effects; never serve it from the
-        # GET response cache or its log lines would silently disappear.
-        if method == "GET" and "request.log" not in code:
-            cache_key = f"{code}:{path}:{query}"
+        if method == "GET" and _response_cacheable(code):
+            cache_key = f"{slug}:{code}:{path}:{query}"
             from vlambda.cache import get_response
             cached = get_response(cache_key)
             if cached is not None:
@@ -165,7 +191,11 @@ def main() -> None:
         else:
             response = serialize(result)
         payload = _json.dumps(response)
-        if cache_key is not None:
+        try:
+            status = int(response.get("status", 200))
+        except (TypeError, ValueError):
+            status = 500
+        if cache_key is not None and status < 500:
             from vlambda.cache import set_response
             set_response(cache_key, payload)
         return payload
@@ -478,37 +508,12 @@ def main() -> None:
     register_import_lambda(_import_lambda)
     register_duplicate_lambda(_duplicate_lambda)
 
-    def _get_dlq():
+    def _get_dlq(owner_id="0"):
         import json
         from vlambda.tasks import get_dlq
-        return json.dumps(get_dlq())
+        return json.dumps(get_dlq(_task_owner(owner_id)))
 
     register_get_dlq(_get_dlq)
-
-    # Prewarm caches for existing lambdas/projects to reduce cold starts.
-    try:
-        from vlambda.dbpool import get as _db_get
-        with _db_get(args.sqlite_path) as _conn:
-            _rows = _conn.execute("SELECT slug, code, kind, entrypoint, project_dir FROM lambdas").fetchall()
-        for _slug, _code, _kind, _entrypoint, _project_dir in _rows:
-            try:
-                vlambda_native.db_get_lambda_code(_slug)
-            except Exception:
-                pass
-            if _kind == "project" and _project_dir:
-                try:
-                    from vlambda.project import _load_handler
-                    _load_handler(_project_dir, _entrypoint or "main.py")
-                except Exception:
-                    pass
-            elif _code:
-                try:
-                    from vlambda.cache import prewarm as _prewarm_code
-                    _prewarm_code(_code)
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"Prewarm failed: {e}", file=sys.stderr)
 
     # Periodically remove project directories no lambda references.
     try:

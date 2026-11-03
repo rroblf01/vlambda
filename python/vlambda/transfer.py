@@ -16,9 +16,9 @@ def _db_path() -> str:
 
 
 def _connect():
-    import sqlite3
+    from vlambda.dbpool import get as db_get
 
-    return sqlite3.connect(_db_path())
+    return db_get(_db_path())
 
 
 def _read_project_files(project_dir: str) -> tuple[dict[str, str], list[str]]:
@@ -50,13 +50,12 @@ def export_lambda(slug: str, owner_id: str) -> str:
     except (TypeError, ValueError):
         return ""
     try:
-        conn = _connect()
-        row = conn.execute(
-            "SELECT slug, name, code, method, kind, entrypoint, project_dir, timeout, memory_mb, version"
-            " FROM lambdas WHERE slug = ? AND owner_id = ?",
-            (slug, user_id),
-        ).fetchone()
-        conn.close()
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT slug, name, code, method, kind, entrypoint, project_dir, timeout, memory_mb, version"
+                " FROM lambdas WHERE slug = ? AND owner_id = ?",
+                (slug, user_id),
+            ).fetchone()
     except Exception as e:
         return json.dumps({"error": f"export failed: {e}"})
     if row is None:
@@ -85,8 +84,8 @@ def export_lambda(slug: str, owner_id: str) -> str:
 
 
 def _new_slug(prefix: str, seed: str) -> str:
-    digest = hashlib.sha256((seed + ":" + str(time.time_ns())).encode()).hexdigest()[:15]
-    return prefix + digest
+    unique = seed + ":" + str(time.time_ns()) + ":" + os.urandom(8).hex()
+    return prefix + hashlib.sha256(unique.encode()).hexdigest()[:15]
 
 
 def _normalize_files(files) -> tuple[dict[str, str], str]:
@@ -94,7 +93,7 @@ def _normalize_files(files) -> tuple[dict[str, str], str]:
         return {}, "missing files"
     result: dict[str, str] = {}
     for rel, content in files.items():
-        if not isinstance(rel, str) or os.path.isabs(rel) or ".." in rel.split("/"):
+        if not isinstance(rel, str) or os.path.isabs(rel) or ".." in rel.split("/") or "\\" in rel:
             return {}, f"unsafe path: {rel}"
         if not isinstance(content, str):
             continue
@@ -111,6 +110,12 @@ def import_lambda(body_json: str, owner_id: str) -> str:
     except (TypeError, ValueError):
         return json.dumps({"error": "invalid owner"})
     try:
+        max_lambdas = int(os.environ.get("VLAMBDA_MAX_LAMBDAS", "50"))
+    except ValueError:
+        max_lambdas = 50
+    if vlambda_native.db_count_lambdas(user_id) >= max_lambdas:
+        return json.dumps({"error": "lambda quota exceeded"})
+    try:
         data = json.loads(body_json)
     except Exception as e:
         return json.dumps({"error": f"invalid json: {e}"})
@@ -120,6 +125,8 @@ def import_lambda(body_json: str, owner_id: str) -> str:
     kind = data.get("kind") or ("project" if "files" in data else "code")
     name = (data.get("name") or "imported").strip() or "imported"
     method = (data.get("method") or "GET").upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        method = "GET"
 
     if kind == "project":
         files, err = _normalize_files(data.get("files"))
@@ -136,7 +143,7 @@ def import_lambda(body_json: str, owner_id: str) -> str:
             else:
                 return json.dumps({"error": f"entrypoint not found: {entrypoint}"})
 
-        from vlambda.project import _PROJECTS_DIR, _load_handler
+        from vlambda.project import _PROJECTS_DIR
 
         slug = _new_slug("p", json.dumps(files, sort_keys=True))
         project_dir = os.path.join(_PROJECTS_DIR, slug)
@@ -150,7 +157,6 @@ def import_lambda(body_json: str, owner_id: str) -> str:
             ok = vlambda_native.db_create_project(slug, name, method, entrypoint, project_dir, user_id)
             if not ok:
                 raise RuntimeError("failed to store project")
-            _load_handler(project_dir, entrypoint)
         except Exception as e:
             import shutil
 
@@ -177,10 +183,6 @@ def import_lambda(body_json: str, owner_id: str) -> str:
     ok = vlambda_native.db_create_lambda(slug, name, code, method, user_id, timeout, memory_mb)
     if not ok:
         return json.dumps({"error": "failed to store lambda"})
-    try:
-        vlambda_native.prewarm_lambda(code)
-    except Exception:
-        pass
     return json.dumps({"slug": slug, "kind": "code", "method": method})
 
 

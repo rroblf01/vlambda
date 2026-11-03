@@ -22,6 +22,29 @@ from vlambda.response import Response, serialize
 from vlambda.sandbox import make_sandbox
 
 _current_logs: list[dict] = []
+_injected_env: set[str] = set()
+_RESERVED_ENV_PREFIXES = ("VLAMBDA_", "VLRUN_", "LD_")
+_RESERVED_ENV_NAMES = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT"}
+
+
+def _is_reserved_env(name: str) -> bool:
+    return name in _RESERVED_ENV_NAMES or name.startswith(_RESERVED_ENV_PREFIXES)
+
+
+def _apply_env(env) -> None:
+    """Replace the environment values injected for the previous invocation."""
+    global _injected_env
+    values = {}
+    if isinstance(env, dict):
+        for key, value in env.items():
+            key = str(key)
+            if not _is_reserved_env(key):
+                values[key] = str(value)
+    for key in _injected_env - set(values):
+        os.environ.pop(key, None)
+    os.environ.update(values)
+    _injected_env = set(values)
+
 
 
 def _log_sink(request_id: str, slug: str, level: str, message: str):
@@ -103,8 +126,7 @@ def handle_payload(req: dict) -> dict:
         host = meta.get("host", "") if isinstance(meta, dict) else ""
         scheme = meta.get("scheme", "http") if isinstance(meta, dict) else "http"
         env = meta.get("env", {}) if isinstance(meta, dict) else {}
-        if isinstance(env, dict):
-            os.environ.update({str(k): str(v) for k, v in env.items()})
+        _apply_env(env)
         vendor_dir = req.get("vendor_dir", "")
         if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
             sys.path.insert(0, vendor_dir)

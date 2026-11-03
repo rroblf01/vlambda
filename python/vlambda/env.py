@@ -9,15 +9,19 @@ import json
 import os
 import re
 import secrets
-import sqlite3
 import time
-from typing import Any
 
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_RESERVED_PREFIXES = ("VLAMBDA_", "VLRUN_", "LD_")
+_RESERVED_NAMES = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT"}
 _MAX_VARS = 50
 _MAX_BYTES = 16 * 1024
 _cache: dict[str, tuple[float, dict[str, str]]] = {}
 _CACHE_TTL = 2.0
+
+
+def _valid_key(key: str) -> bool:
+    return bool(_KEY_RE.match(key)) and key not in _RESERVED_NAMES and not key.startswith(_RESERVED_PREFIXES)
 
 
 def _db_path() -> str:
@@ -65,15 +69,6 @@ def _connect():
     return db_get(_db_path())
 
 
-def _owned(slug: str, owner_id: int) -> bool:
-    try:
-        with _connect() as conn:
-            row = conn.execute("SELECT 1 FROM lambdas WHERE slug = ? AND owner_id = ?", (slug, int(owner_id))).fetchone()
-        return row is not None
-    except Exception:
-        return False
-
-
 def _public(row) -> dict:
     key, is_secret, value = row
     return {
@@ -105,7 +100,15 @@ def get_env(slug: str) -> dict[str, str]:
         with _connect() as conn:
             rows = conn.execute("SELECT key, is_secret, value FROM lambda_env WHERE slug = ?", (slug,)).fetchall()
         for key, is_secret, value in rows:
-            values[key] = decrypt(value) if is_secret else value
+            if not _valid_key(key):
+                continue
+            if is_secret:
+                try:
+                    values[key] = decrypt(value)
+                except Exception:
+                    continue
+            else:
+                values[key] = value
     except Exception:
         values = {}
     _cache[slug] = (now + _CACHE_TTL, values)
@@ -126,8 +129,10 @@ def save_env(slug: str, owner_id: str, body: str) -> str:
         return json.dumps({"error": f"invalid json: {e}"})
     if not isinstance(data, dict):
         return json.dumps({"error": "body must be an object"})
-    plain = data.get("vars") or data.get("env") or {}
-    secret = data.get("secrets") or {}
+    replace_plain = "vars" in data or "env" in data
+    replace_secret = "secrets" in data
+    plain = data.get("vars") if "vars" in data else data.get("env", {})
+    secret = data.get("secrets", {})
     if not isinstance(plain, dict) or not isinstance(secret, dict):
         return json.dumps({"error": "vars and secrets must be objects"})
     merged: dict[str, tuple[bool, str]] = {}
@@ -136,16 +141,28 @@ def save_env(slug: str, owner_id: str, body: str) -> str:
             owned = conn.execute("SELECT 1 FROM lambdas WHERE slug = ? AND owner_id = ?", (slug, int(owner_id))).fetchone()
             if owned is None:
                 return json.dumps({"error": "not found"})
-            existing = dict(conn.execute("SELECT key, value FROM lambda_env WHERE slug = ? AND is_secret = 1", (slug,)).fetchall())
+            existing_rows = conn.execute("SELECT key, is_secret, value FROM lambda_env WHERE slug = ?", (slug,)).fetchall()
+            existing_secrets = {row[0]: row[2] for row in existing_rows if row[1]}
+            if not replace_plain:
+                for key, is_secret, value in existing_rows:
+                    if not is_secret and _valid_key(key):
+                        merged[key] = (False, value)
+            if not replace_secret:
+                for key, value in existing_secrets.items():
+                    if _valid_key(key):
+                        merged[key] = (True, value)
             for key, value in plain.items():
-                if not _KEY_RE.match(str(key)):
-                    raise ValueError(f"invalid environment name: {key}")
-                merged[str(key)] = (False, str(value))
+                key = str(key)
+                if not _valid_key(key):
+                    raise ValueError(f"invalid or reserved environment name: {key}")
+                merged[key] = (False, str(value))
             for key, value in secret.items():
                 key = str(key)
-                if not _KEY_RE.match(key):
-                    raise ValueError(f"invalid environment name: {key}")
-                if value == "********" and key in existing:
+                if not _valid_key(key):
+                    raise ValueError(f"invalid or reserved environment name: {key}")
+                if value == "********":
+                    if key in existing_secrets:
+                        merged[key] = (True, existing_secrets[key])
                     continue
                 merged[key] = (True, encrypt(str(value)))
             if len(merged) > _MAX_VARS:
@@ -160,4 +177,9 @@ def save_env(slug: str, owner_id: str, body: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
     clear_cache(slug)
+    try:
+        from vlambda.cache import invalidate_responses
+        invalidate_responses()
+    except Exception:
+        pass
     return list_env(slug, owner_id)

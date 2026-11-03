@@ -6,7 +6,7 @@ An ASGI-like server for Python lambdas, written in V. Uses [vcraft](https://gith
 
 ## What is vlambda?
 
-vlambda lets you write Python functions ("lambdas") and serve them as HTTP endpoints. It's like AWS Lambda, but self-hosted, with no cold starts, and ~0.3ms per invocation.
+vlambda lets you write Python functions ("lambdas") and serve them as HTTP endpoints. It's like AWS Lambda, but self-hosted, with no cold start in persistent mode and a fresh sandbox per invocation in Docker (~10-20 ms p50).
 
 ```python
 def handler(request):
@@ -18,7 +18,7 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 ## Features
 
 - **No cold starts in persistent mode** — Docker uses a fresh Landlock process per invocation, which adds a small startup cost
-- **Fast** — ~3,000 req/s (concurrent, free-threaded Python), ~0.3ms/req
+- **Fast** — ~3,000 req/s in-process; the Docker fork sandbox adds a few milliseconds per invocation
 - **Auth** — JWT-based authentication with per-user ownership
 - **Web UI** — Dashboard for managing lambdas, code editor, metrics
 - **Async invocation** — Fire-and-forget with task tracking
@@ -126,6 +126,13 @@ See `docker/README.md` for details, limits and the reset command.
 | `--cert` | `VLAMBDA_CERT` | | TLS certificate path |
 | `--key` | `VLAMBDA_KEY` | | TLS key path |
 | | `VLAMBDA_REGISTRATION` | 1 | Allow public registration (`0` disables it) |
+| | `VLAMBDA_RESP_CACHE_TTL` | 0 | GET response cache TTL in seconds (0 disables it) |
+| | `VLAMBDA_CACHE_BACKEND` | memory | `memory`, `file` or `redis` for the optional response cache |
+
+The GET response cache is disabled by default because a handler can depend on
+headers, cookies, `request.env`, time or other request state. Enable it only for
+stateless, idempotent GET lambdas; handlers that read request context, log,
+`random` or `time.time` are skipped automatically.
 
 ## API
 
@@ -203,7 +210,7 @@ Project exports include text files. Binary files are listed in
 - `GET /logs/history?days=N&slug=` — Persisted lambda logs
 - `DELETE /logs/history?days=N&slug=` — Delete logs older than N days (`days=0` deletes all)
 - `GET /pool/stats`, `GET /dlq`
-- `POST /shutdown` — Graceful shutdown
+- `POST /shutdown` — Graceful shutdown (requires `X-Admin-Token`)
 
 ## Logging
 
@@ -258,12 +265,18 @@ Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `fun
 
 ### Security
 
-User code runs in a fresh runner process confined with Landlock and seccomp.
+With the Docker default (`VLAMBDA_SANDBOX=fork`), user code runs in a fresh
+runner process confined with Landlock and seccomp.
 Landlock limits the filesystem to `/opt`, `/usr`, `/lib`, `/etc`, the current
 project/vendor and a private temporary directory; `/data`, `/proc`, `/sys` and
 the rest of the server cannot be read or listed. seccomp blocks network, cross-process
 signals, `ptrace`, `mount`, namespace changes and similar syscalls. Resource
 limits are applied too, and each invocation gets a fresh process.
+
+The plain `python -m vlambda` command without `VLAMBDA_SANDBOX` uses the
+in-process pool and is a development mode: lambdas run inside the server process
+with only Python-level restrictions. Use `VLAMBDA_SANDBOX=fork` (Docker default),
+`landlock`, `process` or `nsjail` for any untrusted code.
 
 The Docker image keeps public registration open by default for toy deployments.
 Set `VLAMBDA_REGISTRATION=0` to close it and create users with
@@ -336,9 +349,10 @@ For a disposable demo, run it from cron every day:
 | Metric | Value |
 |--------|-------|
 | Cold start | 0ms in persistent mode; fresh sandbox process in Docker |
-| Warm invocation | ~0.3ms |
-| Throughput (concurrent, free-threaded) | ~3,000 req/s |
-| Throughput (response cache hits) | ~100x faster |
+| Warm invocation (in-process) | ~0.3ms |
+| Warm invocation (Docker fork sandbox) | ~10-20ms p50 |
+| Throughput (concurrent, free-threaded) | ~3,000 req/s in-process |
+| Response cache | Opt-in via `VLAMBDA_RESP_CACHE_TTL`; ~100x faster for stateless GETs |
 
 ## Architecture
 

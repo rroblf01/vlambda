@@ -62,11 +62,12 @@ class Worker:
                         sys.path.insert(0, vendor_dir)
                     compiled, ns_template, handler = get_compiled(task["code"])
                     if handler is None:
-                        result = {"error": "no handler function defined"}
-                    else:
-                        ns = dict(ns_template)
-                        ns["request"] = req_obj
-                        result = handler(req_obj)
+                        raise ValueError("no handler function defined")
+                    ns = dict(ns_template)
+                    ns["request"] = req_obj
+                    result = handler(req_obj)
+                from vlambda.response import serialize
+                result = serialize(result)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"}
             result_queue.put(result)
@@ -282,9 +283,16 @@ exec_bin {{
 """
 
 
+_RUNNER_ENV_ALLOW = {
+    "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "TERM",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "LD_LIBRARY_PATH",
+    "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONHASHSEED",
+}
+
+
 def _runner_env() -> dict[str, str]:
-    """Environment for lambda runners; server configuration must not leak into user code."""
-    env = {key: value for key, value in os.environ.items() if not key.startswith("VLAMBDA_")}
+    """Minimal environment for lambda runners; server secrets must not leak."""
+    env = {key: value for key, value in os.environ.items() if key in _RUNNER_ENV_ALLOW}
     env["HOME"] = "/tmp"
     env["TMPDIR"] = "/tmp"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -394,9 +402,11 @@ class ProcessWorker:
                 self._proc = None
                 return {"error": "invalid runner response"}
             _record_runner_logs(envelope.get("logs"))
-            if envelope.get("ok"):
-                return envelope.get("response")
-            return {"error": envelope.get("error", "execution failed")}
+            result = envelope.get("response") if envelope.get("ok") else {"error": envelope.get("error", "execution failed")}
+            # A shared runner would leak modules between projects/lambdas, so
+            # the process mode starts a fresh interpreter for every request.
+            self.stop()
+            return result
 
     def stop(self):
         if self._proc is not None and self._proc.poll() is None:

@@ -24,14 +24,22 @@ _lock = threading.Lock()
 
 def _safe_extract(zf: zipfile.ZipFile, dest: str):
     os.makedirs(dest, exist_ok=True)
+    max_mb = int(os.environ.get("VLAMBDA_PROJECT_MAX_MB", "50"))
+    max_bytes = max(1, max_mb) * 1024 * 1024
+    total = 0
+    count = 0
     for info in zf.infolist():
         name = info.filename
         if name.endswith("/"):
             continue
-        if os.path.isabs(name) or ".." in name.split("/"):
+        if os.path.isabs(name) or ".." in name.split("/") or "\\" in name:
             raise ValueError(f"unsafe path in archive: {name}")
         if name.startswith("__pycache__/") or "/__pycache__/" in name:
             continue
+        count += 1
+        total += max(0, info.file_size)
+        if count > 2000 or total > max_bytes:
+            raise ValueError("project archive is too large")
         target = os.path.join(dest, name)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with zf.open(info) as src, open(target, "wb") as dst:
@@ -167,7 +175,7 @@ def create_project(zip_b64: str, entrypoint: str, name: str, method: str, owner_
         entrypoint = "main.py"
     entrypoint = entrypoint.lstrip("/")
 
-    slug = "p" + hashlib.sha256(data).hexdigest()[:15]
+    slug = "p" + hashlib.sha256(data + str(owner_id).encode() + os.urandom(16)).hexdigest()[:15]
     project_dir = os.path.join(_PROJECTS_DIR, slug)
     if os.path.exists(project_dir):
         shutil.rmtree(project_dir)
@@ -182,14 +190,14 @@ def create_project(zip_b64: str, entrypoint: str, name: str, method: str, owner_
                 if os.path.exists(os.path.join(project_dir, candidate)):
                     entrypoint = candidate
                     break
+            else:
+                raise RuntimeError(f"entrypoint not found: {entrypoint}")
         _install_dependencies(project_dir)
         import vlambda_native
 
         ok = vlambda_native.db_create_project(slug, name, method or "GET", entrypoint, project_dir, owner_id)
         if not ok:
             raise RuntimeError("failed to store project")
-        # Warm the import cache.
-        _load_handler(project_dir, entrypoint)
         return json.dumps({"slug": slug, "method": method or "GET", "entrypoint": entrypoint})
     except Exception as e:
         shutil.rmtree(project_dir, ignore_errors=True)
@@ -267,7 +275,9 @@ def save_project_json(project_dir: str, body_json: str, default_entrypoint: str 
             f.write(content if isinstance(content, str) else "")
     entrypoint = data.get("entrypoint") or default_entrypoint
     from vlambda.cache import clear as _clear_code_cache
+    from vlambda.cache import invalidate_responses as _invalidate_responses
     _clear_code_cache()
+    _invalidate_responses()
     with _lock:
         for key in [k for k in _cache if k[0] == project_dir]:
             del _cache[key]
@@ -275,31 +285,31 @@ def save_project_json(project_dir: str, body_json: str, default_entrypoint: str 
 
 
 def list_versions(slug: str) -> str:
-    import sqlite3
-    db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    from vlambda.dbpool import get as db_get
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT version, created_at FROM lambda_versions WHERE slug = ? ORDER BY version DESC",
-            (slug,),
-        ).fetchall()
-        conn.close()
+        with db_get(os.environ.get("VLAMBDA_DB", "./vlambda.db")) as conn:
+            rows = conn.execute(
+                "SELECT version, created_at FROM lambda_versions WHERE slug = ? ORDER BY version DESC",
+                (slug,),
+            ).fetchall()
         return json.dumps({"versions": [{"version": r[0], "created_at": r[1]} for r in rows]})
     except Exception as e:
         return json.dumps({"versions": [], "error": str(e)})
 
 
 def list_aliases(slug: str) -> str:
-    import sqlite3
-    db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    from vlambda.dbpool import get as db_get
+    prefix = f"{slug}:"
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT alias, version FROM lambda_aliases WHERE slug = ? ORDER BY alias",
-            (slug,),
-        ).fetchall()
-        conn.close()
-        return json.dumps({"aliases": [{"alias": r[0], "version": r[1]} for r in rows]})
+        with db_get(os.environ.get("VLAMBDA_DB", "./vlambda.db")) as conn:
+            rows = conn.execute(
+                "SELECT alias, version FROM lambda_aliases WHERE slug = ? ORDER BY alias",
+                (slug,),
+            ).fetchall()
+        return json.dumps({"aliases": [
+            {"alias": r[0][len(prefix):] if r[0].startswith(prefix) else r[0], "version": r[1]}
+            for r in rows
+        ]})
     except Exception as e:
         return json.dumps({"aliases": [], "error": str(e)})
 
@@ -311,16 +321,15 @@ def gc_orphans() -> int:
     extracted before its row is inserted, so an overlapping scan could
     otherwise delete a project that is still being uploaded.
     """
-    import sqlite3
+    from vlambda.dbpool import get as db_get
     db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
     grace = int(os.environ.get("VLAMBDA_PROJECT_GC_GRACE", "300"))
     referenced = set()
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT project_dir FROM lambdas WHERE kind = 'project' AND project_dir != ''"
-        ).fetchall()
-        conn.close()
+        with db_get(db_path) as conn:
+            rows = conn.execute(
+                "SELECT project_dir FROM lambdas WHERE kind = 'project' AND project_dir != ''"
+            ).fetchall()
         referenced = {os.path.abspath(r[0]) for r in rows if r[0]}
     except Exception:
         return 0

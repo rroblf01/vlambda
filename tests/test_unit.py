@@ -70,6 +70,7 @@ def test_response_cache_eviction(monkeypatch):
     _clear()
     import vlambda.shared_cache as sc
     monkeypatch.setattr(sc, "_MAX_ENTRIES", 2)
+    monkeypatch.setattr(sc, "_TTL", 10)
     set_response("a", "1")
     set_response("b", "2")
     set_response("c", "3")
@@ -80,9 +81,9 @@ def test_response_cache_eviction(monkeypatch):
 def test_pool_basic():
     pool = Pool(2)
     code = "def handler(request): return request.path.upper()"
-    from vlambda.request import Request
     res = pool.execute(code, "GET", "/abc", "", b"")
-    assert res == "/ABC"
+    assert res["status"] == 200
+    assert res["body"] == "/ABC"
     pool.stop()
 
 
@@ -91,8 +92,13 @@ def test_runner_env_strips_secrets(monkeypatch):
     monkeypatch.setenv("VLAMBDA_SECRET", "super-secret")
     monkeypatch.setenv("VLAMBDA_ADMIN_TOKEN", "admin-secret")
     monkeypatch.setenv("VLAMBDA_DB", "/data/db/vlambda.db")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cloud-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:pass@example/db")
     env = _runner_env()
     assert not any(key.startswith("VLAMBDA_") for key in env)
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "DATABASE_URL" not in env
+    assert env["HOME"] == "/tmp"
 
 
 def test_landlock_read_paths():
@@ -200,6 +206,164 @@ def test_env_encryption_roundtrip(monkeypatch):
         decrypt(token[:-1] + ("A" if token[-1] != "A" else "B"))
 
 
+def test_response_header_validation():
+    from vlambda.response import Response, serialize
+
+    response = Response.text("ok", headers={"X-Ok": "yes"})
+    assert ("X-Ok", "yes") in response.headers
+    with pytest.raises(ValueError):
+        Response.text("x", headers={"Bad Header": "x"})
+    with pytest.raises(ValueError):
+        Response.text("x", headers={"X-Bad": "a\r\nInjected: 1"})
+    with pytest.raises(ValueError):
+        Response(b"x", cookies=["a=b\r\nInjected: 1"])
+    with pytest.raises(ValueError):
+        Response("x", status=99)
+    with pytest.raises(ValueError):
+        Response("x", status=600)
+
+    response = Response.text("x")
+    response.set_header("Content-Length", "999")
+    response.set_header("Connection", "keep-alive")
+    assert all(name.lower() not in ("content-length", "connection") for name, _ in response.headers)
+
+    tampered = Response.text("x")
+    tampered.headers.append(("X-Bad", "a\nb"))
+    with pytest.raises(ValueError):
+        serialize(tampered)
+
+    clean = serialize(Response.text("ok", headers={"X-Ok": "yes"}))
+    assert {"name": "X-Ok", "value": "yes"} in clean["headers"]
+    assert clean["body"] == "ok"
+
+
+def test_env_partial_update(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    from vlambda import dbpool
+    from vlambda.env import clear_cache, get_env, save_env
+
+    db = tmp_path / "env.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute(
+        "CREATE TABLE lambda_env (slug TEXT NOT NULL, key TEXT NOT NULL,"
+        " is_secret INTEGER NOT NULL DEFAULT 0, value TEXT NOT NULL,"
+        " PRIMARY KEY (slug, key))"
+    )
+    conn.execute("INSERT INTO lambdas VALUES ('l-env', 7)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    monkeypatch.setenv("VLAMBDA_SECRET", "unit-secret")
+    clear_cache()
+    try:
+        body = json.loads(save_env("l-env", "7", json.dumps({
+            "vars": {"A": "1"},
+            "secrets": {"S": "one"},
+        })))
+        assert {item["key"]: item["value"] for item in body["env"]} == {"A": "1", "S": "********"}
+        assert get_env("l-env") == {"A": "1", "S": "one"}
+
+        # Only vars: the secret must survive.
+        save_env("l-env", "7", json.dumps({"vars": {"A": "2"}}))
+        assert get_env("l-env") == {"A": "2", "S": "one"}
+
+        # Only secrets, masked: vars survive and the secret is unchanged.
+        save_env("l-env", "7", json.dumps({"secrets": {"S": "********"}}))
+        assert get_env("l-env") == {"A": "2", "S": "one"}
+
+        # Only a new secret replaces the secret set; vars survive.
+        save_env("l-env", "7", json.dumps({"secrets": {"T": "two"}}))
+        assert get_env("l-env") == {"A": "2", "T": "two"}
+
+        # A mask for an unknown secret must not be stored literally.
+        save_env("l-env", "7", json.dumps({"secrets": {"N": "********"}}))
+        assert "N" not in get_env("l-env")
+
+        # Names used by the runner/server itself are rejected.
+        body = json.loads(save_env("l-env", "7", json.dumps({"vars": {"VLAMBDA_DB": "/tmp/x"}})))
+        assert "error" in body
+        assert get_env("l-env")["A"] == "2"
+    finally:
+        clear_cache()
+        dbpool.close_all()
+
+
+def test_apply_env_replaces_previous_values(monkeypatch):
+    import os
+    from vlambda.runner import _apply_env
+
+    monkeypatch.delenv("VL_TEST_VALUE", raising=False)
+    monkeypatch.delenv("VLAMBDA_DB", raising=False)
+    try:
+        _apply_env({"VL_TEST_VALUE": "1", "OTHER": "a"})
+        assert os.environ["VL_TEST_VALUE"] == "1"
+        assert os.environ["OTHER"] == "a"
+
+        _apply_env({"OTHER": "b"})
+        assert "VL_TEST_VALUE" not in os.environ
+        assert os.environ["OTHER"] == "b"
+
+        _apply_env({"VLAMBDA_DB": "/evil.db", "OTHER": "c"})
+        assert "VLAMBDA_DB" not in os.environ
+        assert os.environ["OTHER"] == "c"
+    finally:
+        _apply_env({})
+
+
+def test_cli_env_only_sends_given_category(monkeypatch):
+    import json
+    from argparse import Namespace
+    import vlambda.cli as cli
+
+    current = [
+        {"key": "A", "secret": False, "value": "old"},
+        {"key": "S", "secret": True, "value": "********"},
+    ]
+    payloads = []
+
+    def fake_request(url, token, method="GET", body=None, headers=None):
+        if method == "GET":
+            return 200, {}, json.dumps({"env": current}).encode()
+        payloads.append(json.loads(body))
+        return 200, {}, b'{"env": []}'
+
+    monkeypatch.setattr(cli, "_request", fake_request)
+
+    cli.cmd_env(Namespace(url="http://x", token="t", slug="s", set=["B=1"], secret=None))
+    assert payloads[-1] == {"vars": {"A": "old", "B": "1"}}
+
+    cli.cmd_env(Namespace(url="http://x", token="t", slug="s", set=None, secret=["T=2"]))
+    assert payloads[-1] == {"secrets": {"S": "********", "T": "2"}}
+
+    cli.cmd_env(Namespace(url="http://x", token="t", slug="s", set=["B=1"], secret=["T=2"]))
+    assert payloads[-1] == {"vars": {"A": "old", "B": "1"}, "secrets": {"S": "********", "T": "2"}}
+
+
+def test_dbpool_separates_paths(tmp_path):
+    import sqlite3
+    from vlambda import dbpool
+
+    dbpool.close_all()
+    first = tmp_path / "first.db"
+    second = tmp_path / "second.db"
+    for path in (first, second):
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE items (value TEXT)")
+        conn.commit()
+        conn.close()
+    try:
+        with dbpool.get(str(first)) as conn:
+            conn.execute("INSERT INTO items VALUES ('first')")
+            conn.commit()
+        with dbpool.get(str(second)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
+    finally:
+        dbpool.close_all()
+
+
 def test_auth_token_roundtrip():
     from vlambda.auth import create_token, verify_token
     token = create_token(42, "alice", "epoch-1")
@@ -208,6 +372,21 @@ def test_auth_token_roundtrip():
     assert data["sub"] == "42"
     assert data["username"] == "alice"
     assert data["epoch"] == "epoch-1"
+
+
+def test_password_hash_roundtrip():
+    import hashlib
+    from vlambda.auth import check_password, hash_password
+
+    stored = hash_password("secret")
+    assert stored.startswith("pbkdf2:")
+    assert check_password("secret", stored)
+    assert not check_password("wrong", stored)
+    salt = "legacy-salt"
+    legacy = salt + ":" + hashlib.sha256((salt + "secret").encode()).hexdigest()
+    assert check_password("secret", legacy)
+    assert not check_password("wrong", legacy)
+    assert not check_password("secret", "broken")
 
 
 def test_auth_bad_token():
@@ -232,6 +411,30 @@ def test_tasks_create_and_get():
     assert task["status"] == "completed"
 
 
+def test_task_ownership_filtering(monkeypatch):
+    monkeypatch.setenv("VLAMBDA_TASK_RETRIES", "0")
+    monkeypatch.setenv("VLAMBDA_TASK_RETRY_DELAY", "0.01")
+    from vlambda import tasks
+
+    class FailingPool:
+        def execute(self, *a, **k):
+            raise RuntimeError("boom")
+
+    tid = tasks.create_task("code", "GET", "/", "", b"", FailingPool(),
+                            owner_id=41, slug="l1")
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        task = tasks.get_task(tid, 41)
+        if task is not None and task["status"] == "failed":
+            break
+        time.sleep(0.05)
+    assert tasks.get_task(tid, 41)["status"] == "failed"
+    assert tasks.get_task(tid, 42) is None
+    assert tasks.get_task(tid, 0) is not None
+    assert any(item["task_id"] == tid for item in tasks.get_dlq(41))
+    assert not any(item["task_id"] == tid for item in tasks.get_dlq(42))
+
+
 def test_project_safe_extract_zip_slip():
     import io, zipfile
     from vlambda.project import _safe_extract
@@ -242,6 +445,19 @@ def test_project_safe_extract_zip_slip():
     zf = zipfile.ZipFile(buf)
     with pytest.raises(ValueError):
         _safe_extract(zf, tempfile.mkdtemp())
+
+
+def test_project_archive_size_limit(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    from vlambda.project import _safe_extract
+    monkeypatch.setenv("VLAMBDA_PROJECT_MAX_MB", "1")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("big.bin", b"0" * (2 * 1024 * 1024))
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        with pytest.raises(ValueError):
+            _safe_extract(zf, str(tmp_path / "out"))
 
 
 def test_dlq_records_failed_task(monkeypatch):
@@ -273,9 +489,15 @@ def test_offline_reset(tmp_path):
     conn.execute("CREATE TABLE lambdas (id INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE lambda_versions (id INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE lambda_aliases (alias TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE lambda_env (slug TEXT, key TEXT)")
+    conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE dlq (id INTEGER PRIMARY KEY)")
     conn.execute("INSERT INTO users (id) VALUES (1)")
     conn.execute("INSERT INTO lambdas (id) VALUES (1)")
     conn.execute("INSERT INTO lambda_versions (id) VALUES (1)")
+    conn.execute("INSERT INTO lambda_env VALUES ('l1', 'A')")
+    conn.execute("INSERT INTO tasks (task_id) VALUES ('t1')")
+    conn.execute("INSERT INTO dlq (id) VALUES (1)")
     conn.commit()
     conn.close()
     projects = tmp_path / "projects" / "p1"
@@ -292,10 +514,16 @@ def test_offline_reset(tmp_path):
     m.close()
     result = offline_reset(str(db), str(metrics), str(tmp_path / "projects"), str(tmp_path / "packages"))
     assert result["rows"]["users"] == 1
+    assert result["rows"]["lambda_env"] == 1
+    assert result["rows"]["tasks"] == 1
+    assert result["rows"]["dlq"] == 1
     assert not (tmp_path / "projects" / "p1").exists()
     assert not (tmp_path / "packages" / "dep").exists()
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM lambdas").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM lambda_env").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM dlq").fetchone()[0] == 0
     conn.close()
 
 
@@ -363,6 +591,11 @@ def test_delete_metrics_and_logs(tmp_path):
     assert delete_logs(0, "slug1")["deleted"] >= 1
     assert query_logs(7, "slug1")["count"] == 0
     close()
+
+
+def test_new_slug_unique():
+    from vlambda.transfer import _new_slug
+    assert len({_new_slug("p", "same-content") for _ in range(50)}) == 50
 
 
 def test_transfer_normalize_files():

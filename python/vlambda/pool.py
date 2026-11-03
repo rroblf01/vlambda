@@ -36,21 +36,31 @@ class Worker:
             task = self._queue.get()
             if task is None:
                 break
-            code, method, path, query, body, vendor_dir, request_id, slug, result_queue = task
+            result_queue = task["result_queue"]
             try:
-                if vendor_dir and vendor_dir not in sys.path:
-                    sys.path.insert(0, vendor_dir)
                 req_obj = Request(
-                    method=method, path=path, query_string=query,
-                    headers={}, body=body, request_id=request_id, slug=slug,
+                    method=task.get("method", "GET"),
+                    path=task.get("path", "/"),
+                    query_string=task.get("query_string", ""),
+                    headers={},
+                    body=task.get("body", b""),
+                    request_id=task.get("request_id", ""),
+                    slug=task.get("slug", ""),
                 )
-                compiled, ns_template, handler = get_compiled(code)
-                if handler is None:
-                    result = {"error": "no handler function defined"}
+                if task.get("kind") == "project":
+                    from vlambda.project import execute_project
+                    result = execute_project(task["project_dir"], task["entrypoint"], req_obj)
                 else:
-                    ns = dict(ns_template)
-                    ns["request"] = req_obj
-                    result = handler(req_obj)
+                    vendor_dir = task.get("vendor_dir", "")
+                    if vendor_dir and vendor_dir not in sys.path:
+                        sys.path.insert(0, vendor_dir)
+                    compiled, ns_template, handler = get_compiled(task["code"])
+                    if handler is None:
+                        result = {"error": "no handler function defined"}
+                    else:
+                        ns = dict(ns_template)
+                        ns["request"] = req_obj
+                        result = handler(req_obj)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"}
             result_queue.put(result)
@@ -69,8 +79,13 @@ class Worker:
                 return {"error": "memory quota exceeded"}
         if not Worker._SINGLE_FLIGHT:
             result_queue = queue.Queue(1)
+            task = {
+                "kind": "code", "code": code, "method": method, "path": path,
+                "query_string": query, "body": body, "vendor_dir": vendor_dir,
+                "request_id": request_id, "slug": slug, "result_queue": result_queue,
+            }
             try:
-                self._queue.put((code, method, path, query, body, vendor_dir, request_id, slug, result_queue), timeout=5)
+                self._queue.put(task, timeout=5)
             except queue.Full:
                 return {"error": "server busy, try again later"}
             try:
@@ -98,8 +113,13 @@ class Worker:
 
         # Leader executes
         result_queue = queue.Queue(1)
+        task = {
+            "kind": "code", "code": code, "method": method, "path": path,
+            "query_string": query, "body": body, "vendor_dir": vendor_dir,
+            "request_id": request_id, "slug": slug, "result_queue": result_queue,
+        }
         try:
-            self._queue.put((code, method, path, query, body, vendor_dir, request_id, slug, result_queue), timeout=5)
+            self._queue.put(task, timeout=5)
         except queue.Full:
             with Worker._inflight_lock:
                 Worker._inflight.pop(key, None)
@@ -115,6 +135,23 @@ class Worker:
             Worker._inflight.pop(key, None)
         event.set()
         return result
+
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="") -> Any:
+        result_queue = queue.Queue(1)
+        task = {
+            "kind": "project", "project_dir": project_dir, "entrypoint": entrypoint,
+            "method": method, "path": path, "query_string": query, "body": body,
+            "request_id": request_id, "slug": slug, "result_queue": result_queue,
+        }
+        try:
+            self._queue.put(task, timeout=5)
+        except queue.Full:
+            return {"error": "server busy, try again later"}
+        try:
+            _t = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+            return result_queue.get(timeout=_t)
+        except queue.Empty:
+            return {"error": "invocation timeout"}
 
     def stop(self):
         self._queue.put(None)
@@ -136,6 +173,12 @@ class InProcessPool:
         # Atomic round-robin selection without holding the lock during submit.
         idx = next(self._counter) % len(workers)
         return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        with self._lock:
+            workers = list(self._workers)
+        idx = next(self._counter) % len(workers)
+        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
 
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)
@@ -180,15 +223,9 @@ def _runner_command():
     ]
 
 
-_SENSITIVE_ENV = ("VLAMBDA_SECRET", "VLAMBDA_ADMIN_TOKEN")
-
-
 def _runner_env() -> dict[str, str]:
-    """Environment for lambda runners; secrets must not leak into user code."""
-    env = dict(os.environ)
-    for key in _SENSITIVE_ENV:
-        env.pop(key, None)
-    return env
+    """Environment for lambda runners; server configuration must not leak into user code."""
+    return {key: value for key, value in os.environ.items() if not key.startswith("VLAMBDA_")}
 
 
 class ProcessWorker:
@@ -213,20 +250,38 @@ class ProcessWorker:
         )
 
     def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        payload = {
+            "kind": "code",
+            "code": code,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "vendor_dir": vendor_dir or "",
+            "request_id": request_id or "",
+            "slug": slug or "",
+        }
+        return self._call(payload, timeout)
+
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        payload = {
+            "kind": "project",
+            "project_dir": project_dir,
+            "entrypoint": entrypoint,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "request_id": request_id or "",
+            "slug": slug or "",
+        }
+        return self._call(payload, timeout)
+
+    def _call(self, payload: dict, timeout: int = 0):
         timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:
                 self._start()
-            payload = {
-                "code": code,
-                "method": method,
-                "path": path,
-                "query_string": query,
-                "body_b64": base64.b64encode(body or b"").decode("ascii"),
-                "vendor_dir": vendor_dir or "",
-                "request_id": request_id or "",
-                "slug": slug or "",
-            }
             try:
                 self._proc.stdin.write(json.dumps(payload) + "\n")
                 self._proc.stdin.flush()
@@ -278,6 +333,12 @@ class ProcessPool:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
         return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        with self._lock:
+            workers = list(self._workers)
+        idx = next(self._counter) % len(workers)
+        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
 
     def _queue_depth(self) -> int:
         return 0

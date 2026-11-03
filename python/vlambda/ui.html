@@ -133,7 +133,8 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
       <div id="login-alert"></div>
       <div class="form-group"><label>Username</label><input type="text" id="username" placeholder="username"></div>
       <div class="form-group"><label>Password</label><input type="password" id="password" placeholder="password"></div>
-      <div class="flex"><button class="btn btn-primary" onclick="doLogin()">Login</button><button class="btn" onclick="doRegister()">Register</button></div>
+      <div class="flex"><button class="btn btn-primary" onclick="doLogin()">Login</button><button id="register-btn" class="btn" onclick="doRegister()">Register</button></div>
+      <p id="registration-closed" class="muted hidden" style="margin-top:10px;">Registration is closed. Ask the administrator for an account.</p>
     </div>
   </div>
 
@@ -685,6 +686,15 @@ async function doRegister() {
     await api('/register', { method: 'POST', body: u + ':' + p });
     showAlert('login-alert', 'Registered. Please login.', 'success');
   } catch (e) { showAlert('login-alert', e.message, 'error'); }
+}
+async function loadConfig() {
+  try {
+    const cfg = await fetch('/config').then(r => r.json());
+    const btn = document.getElementById('register-btn');
+    const note = document.getElementById('registration-closed');
+    if (btn) btn.classList.toggle('hidden', !cfg.registration);
+    if (note) note.classList.toggle('hidden', !!cfg.registration);
+  } catch (e) { flog('warn', 'config failed', e.message); }
 }
 function logout() {
   token = null;
@@ -1420,6 +1430,7 @@ setInterval(() => {
 
 /* init */
 checkAuth();
+loadConfig();
 setTimeout(() => {
   fetch('/health').then(r => r.json()).then(d => {
     document.getElementById('status-pill').textContent = d.status === 'ok' ? 'online' : 'degraded';

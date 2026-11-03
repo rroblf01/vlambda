@@ -105,7 +105,7 @@ With Dokploy, create an application from the image, map the domain to container
 port `8080`, and set `VLAMBDA_SECRET` and `VLAMBDA_ADMIN_TOKEN`. Dokploy terminates
 TLS, so the container does not manage certificates.
 
-See `docker/README.md` for details, limits and the weekly reset command.
+See `docker/README.md` for details, limits and the reset command.
 
 ## CLI Options
 
@@ -121,12 +121,15 @@ See `docker/README.md` for details, limits and the weekly reset command.
 | `--cors_origin` | `VLAMBDA_CORS` | * | CORS allowed origin |
 | `--cert` | `VLAMBDA_CERT` | | TLS certificate path |
 | `--key` | `VLAMBDA_KEY` | | TLS key path |
+| | `VLAMBDA_REGISTRATION` | 1 | Allow public registration (`0` disables it) |
 
 ## API
 
 ### Authentication
-- `POST /register` — Register user (body: `username:password`)
+- `GET /config` — Public runtime flags (whether registration is open)
+- `POST /register` — Register user (body: `username:password`); returns `403` when registration is disabled
 - `POST /login` — Login (body: `username:password`) → JWT token
+- `POST /admin/users` — Create a user with `X-Admin-Token` and body `username:password` (for closed registration)
 
 ### Lambdas (requires auth)
 - `POST /vlambda?method=GET&name=my-lambda` — Create lambda (body: Python code)
@@ -235,10 +238,17 @@ Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `fun
 ### Security
 
 The Python sandbox is defense-in-depth, **not a hard security boundary**. It
-restricts builtins and imports and strips secrets from runner processes, but
-lambdas still share the container, filesystem and network. Use it only with
-trusted code, or add OS-level isolation (nsjail, gVisor, Firecracker, or one
-container per tenant) before accepting code from external users.
+restricts builtins and imports and strips secrets from runner processes. Code
+lambdas and, when `VLAMBDA_ISOLATE=1`, projects run in separate runner
+processes, but all share the container filesystem and network.
+
+The Docker image keeps public registration open by default for toy deployments.
+Set `VLAMBDA_REGISTRATION=0` to close it and create users with
+`POST /admin/users` instead. Registration is not a security boundary: a daily
+data reset removes state but does not prevent code execution in the container.
+Do not keep valuable secrets in this deployment, and add OS-level isolation
+(nsjail, gVisor, Firecracker, or one container per tenant) before accepting
+untrusted code.
 
 ## Web UI
 
@@ -262,10 +272,10 @@ The demo can be wiped with:
 python -m vlambda reset --yes --url http://127.0.0.1:8080 --token "$VLAMBDA_ADMIN_TOKEN"
 ```
 
-For the weekly demo reset, run it from cron every Monday:
+For a disposable demo, run it from cron every day:
 
 ```cron
-0 0 * * 1 docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container>   /opt/venv/bin/python -m vlambda reset --yes   --url http://127.0.0.1:8080
+0 3 * * * docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> /opt/venv/bin/python -m vlambda reset --yes --url http://127.0.0.1:8080
 ```
 
 ## Performance

@@ -54,6 +54,8 @@ Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon t
 - `Dockerfile` installs vlambda from PyPI; `Dockerfile.dev` builds the local wheel.
 - Both use uv to create a free-threaded venv and run vlambda directly on port 8080 (no gofly or nsjail; Dokploy handles TLS and the proxy).
 - The container speaks HTTP on port 8080; TLS is terminated by Dokploy or another proxy.
+- Registration is open by default for the toy deployment; set `VLAMBDA_REGISTRATION=0` to close it, then create users with `POST /admin/users` and `X-Admin-Token`.
+- `VLAMBDA_ISOLATE=1` runs code and project lambdas in separate runner processes.
 - Reset: `python -m vlambda reset --yes --url http://127.0.0.1:8080 --token $VLAMBDA_ADMIN_TOKEN`.
 - See `docker/README.md`.
 

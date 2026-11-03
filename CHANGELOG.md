@@ -7,16 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-11-03
 
+### Added
+- `VLAMBDA_REGISTRATION` (default `1`) to close public signup; `GET /config` exposes the flag and the UI hides the registration button when closed.
+- `POST /admin/users` for creating accounts with `X-Admin-Token` when registration is disabled.
+
 ### Changed
-- Docker images now run vlambda directly on port 8080; gofly and nsjail were removed because Dokploy terminates TLS and proxies requests. Lambda isolation still uses separate runner processes inside the container.
+- Docker images now run vlambda directly on port 8080; gofly and nsjail were removed because Dokploy terminates TLS and proxies requests.
+- Project handlers now run in the same runner pool as code lambdas, including separate processes when `VLAMBDA_ISOLATE=1`.
+- Docker images keep public registration open by default; set `VLAMBDA_REGISTRATION=0` to close it.
 
 ### Fixed
-- Project invocations no longer corrupt Python interpreter state and crash the server; request fields are passed to the project runner as plain strings/bytes and handlers run on Python-owned threads.
+- Project invocations no longer corrupt Python interpreter state and crash the server; request fields are passed to the project runner as plain strings/bytes and handlers run outside the V HTTP thread.
 
 ### Security
 - Lambda runner processes no longer inherit `VLAMBDA_SECRET` or `VLAMBDA_ADMIN_TOKEN`.
 - Blocked additional escape-prone modules, including `posix`, `_socket`, `resource`, `fcntl` and `sqlite3`.
 - Container processes drop all capabilities and create data files with `umask 077`.
+- Project code no longer runs inside the server process.
 
 ## [0.2.0] - 2026-11-03
 

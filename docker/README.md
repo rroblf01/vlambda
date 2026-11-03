@@ -43,9 +43,22 @@ With Dokploy, create an application from the image, point the domain to the
 container port `8080`, and set `VLAMBDA_SECRET` and `VLAMBDA_ADMIN_TOKEN` in the
 environment. Dokploy handles TLS certificates.
 
-## Weekly reset
+Public registration is open by default for toy deployments. To close it, set
+`VLAMBDA_REGISTRATION=0` and create users with the admin token:
 
-Run the reset command manually every Monday:
+```bash
+curl -X POST https://your-domain/admin/users \
+  -H "X-Admin-Token: $VLAMBDA_ADMIN_TOKEN" \
+  -d "alice:change-me"
+```
+
+A daily reset removes users and lambdas, but it does not make arbitrary code
+execution safe. Keep only disposable data and secrets in this deployment.
+
+## Reset
+
+Run the reset command manually or from cron. For a toy deployment, daily is a
+common choice:
 
 ```bash
 docker exec -e VLAMBDA_ADMIN_TOKEN="$VLAMBDA_ADMIN_TOKEN" <container> \
@@ -56,7 +69,7 @@ docker exec -e VLAMBDA_ADMIN_TOKEN="$VLAMBDA_ADMIN_TOKEN" <container> \
 Or add it to the host crontab:
 
 ```cron
-0 0 * * 1 docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> \
+0 3 * * * docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> \
   /opt/venv/bin/python -m vlambda reset --yes \
   --url http://127.0.0.1:8080
 ```
@@ -84,9 +97,10 @@ is not reachable, it falls back to deleting the data directly.
 
 ## Security
 
-This image is intended for trusted code. The Python sandbox blocks dangerous
-modules and runner processes no longer inherit `VLAMBDA_SECRET` or
-`VLAMBDA_ADMIN_TOKEN`, but lambdas still share the container filesystem and
-network. Do not expose registration or code execution to untrusted users
-without an additional OS-level sandbox (nsjail, gVisor, Firecracker or one
+This image is intended for a disposable toy deployment. Registration is open by
+default, and runner processes no longer inherit `VLAMBDA_*` configuration or
+secrets. Code lambdas and projects still share the container filesystem and
+network, so a daily reset only removes data; it does not prevent code execution
+during the day. Keep disposable secrets and no valuable data in this
+deployment, or add an OS-level sandbox (nsjail, gVisor, Firecracker or one
 container per tenant).

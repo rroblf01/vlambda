@@ -31,6 +31,12 @@ def _execute(code: str, method: str, path: str, query: str, body: bytes, request
     return handler(req)
 
 
+def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = ""):
+    from vlambda.project import execute_project
+    req = Request(method=method, path=path, query_string=query, headers={}, body=body, request_id=request_id, slug=slug)
+    return execute_project(project_dir, entrypoint, req)
+
+
 def main() -> None:
     # Keep stdout clean: only protocol JSON goes there.
     for line in sys.stdin:
@@ -47,7 +53,13 @@ def main() -> None:
             vendor_dir = req.get("vendor_dir", "")
             if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
                 sys.path.insert(0, vendor_dir)
-            result = _execute(code, method, path, query, body, req.get("request_id",""), req.get("slug",""))
+            if req.get("kind") == "project":
+                result = _execute_project(
+                    req.get("project_dir", ""), req.get("entrypoint", "main.py"),
+                    method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
+                )
+            else:
+                result = _execute(code, method, path, query, body, req.get("request_id",""), req.get("slug",""))
             if isinstance(result, str):
                 payload = result
             elif isinstance(result, bytes):

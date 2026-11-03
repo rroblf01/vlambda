@@ -6,7 +6,7 @@ PORT = 9799
 DB = "/tmp/test_vlambda.db"
 PROC = None
 
-def start_server():
+def start_server(extra_env=None):
     import os
     global PROC
     metrics_db = DB.replace(".db", "_metrics.db")
@@ -28,6 +28,7 @@ def start_server():
     env["VLAMBDA_ADMIN_TOKEN"] = "test-admin"
     env["VLAMBDA_DB"] = DB
     env["VLAMBDA_METRICS_DB"] = DB.replace(".db", "_metrics.db")
+    env.update(extra_env or {})
     PROC = subprocess.Popen(
         [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
         cwd=cwd,
@@ -89,9 +90,70 @@ def test_register_login():
     u = _unique_user()
     status, body = req("POST", "/register", f"{u}:testpass")
     assert status == 201, body
+    status, body = req("GET", "/config")
+    assert status == 200 and body.get("registration") is True
     status, body = req("POST", "/login", f"{u}:testpass")
     assert status == 200 and "token" in body
     return body["token"]
+
+
+def test_registration_controls():
+    stop_server()
+    start_server({"VLAMBDA_REGISTRATION": "0"})
+    try:
+        status, body = req("GET", "/config")
+        assert status == 200 and body.get("registration") is False
+
+        status, body = req("POST", "/register", "closed:testpass")
+        assert status == 403, body
+
+        status, body = req("POST", "/admin/users", "closed:testpass",
+                           extra_headers={"X-Admin-Token": "wrong"})
+        assert status == 403, body
+
+        status, body = req("POST", "/admin/users", "closed:testpass",
+                           extra_headers={"X-Admin-Token": "test-admin"})
+        assert status == 201, body
+        status, body = req("POST", "/login", "closed:testpass")
+        assert status == 200 and "token" in body
+    finally:
+        stop_server()
+
+
+def test_isolated_projects():
+    stop_server()
+    start_server({
+        "VLAMBDA_ISOLATE": "1",
+        "VLAMBDA_COROUTINES": "2",
+        "VLAMBDA_SECRET": "test-secret",
+    })
+    try:
+        token, slug = _upload_project("isolated", {
+            "main.py": (
+                "import os\n"
+                "def handler(request):\n"
+                "    return {\n"
+                "        'ok': True,\n"
+                "        'secret': os.environ.get('VLAMBDA_SECRET'),\n"
+                "        'admin': os.environ.get('VLAMBDA_ADMIN_TOKEN'),\n"
+                "    }\n"
+            ),
+        })
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200 and body.get("ok") is True, body
+        assert body.get("secret") is None
+        assert body.get("admin") is None
+
+        status, body = req("GET", f"/project/{slug}", token=token)
+        assert status == 200 and "files" in body
+
+        status, body = req("POST", "/vlambda?name=isolated-code",
+                           "def handler(request): return {'isolated': True}", token)
+        assert status == 201, body
+        status, body = req("GET", f"/f/{body['slug']}")
+        assert status == 200 and body.get("isolated") is True
+    finally:
+        stop_server()
 
 def test_create_invoke():
     token = test_register_login()
@@ -572,9 +634,10 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_lambda_names, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_html_lambda, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
+             test_isolated_projects,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,

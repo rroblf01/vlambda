@@ -90,9 +90,9 @@ def test_runner_env_strips_secrets(monkeypatch):
     from vlambda.pool import _runner_env
     monkeypatch.setenv("VLAMBDA_SECRET", "super-secret")
     monkeypatch.setenv("VLAMBDA_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("VLAMBDA_DB", "/data/db/vlambda.db")
     env = _runner_env()
-    assert "VLAMBDA_SECRET" not in env
-    assert "VLAMBDA_ADMIN_TOKEN" not in env
+    assert not any(key.startswith("VLAMBDA_") for key in env)
 
 
 def test_metrics_persistence(tmp_path):

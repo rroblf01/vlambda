@@ -54,7 +54,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -69,11 +69,12 @@ def main() -> None:
 
     metrics_enabled = os.environ.get("VLAMBDA_METRICS_ENABLED", "1") == "1"
     metrics_sample = int(os.environ.get("VLAMBDA_METRICS_SAMPLE", "1"))
+    registration_enabled = os.environ.get("VLAMBDA_REGISTRATION", "1") == "1"
 
     configure(
         args.max_body_size, args.rate_limit, args.invoke_timeout,
         args.max_memory_mb, args.cors_origin, args.cert, args.key,
-        metrics_enabled, metrics_sample,
+        metrics_enabled, metrics_sample, registration_enabled,
     )
 
     metrics_db = os.environ.get("VLAMBDA_METRICS_DB", args.sqlite_path.replace(".db", "_metrics.db"))
@@ -237,6 +238,16 @@ def main() -> None:
 
     register_admin_reset(_admin_reset)
 
+    def _admin_create_user(token, username, password):
+        if not _admin_token_ok(token):
+            return json.dumps({"error": "forbidden"})
+        uid = _auth_register(username, password)
+        if uid < 0:
+            return json.dumps({"error": "user already exists"})
+        return json.dumps({"user_id": uid})
+
+    register_admin_create_user(_admin_create_user)
+
     from vlambda.packages import list_for as _list_packages, install_for as _install_packages
 
     def _list_packages_cb(slug, kind, project_dir):
@@ -369,36 +380,16 @@ def main() -> None:
 
     from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl, schedule_delete as _schedule_delete_impl
 
-    # Run project handlers on Python-owned threads. Executing user code directly on a
-    # V HTTP thread lets the V GC scan a Python stack, which can corrupt the
-    # interpreter (observed as a SIGSEGV in json.loads on a later request).
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-    _project_pool = ThreadPoolExecutor(
-        max_workers=max(2, args.num_coroutines),
-        thread_name_prefix="vlambda-project",
-    )
-    atexit.register(_project_pool.shutdown, wait=False, cancel_futures=True)
-
     def _run_project(project_dir, entrypoint, method, path, query, body):
-        from vlambda.request import Request
         import json
-        req = Request(
-            method=method,
-            path=path,
-            query_string=query,
-            headers={},
-            body=body,
-        )
         timeout = int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         try:
-            result = _project_pool.submit(_execute_project, project_dir, entrypoint, req).result(timeout=timeout)
+            result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout)
             if isinstance(result, str):
                 return result
             if isinstance(result, (dict, list)):
                 return json.dumps(result)
             return str(result)
-        except FutureTimeoutError:
-            return json.dumps({"error": "invocation timeout"})
         except Exception as e:
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
 

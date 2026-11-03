@@ -46,6 +46,7 @@ __global (
 	vlambda_export_lambda = voidptr(0)
 	vlambda_import_lambda = voidptr(0)
 	vlambda_duplicate_lambda = voidptr(0)
+	vlambda_admin_create_user = voidptr(0)
 	vlambda_result_str = '{"error": "not started"}'
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -54,6 +55,7 @@ __global (
 	vlambda_max_memory_mb = 0         // 0 = unlimited
 	vlambda_metrics_enabled = true
 	vlambda_metrics_sample = 1
+	vlambda_registration_enabled = true
 	vlambda_metric_counter = u64(0)
 	vlambda_request_counter = u64(0)
 	vlambda_cors_origin = '*'        // CORS origin
@@ -588,6 +590,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
+	// Route: /config (public runtime flags for the UI)
+	if req.url == '/config' && req.method == .get {
+		reg := if vlambda_registration_enabled { 'true' } else { 'false' }
+		return http.Response{
+			status_code: 200
+			body: '{"registration": ${reg}}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /health
 	if req.url == '/health' {
 		return http.Response{
@@ -1116,8 +1128,60 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /admin/users (POST, token protected)
+	if req.url == '/admin/users' && req.method == .post {
+		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
+		parts := req.data.split(':')
+		if parts.len < 2 {
+			return http.Response{
+				status_code: 400
+				body: '{"error": "expected username:password"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_admin_create_user != unsafe { nil } {
+			vcraft.with_gil(fn [token, parts, ptr] () {
+				args := [vcraft.to_py_string(token).ptr, vcraft.to_py_string(parts[0]).ptr, vcraft.to_py_string(parts[1]).ptr]
+				r := vcraft.call(vlambda_admin_create_user, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"error": "failed"}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		status := if body.contains('"user_id"') {
+			201
+		} else if body.contains('user already exists') {
+			409
+		} else {
+			403
+		}
+		return http.Response{
+			status_code: status
+			body: body
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /register (POST)
 	if req.url == '/register' && req.method == .post {
+		if !vlambda_registration_enabled {
+			return http.Response{
+				status_code: 403
+				body: '{"error": "registration is disabled"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		// Parse username:password from body
 		parts := req.data.split(':')
 		if parts.len < 2 {
@@ -2476,12 +2540,13 @@ pub fn auth_login_user(username string, password string) string {
 }
 
 @[vc_fn]
-pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memory_mb int, cors_origin string, cert_path string, key_path string, metrics_enabled bool, metrics_sample int) {
+pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memory_mb int, cors_origin string, cert_path string, key_path string, metrics_enabled bool, metrics_sample int, registration_enabled bool) {
 	if max_body_size > 0 { vlambda_max_body_size = max_body_size }
 	if rate_limit > 0 { vlambda_rate_limit = rate_limit }
 	if invoke_timeout > 0 { vlambda_invoke_timeout = invoke_timeout }
 	vlambda_max_memory_mb = max_memory_mb
 	vlambda_metrics_enabled = metrics_enabled
+	vlambda_registration_enabled = registration_enabled
 	if metrics_sample > 0 { vlambda_metrics_sample = metrics_sample }
 	if cors_origin != '' { vlambda_cors_origin = cors_origin }
 	vlambda_cert_path = cert_path
@@ -2660,6 +2725,11 @@ pub fn register_get_asset(cb voidptr) {
 @[vc_fn]
 pub fn register_admin_reset(cb voidptr) {
 	vlambda_admin_reset = cb
+}
+
+@[vc_fn]
+pub fn register_admin_create_user(cb voidptr) {
+	vlambda_admin_create_user = cb
 }
 
 @[vc_fn]

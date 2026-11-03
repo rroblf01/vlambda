@@ -129,6 +129,35 @@ def test_delete_project(tmp_path):
     assert not proj.exists()
 
 
+def test_gc_orphans_respects_grace(tmp_path, monkeypatch):
+    import sqlite3
+    from vlambda import project
+
+    db = tmp_path / "vlambda.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (kind TEXT, project_dir TEXT)")
+    conn.commit()
+    conn.close()
+
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    fresh = projects / "fresh"
+    old = projects / "old"
+    fresh.mkdir()
+    old.mkdir()
+    (fresh / "main.py").write_text("x = 1")
+    (old / "main.py").write_text("x = 1")
+    stale = time.time() - 3600
+    os.utime(old, (stale, stale))
+
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    monkeypatch.setattr(project, "_PROJECTS_DIR", str(projects))
+    removed = project.gc_orphans()
+    assert removed == 1
+    assert fresh.exists()
+    assert not old.exists()
+
+
 def test_auth_token_roundtrip():
     from vlambda.auth import create_token, verify_token
     token = create_token(42, "alice")

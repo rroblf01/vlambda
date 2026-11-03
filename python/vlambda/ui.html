@@ -174,7 +174,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
 
     <div id="create-code" class="card hidden">
       <h2>New lambda</h2>
-      <div class="form-group"><label>Name</label><input id="new-name" placeholder="my-lambda"></div>
+      <div class="form-group"><label>Name</label><input id="new-name" placeholder="my-lambda" maxlength="80"></div>
       <div class="flex">
         <div class="form-group" style="flex:1;"><label>Method</label><select id="new-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
         <div class="form-group" style="flex:1;"><label>Timeout (s)</label><input id="new-timeout" type="number" value="30"></div>
@@ -199,7 +199,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
 
     <div id="create-project" class="card hidden">
       <h2>Upload project (.zip)</h2>
-      <div class="form-group"><label>Name</label><input id="proj-name" placeholder="my-project"></div>
+      <div class="form-group"><label>Name</label><input id="proj-name" placeholder="my-project" maxlength="80"></div>
       <div class="flex">
         <div class="form-group" style="flex:1;"><label>Entrypoint</label><input id="proj-entry" value="main.py"></div>
         <div class="form-group" style="flex:1;"><label>Method</label><select id="proj-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
@@ -222,7 +222,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         <div>
           <div class="card">
             <h3>Metadata</h3>
-            <div class="form-group"><label>Name</label><input id="edit-name"></div>
+            <div class="form-group"><label>Name</label><input id="edit-name" maxlength="80"></div>
             <div class="form-group"><label>Invoke URL</label>
               <div class="flex">
                 <input id="edit-url" readonly style="flex:1;">
@@ -580,6 +580,16 @@ function reportError(alertId, e) {
   if (e && e.auth) return;
   showAlert(alertId, e && e.message ? e.message : String(e), 'error');
 }
+function readName(inputId, alertId) {
+  const input = document.getElementById(inputId);
+  const value = input ? input.value.trim() : '';
+  if (!value) {
+    showAlert(alertId, 'Name is required', 'error');
+    if (input) input.focus();
+    return '';
+  }
+  return value;
+}
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   const requestToken = token;
@@ -745,20 +755,32 @@ function showCreateCode() {
 }
 function showCreateProject() { show('create-project'); }
 async function createLambda() {
-  const code = createEditor ? VLambdaEditor.getValue(createEditor) : '';
-  const name = document.getElementById('new-name').value;
+  const name = readName('new-name', 'dashboard-alert');
+  if (!name) return;
+  if (!createEditor) {
+    showAlert('dashboard-alert', 'The code editor is still loading. Try again in a moment.', 'error');
+    return;
+  }
+  const code = VLambdaEditor.getValue(createEditor);
+  if (!code.trim()) {
+    showAlert('dashboard-alert', 'Add Python code before creating the lambda.', 'error');
+    return;
+  }
   const method = document.getElementById('new-method').value;
   const timeout = document.getElementById('new-timeout').value;
   const memory = document.getElementById('new-memory').value;
   try {
     const data = await api('/vlambda?method=' + encodeURIComponent(method) + '&name=' + encodeURIComponent(name) + '&timeout=' + timeout + '&memory_mb=' + memory,
       { method: 'POST', body: code, headers: authHeaders(false) });
-    showAlert('dashboard-alert', 'Created ' + data.slug, 'success');
+    showAlert('dashboard-alert', 'Created "' + name + '" (' + data.slug + ')', 'success');
+    document.getElementById('new-name').value = '';
     hide('create-code');
     loadLambdas();
   } catch (e) { reportError('dashboard-alert', e); }
 }
 async function createProject() {
+  const name = readName('proj-name', 'dashboard-alert');
+  if (!name) return;
   const file = document.getElementById('proj-file').files[0];
   if (!file) { showAlert('dashboard-alert', 'Select a .zip file', 'error'); return; }
   const buf = await file.arrayBuffer();
@@ -769,13 +791,14 @@ async function createProject() {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
   const b64 = btoa(binary);
-  const name = document.getElementById('proj-name').value;
-  const entry = document.getElementById('proj-entry').value || 'main.py';
+  const entry = (document.getElementById('proj-entry').value || '').trim();
+  if (!entry) { showAlert('dashboard-alert', 'Entrypoint is required', 'error'); return; }
   const method = document.getElementById('proj-method').value;
   try {
     const data = await api('/vlambda?project=1&entry=' + encodeURIComponent(entry) + '&name=' + encodeURIComponent(name) + '&method=' + method,
       { method: 'POST', body: b64, headers: authHeaders(false) });
-    showAlert('dashboard-alert', 'Created project ' + data.slug, 'success');
+    showAlert('dashboard-alert', 'Created project "' + name + '" (' + data.slug + ')', 'success');
+    document.getElementById('proj-name').value = '';
     hide('create-project');
     loadLambdas();
   } catch (e) { reportError('dashboard-alert', e); }
@@ -808,12 +831,13 @@ async function editLambda(slug, kind) {
 }
 async function saveCodeLambda() {
   const code = codeEditor ? VLambdaEditor.getValue(codeEditor) : '';
-  const name = document.getElementById('edit-name').value;
+  const name = readName('edit-name', 'editor-alert');
+  if (!name) return;
   const method = document.getElementById('edit-method').value;
   const timeout = document.getElementById('edit-timeout').value;
   const memory = document.getElementById('edit-memory').value;
   try {
-    await api('/vlambda/' + currentSlug + '?method=' + method + '&name=' + encodeURIComponent(name) + '&timeout=' + timeout + '&memory_mb=' + memory,
+    await api('/vlambda/' + currentSlug + '?method=' + encodeURIComponent(method) + '&name=' + encodeURIComponent(name) + '&timeout=' + timeout + '&memory_mb=' + memory,
       { method: 'PUT', body: code, headers: authHeaders(false) });
     showAlert('editor-alert', 'Saved', 'success');
     await loadVersions(currentSlug);
@@ -859,11 +883,13 @@ async function loadAliases(slug) {
   } catch (e) { flog('warn', 'aliases failed', e.message); }
 }
 async function createAlias() {
-  const name = document.getElementById('alias-name').value;
+  const name = readName('alias-name', 'editor-alert');
+  if (!name) return;
   const version = document.getElementById('alias-version').value || '0';
   try {
     await api('/vlambda/' + currentSlug + '/alias?name=' + encodeURIComponent(name) + '&version=' + version, { method: 'POST', headers: authHeaders(false) });
     showAlert('editor-alert', 'Alias saved', 'success');
+    document.getElementById('alias-name').value = '';
     await loadAliases(currentSlug);
   } catch (e) { reportError('editor-alert', e); }
 }

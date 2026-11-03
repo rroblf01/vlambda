@@ -102,6 +102,45 @@ def test_create_invoke():
     assert status == 200 and body["msg"] == "hi"
     return token, slug
 
+def test_lambda_names():
+    from urllib.parse import quote
+    token = test_register_login()
+    name = "Mi Lambda & Más"
+    code = "def handler(request): return {'msg': 'named'}"
+    status, body = req("POST", "/vlambda?method=GET&name=" + quote(name, safe=""), code, token)
+    assert status == 201, body
+    slug = body["slug"]
+
+    def listed_name():
+        status, payload = req("GET", "/vlambda?format=json", token=token)
+        assert status == 200, payload
+        item = next(x for x in payload["lambdas"] if x["slug"] == slug)
+        return item
+
+    assert listed_name()["name"] == name
+
+    # Updating without a name must keep the current one.
+    status, body = req("PUT", f"/vlambda/{slug}?method=POST", "def handler(request): return {'msg': 'v2'}", token)
+    assert status == 200, body
+    item = listed_name()
+    assert item["name"] == name and item["method"] == "POST"
+
+    # An encoded name on update is decoded as well.
+    status, body = req("PUT", f"/vlambda/{slug}?method=POST&name=" + quote("Nuevo Nombre", safe=""),
+                       "def handler(request): return {'msg': 'v3'}", token)
+    assert status == 200, body
+    assert listed_name()["name"] == "Nuevo Nombre"
+
+    # Project names go through the same decoding.
+    token, project = _upload_project("Proyecto Ñandú", {
+        "main.py": "def handler(request):\n    return {'ok': True}\n",
+    })
+    status, payload = req("GET", "/vlambda?format=json", token=token)
+    assert status == 200, payload
+    item = next(x for x in payload["lambdas"] if x["slug"] == project)
+    assert item["name"] == "Proyecto Ñandú"
+
+
 def test_html_lambda():
     token = test_register_login()
     code = 'def handler(request):\n    return "<!DOCTYPE html><html><body><h1>Hi</h1></body></html>"'
@@ -389,13 +428,14 @@ def test_sandbox_blocked():
 
 def _upload_project(name, files, entry="main.py"):
     import base64, io, zipfile
+    from urllib.parse import quote
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         for path, content in files.items():
             z.writestr(path, content)
     b64 = base64.b64encode(buf.getvalue()).decode()
     token = test_register_login()
-    status, body = req("POST", f"/vlambda?project=1&entry={entry}&name={name}", b64, token)
+    status, body = req("POST", f"/vlambda?project=1&entry={quote(entry, safe='')}&name={quote(name, safe='')}", b64, token)
     assert status == 201, body
     return token, body["slug"]
 
@@ -505,7 +545,7 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_create_invoke, test_lambda_names, test_html_lambda, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,

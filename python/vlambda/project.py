@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import zipfile
 from typing import Any
@@ -304,9 +305,15 @@ def list_aliases(slug: str) -> str:
 
 
 def gc_orphans() -> int:
-    """Delete project directories that no lambda row references anymore."""
+    """Delete project directories that no lambda row references anymore.
+
+    Directories younger than the grace period are skipped: a project is
+    extracted before its row is inserted, so an overlapping scan could
+    otherwise delete a project that is still being uploaded.
+    """
     import sqlite3
     db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    grace = int(os.environ.get("VLAMBDA_PROJECT_GC_GRACE", "300"))
     referenced = set()
     try:
         conn = sqlite3.connect(db_path)
@@ -318,12 +325,19 @@ def gc_orphans() -> int:
     except Exception:
         return 0
     removed = 0
+    now = time.time()
     try:
         for name in os.listdir(_PROJECTS_DIR):
             path = os.path.abspath(os.path.join(_PROJECTS_DIR, name))
-            if path not in referenced:
-                shutil.rmtree(path, ignore_errors=True)
-                removed += 1
+            if path in referenced:
+                continue
+            try:
+                if now - os.path.getmtime(path) < grace:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
     except FileNotFoundError:
         pass
     return removed

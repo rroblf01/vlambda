@@ -695,7 +695,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') { days = part.all_after('=').int() }
-				if part.starts_with('slug=') { slug = part.all_after('=') }
+				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
 		mut body := '{"days": ${days}, "count": 0, "items": []}'
@@ -829,7 +829,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') { days = part.all_after('=').int() }
-				if part.starts_with('slug=') { slug = part.all_after('=') }
+				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
 		mut body := '{"days": ${days}, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0}'
@@ -876,7 +876,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') { days = part.all_after('=').int() }
-				if part.starts_with('slug=') { slug = part.all_after('=') }
+				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
 		mut body := '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}'
@@ -915,7 +915,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') { days = part.all_after('=').int() }
-				if part.starts_with('slug=') { slug = part.all_after('=') }
+				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
 		mut body := '{"days": ${days}, "items": []}'
@@ -961,7 +961,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') { days = part.all_after('=').int() }
-				if part.starts_with('slug=') { slug = part.all_after('=') }
+				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
 		mut body := ''
@@ -1196,13 +1196,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					qs := req.url.all_after('?')
 					for part in qs.split('&') {
 						if part.starts_with('entrypoint=') || part.starts_with('entry=') {
-							entrypoint = part.all_after('=')
+							entrypoint = decode_query_value(part.all_after('='))
 						}
 						if part.starts_with('name=') {
-							name = part.all_after('=')
+							name = decode_query_value(part.all_after('=')).trim_space()
 						}
 						if part.starts_with('method=') {
-							method = part.all_after('=')
+							method = decode_query_value(part.all_after('='))
 						}
 					}
 				}
@@ -1268,10 +1268,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
 					if part.starts_with('method=') {
-						method = part.all_after('=')
+						method = decode_query_value(part.all_after('='))
 					}
 					if part.starts_with('name=') {
-						name = part.all_after('=')
+						name = decode_query_value(part.all_after('=')).trim_space()
 					}
 					if part.starts_with('timeout=') {
 						timeout = part.all_after('=').int()
@@ -1394,7 +1394,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('alias=') {
-					alias = part.all_after('=')
+					alias = decode_query_value(part.all_after('='))
 				}
 			}
 		}
@@ -1740,7 +1740,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
 					if part.starts_with('name=') || part.starts_with('alias=') {
-						alias = part.all_after('=')
+						alias = decode_query_value(part.all_after('='))
 					}
 					if part.starts_with('version=') {
 						version = part.all_after('=').int()
@@ -1838,17 +1838,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 			mut method := 'GET'
-			mut name := ''
+			mut name := db_get_lambda_name(slug)
 			mut timeout := 0
 			mut memory_mb := 0
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
 					if part.starts_with('method=') {
-						method = part.all_after('=')
+						method = decode_query_value(part.all_after('='))
 					}
 					if part.starts_with('name=') {
-						name = part.all_after('=')
+						decoded := decode_query_value(part.all_after('=')).trim_space()
+						if decoded != '' {
+							name = decoded
+						}
 					}
 					if part.starts_with('timeout=') {
 						timeout = part.all_after('=').int()

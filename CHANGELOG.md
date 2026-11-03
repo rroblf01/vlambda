@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow now includes provenance attestation.
 
 ### Fixed
+- Lambda and project names are URL-decoded (spaces and accents included), updates keep the existing name when none is supplied, and the UI requires a name with a clear message instead of silently falling back to the slug.
+- Project cleanup no longer deletes a project uploaded while the orphan scan is running.
 - The UI no longer flashes an "unauthorized" alert right after login when a request made with an expired token finishes late.
 - Lambda invocation pages no longer serve the UI favicon; `/favicon.ico` returns 404 when requested from `/f/<slug>`.
 - Metrics, logs, pool stats and DLQ endpoints now require authentication; the UI redirects to login.

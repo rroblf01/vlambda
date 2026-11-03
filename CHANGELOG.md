@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Per-lambda KV store with typed values, TTL, atomic increments, quotas, REST API, UI card and CLI.
+- Capability broker over a Unix socket: per-invocation tokens, scoped KV access and automatic release for sync and async invocations.
+- Sandboxes now allow only `AF_UNIX` client sockets; `AF_INET`/`AF_INET6` remain blocked.
+
+### Security
+- The broker token is passed as internal request metadata, not through the lambda environment.
+- KV operations are owner-checked at the HTTP layer and scoped to the token's slug at runtime.
+
 ## [0.3.0] - 2026-11-03
 
 ### Added

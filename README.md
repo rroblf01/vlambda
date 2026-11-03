@@ -22,6 +22,7 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **Auth** — JWT-based authentication with per-user ownership
 - **Web UI** — Dashboard for managing lambdas, code editor, metrics
 - **Async invocation** — Fire-and-forget with task tracking
+- **KV store** — per-lambda typed key/value state with TTL and atomic increments
 - **Sandbox** — Landlock + seccomp in Docker, plus restricted Python builtins and blocked modules
 - **Metrics** — Prometheus-compatible + Chart.js dashboard
 - **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
@@ -276,8 +277,12 @@ With the Docker default (`VLAMBDA_SANDBOX=fork`), user code runs in a fresh
 runner process confined with Landlock and seccomp.
 Landlock limits the filesystem to `/opt`, `/usr`, `/lib`, `/etc`, the current
 project/vendor and a private temporary directory; `/data`, `/proc`, `/sys` and
-the rest of the server cannot be read or listed. seccomp blocks network, cross-process
-signals, `ptrace`, `mount`, namespace changes and similar syscalls. Resource
+the rest of the server cannot be read or listed. seccomp blocks TCP/UDP and every
+non-Unix socket, cross-process signals, `ptrace`, `mount`, namespace changes and
+similar syscalls. Only `AF_UNIX` client sockets to the local capability broker
+are allowed. Do not mount the Docker socket, cloud metadata proxies or other
+privileged Unix sockets into the container: the sandbox needs Unix sockets for
+the broker and cannot distinguish them from other local sockets. Resource
 limits are applied too, and each invocation gets a fresh process.
 
 The plain `python -m vlambda` command without `VLAMBDA_SANDBOX` uses the
@@ -308,6 +313,33 @@ lambda's runner. Code lambdas read them from `request.env`; projects also see
 them in `os.environ`. Use `VLAMBDA_ENCRYPTION_KEY` if you want to rotate
 `VLAMBDA_SECRET` without losing existing secrets.
 
+## KV store
+
+Every lambda has a small persistent key/value store, isolated by lambda and
+accessible through an allow-listed capability broker rather than a database
+connection in the sandbox.
+
+```python
+def handler(request):
+    hits = request.kv.incr("hits")
+    request.kv.set("last", {"path": request.path}, ttl=3600)
+    return {"hits": hits, "last": request.kv.get("last")}
+```
+
+Projects use the same API with `from vlambda import kv`. Values can be strings,
+numbers, booleans, null, JSON documents or bytes; `incr()` is atomic and `ttl`
+is optional. Limits are 256 keys, 64 KiB per value and 1 MiB per lambda.
+
+Management API (owner only, `X-Admin-Token` not needed):
+
+- `GET /vlambda/<slug>/kv?prefix=` — list
+- `GET /vlambda/<slug>/kv/<key>` — read
+- `PUT /vlambda/<slug>/kv/<key>` — write `{"value": ..., "ttl": 3600}`
+- `DELETE /vlambda/<slug>/kv/<key>` — delete one key
+- `DELETE /vlambda/<slug>/kv` — clear the store
+
+The UI exposes a KV card in the code and project editors.
+
 ## CLI
 
 The CLI talks to a running server and uses `VLAMBDA_URL`/`VLAMBDA_TOKEN` or
@@ -318,6 +350,8 @@ python -m vlambda deploy main.py --name my-lambda --method GET
 python -m vlambda invoke <slug>
 python -m vlambda logs --slug <slug> --days 1
 python -m vlambda env <slug> --set PLAIN=hello --secret TOKEN=s3cret
+python -m vlambda kv <slug> --set hits=0 --ttl 3600
+python -m vlambda kv <slug> --get hits
 python -m vlambda task <task-id>
 ```
 

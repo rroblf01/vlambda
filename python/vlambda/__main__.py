@@ -13,7 +13,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from vlambda.reset import main as reset_main
         raise SystemExit(reset_main(sys.argv[2:]))
-    if any(arg in ("invoke", "deploy", "logs", "env", "task") for arg in sys.argv[1:]):
+    if any(arg in ("invoke", "deploy", "logs", "env", "task", "kv") for arg in sys.argv[1:]):
         from vlambda.cli import main as cli_main
         raise SystemExit(cli_main(sys.argv[1:]))
 
@@ -33,7 +33,7 @@ def main() -> None:
     if not os.environ.get("VLAMBDA_SECRET"):
         print("WARNING: VLAMBDA_SECRET is not set; using an insecure default for auth tokens.",
               file=sys.stderr)
-    if os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail") \
+    if os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail", "process") \
             and os.environ.get("VLAMBDA_ISOLATE", "0") != "1":
         print("WARNING: no sandbox selected; lambda code runs in the server process.",
               file=sys.stderr)
@@ -64,7 +64,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password, new_auth_epoch
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, register_kv, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -72,6 +72,10 @@ def main() -> None:
 
     from vlambda.dbpool import init as pool_init
     pool_init(args.sqlite_path)
+
+    from vlambda import broker as _broker
+    if _broker.start():
+        os.environ["VLAMBDA_BROKER_SOCKET"] = _broker.SOCKET_PATH
 
     # GC tuning: disable during request handling, collect periodically
     import gc
@@ -177,7 +181,11 @@ def main() -> None:
         if not timeout:
             timeout = args.invoke_timeout
         request_meta = _meta_with_env(slug, request_meta)
-        result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+        request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
+        try:
+            result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+        finally:
+            _broker.release(broker_token)
         from vlambda.response import serialize
         if isinstance(result, dict) and "status" in result and ("body" in result or "body_b64" in result):
             response = result
@@ -376,6 +384,13 @@ def main() -> None:
     register_list_env(_list_env_cb)
     register_save_env(_save_env_cb)
 
+    from vlambda.kv_store import handle_api as _kv_api
+
+    def _kv_cb(slug, owner_id, method, key, body, query=""):
+        return _kv_api(slug, owner_id, method, key, body, query)
+
+    register_kv(_kv_cb)
+
     def _record_metric(request_id, slug, method, path, latency_ms, error):
         _metrics_record(request_id, slug, method, path, float(latency_ms), error)
 
@@ -470,7 +485,11 @@ def main() -> None:
         from vlambda.response import serialize
         try:
             request_meta = _meta_with_env(slug, request_meta)
-            result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug, request_meta=request_meta)
+            request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
+            try:
+                result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug, request_meta=request_meta)
+            finally:
+                _broker.release(broker_token)
             if isinstance(result, dict) and "status" in result and ("body" in result or "body_b64" in result):
                 return json.dumps(result)
             if isinstance(result, dict) and set(result.keys()) == {"error"}:
@@ -586,6 +605,7 @@ def main() -> None:
     def _shutdown(signum, frame):
         print("\nShutting down gracefully...", file=sys.stderr)
         pool.stop()
+        _broker.stop()
         from vlambda.dbpool import close_all
         close_all()
         gc.collect()

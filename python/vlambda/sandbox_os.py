@@ -58,14 +58,16 @@ _CREATE_RULESET_VERSION = 1
 _SCMP_ACT_ALLOW = 0x7FFF0000
 _SCMP_ACT_ERRNO = 0x00050000
 _SCMP_CMP_MASKED_EQ = 7
+_SCMP_CMP_NE = 1
 
 # Syscalls that must never be reachable from user code. Most are blocked with
 # EPERM/EACCES so Python can report a normal exception instead of dying.
 _DENY_SYSCALLS = (
-    # network
-    "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
-    "sendto", "recvfrom", "sendmsg", "recvmsg", "sendmmsg", "recvmmsg",
-    "shutdown", "getsockname", "getpeername", "setsockopt", "getsockopt",
+    # network: only client connections to AF_UNIX sockets are allowed. The
+    # socket() rule is added separately in _load_seccomp so AF_INET/AF_INET6
+    # remain blocked while the capability broker stays reachable.
+    "socketpair", "bind", "listen", "accept", "accept4",
+    "sendmsg", "recvmsg", "sendmmsg", "recvmmsg",
     # process creation / execution
     "fork", "vfork", "execve", "execveat",
     # process control / signals
@@ -242,6 +244,15 @@ def _load_seccomp():
             rc = lib.seccomp_rule_add_array(ctx, action, nr, 0, None)
             if rc != 0:
                 raise RuntimeError(f"seccomp rule failed for {name}: {rc}")
+        # Only AF_UNIX client sockets are allowed, for the capability broker.
+        # Deny any socket whose family is not AF_UNIX instead of adding an
+        # ALLOW exception, which keeps the default action simple.
+        socket_nr = lib.seccomp_syscall_resolve_name(b"socket")
+        if socket_nr >= 0:
+            cmp = _ScmpArgCmp(0, _SCMP_CMP_NE, 1, 0)  # arg0 != AF_UNIX
+            rc = lib.seccomp_rule_add_array(ctx, action, socket_nr, 1, ctypes.byref(cmp))
+            if rc != 0:
+                raise RuntimeError(f"seccomp socket family rule failed: {rc}")
         # glibc falls back to clone() when clone3() reports ENOSYS.
         clone3_nr = lib.seccomp_syscall_resolve_name(b"clone3")
         if clone3_nr >= 0:

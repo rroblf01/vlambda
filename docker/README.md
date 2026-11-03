@@ -112,9 +112,10 @@ it falls back to deleting the data directly.
 
 Each invocation runs in a fresh process confined with Landlock and seccomp. The
 filesystem is limited to the Python runtime, the current project/vendor and a
-private temporary directory; `/data`, the server's `/proc`, network and
-cross-process signals are blocked. The server and database stay outside the
-sandbox.
+private temporary directory; `/data`, the server's `/proc`, TCP/UDP networking
+and cross-process signals are blocked. Only `AF_UNIX` client sockets to the
+capability broker are allowed, and each invocation gets a scoped token. The
+server and database stay outside the sandbox.
 
 This is suitable for a disposable toy deployment with open registration, but it
 is not a hypervisor. Keep the host and image updated, keep only disposable

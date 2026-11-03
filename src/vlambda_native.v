@@ -89,6 +89,7 @@ __global (
 	vlambda_list_packages = voidptr(0)
 	vlambda_list_env = voidptr(0)
 	vlambda_save_env = voidptr(0)
+	vlambda_kv = voidptr(0)
 	// Rate limiter (token bucket per IP)
 	vlambda_rate_buckets = map[string]TokenBucket{}
 )
@@ -125,6 +126,8 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, method TEXT NOT NULL DEFAULT "GET", entrypoint TEXT NOT NULL DEFAULT "", project_dir TEXT NOT NULL DEFAULT "", kind TEXT NOT NULL DEFAULT "code", created_at TEXT NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_aliases (alias TEXT PRIMARY KEY, slug TEXT NOT NULL, version INTEGER NOT NULL, owner_id INTEGER NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_env (slug TEXT NOT NULL, key TEXT NOT NULL, is_secret INTEGER NOT NULL DEFAULT 0, value TEXT NOT NULL, PRIMARY KEY (slug, key));')!
+	db.exec('CREATE TABLE IF NOT EXISTS lambda_kv (slug TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_at REAL, updated_at REAL NOT NULL, PRIMARY KEY (slug, key));')!
+	db.exec('CREATE INDEX IF NOT EXISTS idx_lambda_kv_slug ON lambda_kv(slug);')!
 	db.exec('CREATE TABLE IF NOT EXISTS api_tokens (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id INTEGER NOT NULL,
@@ -1853,6 +1856,67 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
+	// Route: /vlambda/<slug>/kv (GET list, DELETE clear)
+	// Route: /vlambda/<slug>/kv/<key> (GET, PUT, DELETE)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/kv') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut q := ''
+		if req.url.contains('?') {
+			q = req.url.all_after('?')
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/kv')
+		mut key := url_path.all_after('/kv')
+		if key.starts_with('/') {
+			key = key[1..]
+		}
+		if key.contains('/') {
+			return http.Response{ status_code: 400, body: '{"error": "invalid key"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		key = decode_query_value(key)
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method != .get && req.method != .put && req.method != .delete {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		request_body := req.data
+		if req.method == .put && request_body.len > vlambda_max_body_size {
+			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_kv != unsafe { nil } {
+			method := req.method.str()
+			vcraft.with_gil(fn [slug, auth_uid, method, key, request_body, q, ptr] () {
+				args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(auth_uid.str()).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(key).ptr, vcraft.to_py_string(request_body).ptr, vcraft.to_py_string(q).ptr]
+				r := vcraft.call(vlambda_kv, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"error": "kv failed"}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		status := if body.starts_with('{"error"') { 400 } else { 200 }
+		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /vlambda/<slug>/export (GET = download lambda as JSON)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/export') {
 		if auth_uid < 0 {
@@ -2509,6 +2573,7 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 	db.exec_param_many('DELETE FROM lambdas WHERE slug = ?;', [slug]) or { return false }
 	// Remove per-lambda state so a future lambda cannot inherit it.
 	db.exec_param_many('DELETE FROM lambda_env WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM lambda_kv WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_versions WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_aliases WHERE slug = ?;', [slug]) or {}
 	vlambda_code_cache.delete(slug)
@@ -3032,6 +3097,9 @@ pub fn register_list_env(cb voidptr) { vlambda_list_env = cb }
 
 @[vc_fn]
 pub fn register_save_env(cb voidptr) { vlambda_save_env = cb }
+
+@[vc_fn]
+pub fn register_kv(cb voidptr) { vlambda_kv = cb }
 
 @[vc_fn]
 pub fn register_install_packages(cb voidptr) { vlambda_install_packages = cb }

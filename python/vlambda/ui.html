@@ -245,6 +245,16 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
             <button class="btn btn-sm" onclick="saveEnv()">Save environment</button>
           </div>
           <div class="card">
+            <h3>KV store</h3>
+            <div id="edit-kv-list" class="muted">—</div>
+            <div class="flex" style="margin-top:8px;">
+              <input id="edit-kv-key" placeholder="key" style="width:110px;">
+              <input id="edit-kv-value" placeholder="value (JSON or text)" style="flex:1;">
+              <input id="edit-kv-ttl" type="number" min="1" placeholder="TTL s" style="width:80px;">
+              <button class="btn btn-sm" onclick="setKV()">Set</button>
+            </div>
+          </div>
+          <div class="card">
             <h3>Versions</h3>
             <div id="versions-list" class="muted">—</div>
           </div>
@@ -328,6 +338,16 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
           <div class="form-group"><label>Variables (KEY=value per line)</label><textarea id="project-env" rows="3" style="width:100%"></textarea></div>
           <div class="form-group"><label>Secrets (KEY=value; ******** keeps current)</label><textarea id="project-env-secrets" rows="3" style="width:100%"></textarea></div>
           <button class="btn btn-sm" onclick="saveEnv()">Save environment</button>
+        </div>
+        <div class="card">
+          <h3>KV store</h3>
+          <div id="project-kv-list" class="muted">—</div>
+          <div class="flex" style="margin-top:8px;">
+            <input id="project-kv-key" placeholder="key" style="width:110px;">
+            <input id="project-kv-value" placeholder="value (JSON or text)" style="flex:1;">
+            <input id="project-kv-ttl" type="number" min="1" placeholder="TTL s" style="width:80px;">
+            <button class="btn btn-sm" onclick="setKV()">Set</button>
+          </div>
         </div>
       </div>
       <div class="card ide-card">
@@ -877,6 +897,7 @@ async function editLambda(slug, kind) {
     await loadAliases(slug);
     await loadPackages();
     await loadEnv(slug);
+    await loadKV(slug);
     flog('info', 'editing code lambda', { slug });
   } catch (e) { reportError('editor-alert', e); }
 }
@@ -956,6 +977,55 @@ async function loadPackages() {
     if (pel) pel.textContent = text;
     flog('info', 'packages loaded', { slug: currentSlug, count: (data.packages || []).length });
   } catch (e) { flog('warn', 'packages failed', e.message); }
+}
+
+function kvPrefix() { return currentKind === 'project' ? 'project' : 'edit'; }
+function kvDisplay(item) {
+  if (item.binary) return '<binary>';
+  try { return typeof item.value === 'string' ? item.value : JSON.stringify(item.value); }
+  catch (e) { return String(item.value); }
+}
+async function loadKV(slug) {
+  const prefix = kvPrefix();
+  const el = document.getElementById(prefix + '-kv-list');
+  if (!el) return;
+  try {
+    const data = await api('/vlambda/' + slug + '/kv');
+    const items = data.items || [];
+    el.innerHTML = items.length ? items.map(item =>
+      '<div class="flex-between" style="padding:2px 0;gap:8px;">' +
+        '<span class="mono" style="overflow:hidden;text-overflow:ellipsis;">' +
+          escapeHtml(item.key) + ' = ' + escapeHtml(kvDisplay(item)) +
+          (item.expires_at ? ' <span class="muted">(ttl)</span>' : '') +
+        '</span>' +
+        '<button class="btn btn-sm" onclick="deleteKV(' + escapeHtml(JSON.stringify(item.key)) + ')">Del</button>' +
+      '</div>'
+    ).join('') : '<span class="muted">—</span>';
+  } catch (e) { flog('warn', 'kv load failed', e.message); }
+}
+async function setKV() {
+  const prefix = kvPrefix();
+  const key = (document.getElementById(prefix + '-kv-key').value || '').trim();
+  if (!key) { showAlert(prefix === 'project' ? 'project-alert' : 'editor-alert', 'KV key is required', 'error'); return; }
+  let value = document.getElementById(prefix + '-kv-value').value;
+  try { value = JSON.parse(value); } catch (e) { /* keep as text */ }
+  const ttlRaw = document.getElementById(prefix + '-kv-ttl').value;
+  const payload = { value };
+  if (ttlRaw) payload.ttl = Number(ttlRaw);
+  try {
+    await api('/vlambda/' + currentSlug + '/kv/' + encodeURIComponent(key), {
+      method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload),
+    });
+    document.getElementById(prefix + '-kv-value').value = '';
+    document.getElementById(prefix + '-kv-ttl').value = '';
+    await loadKV(currentSlug);
+  } catch (e) { reportError(prefix === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+async function deleteKV(key) {
+  try {
+    await api('/vlambda/' + currentSlug + '/kv/' + encodeURIComponent(key), { method: 'DELETE', headers: authHeaders(false) });
+    await loadKV(currentSlug);
+  } catch (e) { reportError(kvPrefix() === 'project' ? 'project-alert' : 'editor-alert', e); }
 }
 
 function parseEnvLines(text) {
@@ -1048,6 +1118,7 @@ async function openProject(slug) {
     else VLambdaEditor.setValue(projectEditor, activeProjectFile ? projectFiles[activeProjectFile] : '');
     await loadPackages();
     await loadEnv(slug);
+    await loadKV(slug);
     flog('info', 'opened project', { slug, files: names.length });
   } catch (e) { reportError('project-alert', e); }
 }

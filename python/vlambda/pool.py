@@ -21,6 +21,7 @@ import tempfile
 from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
+from vlambda.capabilities import CapabilityClient, clear_current, set_current
 from vlambda.request import Request
 from vlambda.cache import get as get_compiled
 
@@ -38,8 +39,14 @@ class Worker:
             if task is None:
                 break
             result_queue = task["result_queue"]
+            client = None
             try:
                 meta = json.loads(task.get("request_meta", "{}") or "{}")
+                broker_socket = meta.get("broker_socket", "")
+                broker_token = meta.get("broker_token", "")
+                if broker_socket and broker_token:
+                    client = CapabilityClient(str(broker_socket), str(broker_token))
+                set_current(client)
                 req_obj = Request(
                     method=task.get("method", "GET"),
                     path=task.get("path", "/"),
@@ -52,6 +59,7 @@ class Worker:
                     host=meta.get("host", ""),
                     scheme=meta.get("scheme", "http"),
                     env=meta.get("env", {}),
+                    kv_client=client,
                 )
                 if task.get("kind") == "project":
                     from vlambda.project import execute_project
@@ -70,6 +78,8 @@ class Worker:
                 result = serialize(result)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"}
+            finally:
+                clear_current()
             result_queue.put(result)
 
     # Single-flight: coalesce identical in-flight requests
@@ -225,7 +235,7 @@ _NSJAIL_SECCOMP = (
 )
 
 
-def _nsjail_config(project_dir: str = "", vendor_dir: str = "") -> str:
+def _nsjail_config(project_dir: str = "", vendor_dir: str = "", broker_dir: str = "") -> str:
     mounts = [
         'mount { src: "/" dst: "/" is_bind: true rw: false }',
         'mount { src: "/opt/python" dst: "/opt/python" is_bind: true rw: false }',
@@ -235,6 +245,8 @@ def _nsjail_config(project_dir: str = "", vendor_dir: str = "") -> str:
         mounts.append(f'mount {{ src: "{project_dir}" dst: "/work" is_bind: true rw: false }}')
     if vendor_dir:
         mounts.append(f'mount {{ src: "{vendor_dir}" dst: "/vendor" is_bind: true rw: false }}')
+    if broker_dir:
+        mounts.append(f'mount {{ src: "{broker_dir}" dst: "/broker" is_bind: true rw: false }}')
     # Hide the server's data/secret-bearing paths after binding what the runner needs.
     for hidden in ("/data", "/home", "/root", "/run", "/sys", "/proc"):
         mounts.append(f'mount {{ src: "/opt/empty" dst: "{hidden}" is_bind: true rw: false }}')
@@ -463,6 +475,9 @@ class ForkWorker:
         env = _runner_env()
         env["HOME"] = "/tmp"
         env["TMPDIR"] = "/tmp"
+        broker_socket = os.environ.get("VLAMBDA_BROKER_SOCKET", "")
+        if broker_socket:
+            env["VLRUN_BROKER_DIR"] = os.path.dirname(broker_socket)
         self._proc = subprocess.Popen(
             [sys.executable, "-m", "vlambda.forkd"],
             stdin=subprocess.PIPE,
@@ -599,6 +614,13 @@ def _landlock_read_paths() -> list[str]:
             continue
         if normalized not in paths:
             paths.append(normalized)
+    broker_dir = os.environ.get("VLRUN_BROKER_DIR") or os.path.dirname(
+        os.environ.get("VLAMBDA_BROKER_SOCKET") or (
+            "/data/broker/vlambda.sock" if os.path.isdir("/data") else "/tmp/opencode/vlambda-broker.sock"
+        )
+    )
+    if broker_dir and os.path.isdir(broker_dir) and os.path.abspath(broker_dir) not in paths:
+        paths.append(os.path.abspath(broker_dir))
     return paths
 
 
@@ -696,11 +718,11 @@ class LandlockPool:
 
     def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         with self._sem:
-            return LandlockWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+            return LandlockWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._sem:
-            return LandlockWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+            return LandlockWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug, request_meta)
 
     def _queue_depth(self) -> int:
         return 0
@@ -710,6 +732,23 @@ class LandlockPool:
 
     def stop(self):
         pass
+
+
+def _nsjail_payload(payload: dict) -> tuple[dict, str]:
+    """Map the broker socket into the nsjail mount namespace."""
+    broker_dir = ""
+    try:
+        meta = json.loads(payload.get("request_meta", "{}") or "{}")
+        if isinstance(meta, dict):
+            broker_socket = str(meta.get("broker_socket", ""))
+            if broker_socket:
+                broker_dir = os.path.dirname(broker_socket)
+                meta["broker_socket"] = "/broker/" + os.path.basename(broker_socket)
+                payload = dict(payload)
+                payload["request_meta"] = json.dumps(meta)
+    except Exception:
+        pass
+    return payload, broker_dir
 
 
 class NsjailWorker:
@@ -730,7 +769,8 @@ class NsjailWorker:
             "slug": slug or "",
             "request_meta": request_meta or "",
         }
-        return self._run(payload, timeout, vendor_dir=vendor)
+        payload, broker_dir = _nsjail_payload(payload)
+        return self._run(payload, timeout, vendor_dir=vendor, broker_dir=broker_dir)
 
     def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         payload = {
@@ -745,9 +785,10 @@ class NsjailWorker:
             "slug": slug or "",
             "request_meta": request_meta or "",
         }
-        return self._run(payload, timeout, project_dir=project_dir)
+        payload, broker_dir = _nsjail_payload(payload)
+        return self._run(payload, timeout, project_dir=project_dir, broker_dir=broker_dir)
 
-    def _run(self, payload: dict, timeout: int = 0, project_dir: str = "", vendor_dir: str = ""):
+    def _run(self, payload: dict, timeout: int = 0, project_dir: str = "", vendor_dir: str = "", broker_dir: str = ""):
         nsjail = shutil.which("nsjail") or "/usr/local/bin/nsjail"
         if not os.path.exists(nsjail):
             return {"error": "sandbox unavailable"}
@@ -756,7 +797,7 @@ class NsjailWorker:
         try:
             fd, config_path = tempfile.mkstemp(prefix="vlambda-", suffix=".cfg", dir="/tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(_nsjail_config(project_dir, vendor_dir))
+                handle.write(_nsjail_config(project_dir, vendor_dir, broker_dir))
             proc = subprocess.Popen(
                 [nsjail, "--config", config_path],
                 stdin=subprocess.PIPE,
@@ -802,11 +843,11 @@ class NsjailPool:
 
     def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         with self._sem:
-            return NsjailWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+            return NsjailWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._sem:
-            return NsjailWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+            return NsjailWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug, request_meta)
 
     def _queue_depth(self) -> int:
         return 0
@@ -825,7 +866,7 @@ elif _sandbox_mode == "landlock":
     Pool = LandlockPool
 elif _sandbox_mode == "nsjail" or os.environ.get("VLAMBDA_NSJAIL", "0") == "1":
     Pool = NsjailPool
-elif os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
+elif _sandbox_mode == "process" or os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
     Pool = ProcessPool
 else:
     Pool = InProcessPool

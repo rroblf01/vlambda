@@ -125,6 +125,36 @@ def cmd_env(args):
     _print_response(status, {}, rb)
 
 
+def cmd_kv(args):
+    base = args.url.rstrip("/") + f"/vlambda/{args.slug}/kv"
+    if args.clear:
+        status, _, rb = _request(base, args.token, "DELETE")
+    elif args.delete:
+        status, _, rb = _request(base + "/" + urllib.parse.quote(args.delete, safe=""), args.token, "DELETE")
+    elif args.get:
+        status, _, rb = _request(base + "/" + urllib.parse.quote(args.get, safe=""), args.token)
+    elif args.set:
+        if "=" not in args.set:
+            raise SystemExit("vlambda: --set expects KEY=value")
+        key, raw = args.set.split("=", 1)
+        try:
+            value = json.loads(raw)
+        except Exception:
+            value = raw
+        payload = {"value": value}
+        if args.ttl is not None:
+            payload["ttl"] = args.ttl
+        status, _, rb = _request(base + "/" + urllib.parse.quote(key.strip(), safe=""), args.token,
+                                 "PUT", json.dumps(payload).encode(),
+                                 {"Content-Type": "application/json"})
+    else:
+        url = base
+        if args.prefix:
+            url += "?prefix=" + urllib.parse.quote(args.prefix, safe="")
+        status, _, rb = _request(url, args.token)
+    _print_response(status, {}, rb)
+
+
 def cmd_task(args):
     status, _, rb = _request(args.url.rstrip("/") + f"/task/{args.task_id}", args.token)
     _print_response(status, {}, rb)
@@ -132,9 +162,11 @@ def cmd_task(args):
 
 def main(argv=None) -> int:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--url", default=_default_url())
-    common.add_argument("--token", default=_default_token())
-    parser = argparse.ArgumentParser(prog="vlambda", description="vlambda CLI", parents=[common])
+    common.add_argument("--url", default=argparse.SUPPRESS)
+    common.add_argument("--token", default=argparse.SUPPRESS)
+    parser = argparse.ArgumentParser(prog="vlambda", description="vlambda CLI")
+    parser.add_argument("--url", default=_default_url())
+    parser.add_argument("--token", default=_default_token())
     sub = parser.add_subparsers(dest="command", required=True)
 
     invoke = sub.add_parser("invoke", help="invoke a lambda", parents=[common])
@@ -168,6 +200,16 @@ def main(argv=None) -> int:
     task = sub.add_parser("task", help="read an async task", parents=[common])
     task.add_argument("task_id")
     task.set_defaults(func=cmd_task)
+
+    kv = sub.add_parser("kv", help="read or write per-lambda KV", parents=[common])
+    kv.add_argument("slug")
+    kv.add_argument("--prefix", default="")
+    kv.add_argument("--get", default="")
+    kv.add_argument("--set", default="")
+    kv.add_argument("--delete", default="")
+    kv.add_argument("--clear", action="store_true")
+    kv.add_argument("--ttl", type=float, default=None)
+    kv.set_defaults(func=cmd_kv)
 
     args = parser.parse_args(argv)
     if not args.token:

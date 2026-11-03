@@ -17,6 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from vlambda.cache import get as get_compiled
+from vlambda.capabilities import CapabilityClient, clear_current, set_current
 from vlambda.request import Request, set_log_sink
 from vlambda.response import Response, serialize
 from vlambda.sandbox import make_sandbox
@@ -60,23 +61,26 @@ set_log_sink(_log_sink)
 
 
 def _execute(code: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = "",
-             headers=None, remote_ip: str = "", host: str = "", scheme: str = "http", env=None):
+             headers=None, remote_ip: str = "", host: str = "", scheme: str = "http", env=None,
+             kv_client=None):
     compiled, ns_template, handler = get_compiled(code)
     if handler is None:
         raise ValueError("no handler function defined")
     ns = dict(ns_template)
     req = Request(method=method, path=path, query_string=query, headers=headers or {}, body=body,
-                  request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env)
+                  request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
+                  kv_client=kv_client)
     ns["request"] = req
     return handler(req)
 
 
 def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, query: str, body: bytes,
                      request_id: str = "", slug: str = "", headers=None, remote_ip: str = "",
-                     host: str = "", scheme: str = "http", env=None):
+                     host: str = "", scheme: str = "http", env=None, kv_client=None):
     from vlambda.project import execute_project
     req = Request(method=method, path=path, query_string=query, headers=headers or {}, body=body,
-                  request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env)
+                  request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
+                  kv_client=kv_client)
     return execute_project(project_dir, entrypoint, req)
 
 
@@ -111,6 +115,7 @@ def _sandbox_args(argv: list[str]) -> tuple[bool, list[str], list[str], int]:
 def handle_payload(req: dict) -> dict:
     """Execute one request payload and return the protocol envelope."""
     _current_logs.clear()
+    client = None
     try:
         code = req.get("code", "")
         method = req.get("method", "GET")
@@ -126,6 +131,11 @@ def handle_payload(req: dict) -> dict:
         host = meta.get("host", "") if isinstance(meta, dict) else ""
         scheme = meta.get("scheme", "http") if isinstance(meta, dict) else "http"
         env = meta.get("env", {}) if isinstance(meta, dict) else {}
+        broker_socket = meta.get("broker_socket", "") if isinstance(meta, dict) else ""
+        broker_token = meta.get("broker_token", "") if isinstance(meta, dict) else ""
+        if broker_socket and broker_token:
+            client = CapabilityClient(str(broker_socket), str(broker_token))
+        set_current(client)
         _apply_env(env)
         vendor_dir = req.get("vendor_dir", "")
         if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
@@ -135,13 +145,17 @@ def handle_payload(req: dict) -> dict:
                 req.get("project_dir", ""), req.get("entrypoint", "main.py"),
                 method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
                 headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
+                kv_client=client,
             )
         else:
             result = _execute(code, method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
-                              headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env)
+                              headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
+                              kv_client=client)
         return {"ok": True, "response": serialize(result), "logs": list(_current_logs)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "logs": list(_current_logs)}
+    finally:
+        clear_current()
 
 
 def main() -> None:

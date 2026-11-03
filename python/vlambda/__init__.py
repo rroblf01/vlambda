@@ -2,6 +2,7 @@
 
 import os
 
+from vlambda.capabilities import kv  # noqa: F401
 from vlambda.response import Response  # noqa: F401
 
 # Sandboxed runners only need the pure-Python modules; importing the native

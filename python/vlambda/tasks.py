@@ -104,8 +104,15 @@ def _run(task_id: str, code: str, method: str, path: str, query: str, body: byte
     last_error = None
     for attempt in range(retries + 1):
         try:
-            result = pool.execute(code, method, path, query, body,
-                                  request_id=task_id, slug=slug, request_meta=request_meta)
+            from vlambda import broker
+
+            enriched_meta, broker_token = broker.attach(request_meta, slug, task_id)
+            try:
+                result = pool.execute(code, method, path, query, body,
+                                      request_id=task_id, slug=slug,
+                                      request_meta=enriched_meta)
+            finally:
+                broker.release(broker_token)
             if isinstance(result, dict) and set(result.keys()) == {"error"}:
                 raise RuntimeError(str(result.get("error")))
             from vlambda.response import serialize

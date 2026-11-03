@@ -69,6 +69,15 @@ def _run_one(payload: dict) -> dict:
         read_paths.append(project_dir)
     if vendor_dir:
         read_paths.append(vendor_dir)
+    try:
+        meta = json.loads(payload.get("request_meta", "{}") or "{}")
+        broker_socket = meta.get("broker_socket", "") if isinstance(meta, dict) else ""
+        if broker_socket:
+            broker_dir = os.path.dirname(broker_socket)
+            if broker_dir and broker_dir not in read_paths:
+                read_paths.append(broker_dir)
+    except Exception:
+        pass
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -125,6 +134,8 @@ BASE_READ_PATHS = _landlock_read_paths()
 for extra in ("/data/projects", "/data/packages"):
     if os.path.isdir(extra):
         BASE_READ_PATHS.append(extra)
+# Only the supervisor needs this path; do not leak it into user code.
+os.environ.pop("VLRUN_BROKER_DIR", None)
 try:
     _apply_landlock(BASE_READ_PATHS, ["/tmp"])
 except Exception as e:

@@ -318,6 +318,99 @@ def test_response_injection_blocked():
     assert "invalid HTTP status" in body.get("error", ""), body
 
 
+def test_lambda_kv():
+    token = test_register_login()
+    code = "def handler(r): return {'hits': (r.kv.set('h', r.kv.get('h',0)+1), r.kv.get('h'))[1]}"
+    status, body = req("POST", "/vlambda?name=kv", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body["hits"] == 1, body
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body["hits"] == 2, body
+
+    status, body = req("GET", f"/vlambda/{slug}/kv", token=token)
+    assert status == 200, body
+    assert {item["key"]: item["value"] for item in body["items"]}["h"] == 2
+
+    status, body = req("PUT", f"/vlambda/{slug}/kv/foo", '{"value": {"a": 1}}',
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    status, body = req("GET", f"/vlambda/{slug}/kv/foo", token=token)
+    assert status == 200 and body["value"] == {"a": 1}, body
+    status, body = req("GET", f"/vlambda/{slug}/kv?prefix=f", token=token)
+    assert status == 200 and [item["key"] for item in body["items"]] == ["foo"], body
+
+    status, body = req("GET", f"/vlambda/{slug}/kv/foo")
+    assert status == 401, body
+    other = test_register_login()
+    status, body = req("GET", f"/vlambda/{slug}/kv/foo", token=other)
+    assert status == 403, body
+    status, body = req("PUT", f"/vlambda/{slug}/kv/foo", '{"value": 1}', other,
+                       extra_headers={"Content-Type": "application/json"})
+    assert status == 403, body
+
+    status, body = req("PUT", f"/vlambda/{slug}/kv/ttl", '{"value": "x", "ttl": 0.05}',
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    time.sleep(0.1)
+    status, body = req("GET", f"/vlambda/{slug}/kv/ttl", token=token)
+    assert status == 200 and body["exists"] is False, body
+
+    status, body = req("DELETE", f"/vlambda/{slug}/kv/foo", token=token)
+    assert status == 200 and body["deleted"] is True, body
+    status, body = req("GET", f"/vlambda/{slug}/kv/foo", token=token)
+    assert status == 200 and body["exists"] is False, body
+
+
+def test_async_kv():
+    token = test_register_login()
+    code = "def handler(r): return {'hits': (r.kv.set('h', r.kv.get('h',0)+1), r.kv.get('h'))[1]}"
+    status, body = req("POST", "/vlambda?name=async-kv", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("POST", f"/async/{slug}", token=token)
+    assert status == 202, body
+    task_id = body["task_id"]
+    for _ in range(30):
+        status, body = req("GET", f"/task/{task_id}", token=token)
+        if body.get("status") == "completed":
+            break
+        time.sleep(0.1)
+    assert body.get("status") == "completed", body
+    assert json.loads(body["result"]["body"])["hits"] == 1, body
+    status, body = req("GET", f"/vlambda/{slug}/kv", token=token)
+    assert {item["key"]: item["value"] for item in body["items"]}["h"] == 1, body
+
+
+def test_kv_fork_project():
+    stop_server()
+    start_server({"VLAMBDA_SANDBOX": "fork"})
+    try:
+        code = (
+            "from vlambda import kv\n"
+            "import socket\n"
+            "def handler(request):\n"
+            "    kv.set('p', kv.get('p', 0) + 1)\n"
+            "    try:\n"
+            "        socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "        net = 'allowed'\n"
+            "    except PermissionError:\n"
+            "        net = 'blocked'\n"
+            "    return {'p': kv.get('p'), 'net': net}\n"
+        )
+        token, slug = _upload_project("kvproj", {"main.py": code})
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200 and body == {"p": 1, "net": "blocked"}, body
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200 and body == {"p": 2, "net": "blocked"}, body
+        status, body = req("GET", f"/vlambda/{slug}/kv", token=token)
+        assert {item["key"]: item["value"] for item in body["items"]}["p"] == 2, body
+    finally:
+        stop_server()
+
+
 def test_html_lambda():
     token = test_register_login()
     code = 'def handler(request):\n    return "<!DOCTYPE html><html><body><h1>Hi</h1></body></html>"'
@@ -1081,7 +1174,7 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_response_injection_blocked, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from urllib.parse import parse_qs
 
+from vlambda.capabilities import kv as _kv_proxy
+
 _log_sink = None
 
 
@@ -22,11 +24,12 @@ def clear_log_sink():
 class Request:
     __slots__ = (
         "method", "path", "query_string", "query", "headers", "cookies",
-        "body", "request_id", "slug", "remote_ip", "host", "scheme", "env",
+        "body", "request_id", "slug", "remote_ip", "host", "scheme", "env", "kv",
     )
 
     def __init__(self, method="GET", path="/", query_string="", headers=None, body=b"",
-                 request_id="", slug="", remote_ip="", host="", scheme="http", env=None):
+                 request_id="", slug="", remote_ip="", host="", scheme="http", env=None,
+                 kv_client=None):
         self.method = method
         self.path = path
         self.query_string = query_string
@@ -39,6 +42,7 @@ class Request:
         self.host = host
         self.scheme = scheme
         self.env = dict(env or {})
+        self.kv = kv_client if kv_client is not None else _kv_proxy
         cookie_header = self.header("cookie")
         self.cookies = {}
         for part in cookie_header.split(";"):

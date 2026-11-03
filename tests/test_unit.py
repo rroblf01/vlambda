@@ -291,6 +291,166 @@ def test_env_partial_update(tmp_path, monkeypatch):
         dbpool.close_all()
 
 
+def test_kv_store_roundtrip(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    from vlambda import dbpool, kv_store
+
+    db = tmp_path / "kv.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute(
+        "CREATE TABLE lambda_kv (slug TEXT NOT NULL, key TEXT NOT NULL,"
+        " value TEXT NOT NULL, expires_at REAL, updated_at REAL NOT NULL,"
+        " PRIMARY KEY (slug, key))"
+    )
+    conn.execute("INSERT INTO lambdas VALUES ('l1', 1)")
+    conn.execute("INSERT INTO lambdas VALUES ('l2', 2)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    dbpool.close_all()
+    dbpool.init(str(db))
+    try:
+        kv_store.set_value("l1", "text", "hello")
+        assert kv_store.get_value("l1", "text")[:2] == (True, "hello")
+        kv_store.set_value("l1", "obj", {"a": [1, 2]})
+        assert kv_store.get_value("l1", "obj")[1] == {"a": [1, 2]}
+        kv_store.set_value("l1", "bin", b"\x00\xff")
+        assert kv_store.get_value("l1", "bin")[1] == b"\x00\xff"
+        kv_store.set_value("l1", "number", 1)
+        assert kv_store.incr_value("l1", "number", 4)["value"] == 5
+        kv_store.set_value("l1", "ttl", "soon", ttl=0.05)
+        time.sleep(0.1)
+        assert kv_store.get_value("l1", "ttl")[0] is False
+        assert {item["key"] for item in kv_store.list_values("l1")} >= {"text", "obj", "bin", "number"}
+        assert kv_store.delete_value("l1", "text") is True
+        assert kv_store.delete_value("l1", "text") is False
+        assert kv_store.clear_values("l1") >= 1
+
+        body = json.loads(kv_store.handle_api("l1", "1", "PUT", "api", '{"value": 7}'))
+        assert body["key"] == "api"
+        body = json.loads(kv_store.handle_api("l1", "1", "GET", "api", ""))
+        assert body["value"] == 7
+        body = json.loads(kv_store.handle_api("l1", "1", "GET", "", ""))
+        assert any(item["key"] == "api" for item in body["items"])
+        body = json.loads(kv_store.handle_api("l1", "2", "GET", "api", ""))
+        assert "error" in body
+        body = json.loads(kv_store.handle_api("l1", "1", "PUT", "bad key", '{"value": 1}'))
+        assert "error" in body
+    finally:
+        dbpool.close_all()
+
+
+def test_capability_context_is_thread_local():
+    import threading
+    from vlambda.capabilities import clear_current, current, set_current
+
+    first = object()
+    second = object()
+    seen = {}
+    set_current(first)
+    try:
+        def worker():
+            set_current(second)
+            seen["worker"] = current()
+            clear_current()
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+        assert seen["worker"] is second
+        assert current() is first
+    finally:
+        clear_current()
+
+
+def test_capability_broker_kv(tmp_path, monkeypatch):
+    import sqlite3
+    from vlambda import broker, dbpool
+    from vlambda.capabilities import CapabilityClient, CapabilityError
+
+    db = tmp_path / "broker.db"
+    sock = tmp_path / "broker.sock"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute(
+        "CREATE TABLE lambda_kv (slug TEXT NOT NULL, key TEXT NOT NULL,"
+        " value TEXT NOT NULL, expires_at REAL, updated_at REAL NOT NULL,"
+        " PRIMARY KEY (slug, key))"
+    )
+    conn.execute("INSERT INTO lambdas VALUES ('l1', 1)")
+    conn.execute("INSERT INTO lambdas VALUES ('l2', 2)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    monkeypatch.setenv("VLAMBDA_BROKER_SOCKET", str(sock))
+    dbpool.close_all()
+    dbpool.init(str(db))
+    broker.stop()
+    try:
+        assert broker.start(), "broker did not start"
+        token = broker.issue("l1", "req-1")
+        client = CapabilityClient(str(sock), token)
+        assert client.set("a", "hello") == "hello"
+        assert client.get("a") == "hello"
+        assert client.get("missing", "default") == "default"
+        assert client.set("n", 1)
+        assert client.incr("n") == 2
+        assert client.set("bin", b"\x00\xff")
+        assert client.get("bin") == b"\x00\xff"
+        assert client.list()["a"] == "hello"
+        assert client.delete("a") is True
+        other = broker.issue("l2", "req-2")
+        assert CapabilityClient(str(sock), other).get("n", "none") == "none"
+        with pytest.raises(CapabilityError):
+            CapabilityClient(str(sock), "bad-token").get("n")
+        broker.release(token)
+        broker.release(other)
+    finally:
+        broker.stop()
+        dbpool.close_all()
+
+
+def test_sandbox_allows_unix_blocks_inet(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from vlambda.sandbox_os import sandbox_supported
+
+    if not sandbox_supported():
+        pytest.skip("Landlock is not available")
+    script = (
+        "from vlambda.pool import _landlock_read_paths\n"
+        "from vlambda.sandbox_os import apply_sandbox\n"
+        "import socket, sys\n"
+        "apply_sandbox(_landlock_read_paths(), [sys.argv[1]], 5)\n"
+        "try:\n"
+        "    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()\n"
+        "    print('unix-ok')\n"
+        "except PermissionError:\n"
+        "    print('unix-blocked')\n"
+        "try:\n"
+        "    socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()\n"
+        "    print('inet-ok')\n"
+        "except PermissionError:\n"
+        "    print('inet-blocked')\n"
+    )
+    sandbox_dir = tmp_path / "rw"
+    sandbox_dir.mkdir()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd()
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(sandbox_dir)],
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "unix-ok" in proc.stdout
+    assert "inet-blocked" in proc.stdout
+
+
 def test_apply_env_replaces_previous_values(monkeypatch):
     import os
     from vlambda.runner import _apply_env

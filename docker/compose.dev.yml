@@ -13,8 +13,6 @@ services:
       VLAMBDA_SECRET: ${VLAMBDA_SECRET:-dev-secret}
       VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:-dev-admin}
       VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
-      VLAMBDA_NSJAIL: ${VLAMBDA_NSJAIL:-0}
-      GOFLY_CONFIG: /etc/gofly/gofly.dev.json
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 256

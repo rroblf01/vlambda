@@ -15,7 +15,6 @@ services:
       VLAMBDA_SECRET: ${VLAMBDA_SECRET:?set VLAMBDA_SECRET}
       VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:?set VLAMBDA_ADMIN_TOKEN}
       VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
-      VLAMBDA_NSJAIL: ${VLAMBDA_NSJAIL:-1}
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 256
@@ -24,9 +23,6 @@ services:
       - /tmp:size=64m
     security_opt:
       - no-new-privileges:true
-      # nsjail needs user namespaces; keep seccomp unconfined unless your
-      # host allows them with the default Docker profile.
-      - seccomp=unconfined
 
 volumes:
   vlambda-data:

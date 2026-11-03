@@ -91,8 +91,9 @@ token with `DELETE /tokens/<id>`. Tokens do not expire.
 ## Docker + Dokploy
 
 The repository includes a production image (`Dockerfile`, installs from PyPI) and
-a development image (`Dockerfile.dev`, builds the local wheel). Both run gofly +
-vlambda + nsjail inside one container and expose plain HTTP on port `8080`.
+a development image (`Dockerfile.dev`, builds the local wheel). Both use a
+free-threaded Python 3.14 venv and expose plain HTTP on port `8080`; Dokploy (or
+another proxy) handles TLS and the public domain.
 
 ```bash
 export VLAMBDA_SECRET="$(openssl rand -hex 32)"
@@ -250,13 +251,13 @@ Open http://localhost:8080/ in your browser for the dashboard:
 The demo can be wiped with:
 
 ```bash
-python -m vlambda reset --yes --url http://127.0.0.1:8081 --token "$VLAMBDA_ADMIN_TOKEN"
+python -m vlambda reset --yes --url http://127.0.0.1:8080 --token "$VLAMBDA_ADMIN_TOKEN"
 ```
 
 For the weekly demo reset, run it from cron every Monday:
 
 ```cron
-0 0 * * 1 docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container>   /opt/venv/bin/python -m vlambda reset --yes   --url http://127.0.0.1:8081
+0 0 * * 1 docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container>   /opt/venv/bin/python -m vlambda reset --yes   --url http://127.0.0.1:8080
 ```
 
 ## Performance

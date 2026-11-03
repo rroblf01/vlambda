@@ -5,9 +5,9 @@ Two images are provided:
 - `Dockerfile`: installs `vlambda` from PyPI (production).
 - `Dockerfile.dev`: builds a wheel from this checkout with vcraft (development).
 
-Both include gofly, nsjail, a free-threaded Python 3.14 venv created with uv, and
-the weekly reset CLI. TLS is terminated by the platform (Dokploy), so the
-container only exposes plain HTTP on port 8080.
+Both use a free-threaded Python 3.14 venv created with uv and expose plain HTTP
+on port `8080`. TLS and the public reverse proxy are handled by Dokploy or the
+platform in front of the container.
 
 ## Build
 
@@ -50,7 +50,7 @@ Run the reset command manually every Monday:
 ```bash
 docker exec -e VLAMBDA_ADMIN_TOKEN="$VLAMBDA_ADMIN_TOKEN" <container> \
   /opt/venv/bin/python -m vlambda reset --yes \
-  --url http://127.0.0.1:8081
+  --url http://127.0.0.1:8080
 ```
 
 Or add it to the host crontab:
@@ -58,7 +58,7 @@ Or add it to the host crontab:
 ```cron
 0 0 * * 1 docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> \
   /opt/venv/bin/python -m vlambda reset --yes \
-  --url http://127.0.0.1:8081
+  --url http://127.0.0.1:8080
 ```
 
 The command calls the running server's `/admin/reset` endpoint, which wipes users,
@@ -67,13 +67,11 @@ is not reachable, it falls back to deleting the data directly.
 
 ## Verified
 
-The development image was built and run with nsjail enabled:
-
-- `GET /health` and `/ready` through gofly.
-- lambda invocation inside nsjail.
-- infinite-loop lambda killed after the configured timeout; the next request succeeds.
-- memory-hog lambda returns `MemoryError`; the next request succeeds.
-- online reset via `/admin/reset` empties lambdas and users.
+- `GET /health` and `/ready` on port `8080`.
+- Lambda invocations run in isolated runner processes.
+- Infinite-loop lambda killed after the configured timeout; the next request succeeds.
+- Memory-hog lambda returns `MemoryError`; the next request succeeds.
+- Online reset via `/admin/reset` empties lambdas and users.
 - PyPI package installation into the per-lambda vendor directory.
 
 ## Limits
@@ -81,5 +79,5 @@ The development image was built and run with nsjail enabled:
 - Docker: 512 MB RAM, 1 CPU, 256 PIDs.
 - vlambda: 4 workers, 400 MB soft limit, 5 s timeout, 20 req/s per IP.
 - Max lambdas per user: `VLAMBDA_MAX_LAMBDAS` (default 20).
-- nsjail per worker: 80 MB address space, 5 s CPU, no network.
-- If Docker blocks user namespaces, set `VLAMBDA_NSJAIL=0` and rely on RLIMITs.
+- Lambdas run in separate runner processes; the container remains the outer
+  security and resource boundary.

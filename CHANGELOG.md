@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project cache prewarming and async task thread pool.
 
 ### Changed
+- The lambda and project forms keep their submit buttons disabled until the required fields are filled, and mark the name as required.
 - Docker deployment is HTTP-only on port 8080; Dokploy terminates TLS.
 - Project layout moved from `vlambda/` to the repository root.
 - vcraft updated from 1.7.0 to 1.7.2.

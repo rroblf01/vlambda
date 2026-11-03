@@ -174,7 +174,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
 
     <div id="create-code" class="card hidden">
       <h2>New lambda</h2>
-      <div class="form-group"><label>Name</label><input id="new-name" placeholder="my-lambda" maxlength="80"></div>
+      <div class="form-group"><label>Name <span class="muted">(required)</span></label><input id="new-name" placeholder="my-lambda" maxlength="80" autocomplete="off" oninput="updateCreateButtons()"></div>
       <div class="flex">
         <div class="form-group" style="flex:1;"><label>Method</label><select id="new-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
         <div class="form-group" style="flex:1;"><label>Timeout (s)</label><input id="new-timeout" type="number" value="30"></div>
@@ -194,18 +194,18 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         </select>
       </div>
       <div class="form-group"><label>Python code</label><div id="create-editor" class="editor-host"></div></div>
-      <div class="flex"><button class="btn btn-primary" onclick="createLambda()">Create</button><button class="btn" onclick="hide('create-code')">Cancel</button></div>
+      <div class="flex"><button id="create-lambda-btn" class="btn btn-primary" onclick="createLambda()" disabled>Create</button><button class="btn" onclick="hide('create-code')">Cancel</button></div>
     </div>
 
     <div id="create-project" class="card hidden">
       <h2>Upload project (.zip)</h2>
-      <div class="form-group"><label>Name</label><input id="proj-name" placeholder="my-project" maxlength="80"></div>
+      <div class="form-group"><label>Name <span class="muted">(required)</span></label><input id="proj-name" placeholder="my-project" maxlength="80" autocomplete="off" oninput="updateCreateButtons()"></div>
       <div class="flex">
-        <div class="form-group" style="flex:1;"><label>Entrypoint</label><input id="proj-entry" value="main.py"></div>
+        <div class="form-group" style="flex:1;"><label>Entrypoint</label><input id="proj-entry" value="main.py" oninput="updateCreateButtons()"></div>
         <div class="form-group" style="flex:1;"><label>Method</label><select id="proj-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
       </div>
-      <div class="form-group"><label>ZIP file</label><input id="proj-file" type="file" accept=".zip"></div>
-      <div class="flex"><button class="btn btn-primary" onclick="createProject()">Upload</button><button class="btn" onclick="hide('create-project')">Cancel</button></div>
+      <div class="form-group"><label>ZIP file</label><input id="proj-file" type="file" accept=".zip" onchange="updateCreateButtons()"></div>
+      <div class="flex"><button id="create-project-btn" class="btn btn-primary" onclick="createProject()" disabled>Upload</button><button class="btn" onclick="hide('create-project')">Cancel</button></div>
     </div>
   </div>
 
@@ -590,6 +590,20 @@ function readName(inputId, alertId) {
   }
   return value;
 }
+function updateCreateButtons() {
+  const lambdaBtn = document.getElementById('create-lambda-btn');
+  if (lambdaBtn) {
+    const name = (document.getElementById('new-name').value || '').trim();
+    lambdaBtn.disabled = !name || !createEditor;
+  }
+  const projectBtn = document.getElementById('create-project-btn');
+  if (projectBtn) {
+    const name = (document.getElementById('proj-name').value || '').trim();
+    const entry = (document.getElementById('proj-entry').value || '').trim();
+    const file = document.getElementById('proj-file').files.length > 0;
+    projectBtn.disabled = !name || !entry || !file;
+  }
+}
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   const requestToken = token;
@@ -749,11 +763,18 @@ function changePage(delta) { if (page + delta < 0) return; page += delta; loadLa
 /* ---------- create ---------- */
 function showCreateCode() {
   show('create-code');
+  updateCreateButtons();
   setTimeout(() => {
     if (!createEditor) createEditor = VLambdaEditor.createEditor(document.getElementById('create-editor'), 'def handler(request):\n    return {"msg": "hello", "path": request.path}');
+    updateCreateButtons();
+    document.getElementById('new-name').focus();
   }, 0);
 }
-function showCreateProject() { show('create-project'); }
+function showCreateProject() {
+  show('create-project');
+  updateCreateButtons();
+  document.getElementById('proj-name').focus();
+}
 async function createLambda() {
   const name = readName('new-name', 'dashboard-alert');
   if (!name) return;
@@ -774,6 +795,7 @@ async function createLambda() {
       { method: 'POST', body: code, headers: authHeaders(false) });
     showAlert('dashboard-alert', 'Created "' + name + '" (' + data.slug + ')', 'success');
     document.getElementById('new-name').value = '';
+    updateCreateButtons();
     hide('create-code');
     loadLambdas();
   } catch (e) { reportError('dashboard-alert', e); }
@@ -799,6 +821,7 @@ async function createProject() {
       { method: 'POST', body: b64, headers: authHeaders(false) });
     showAlert('dashboard-alert', 'Created project "' + name + '" (' + data.slug + ')', 'success');
     document.getElementById('proj-name').value = '';
+    updateCreateButtons();
     hide('create-project');
     loadLambdas();
   } catch (e) { reportError('dashboard-alert', e); }

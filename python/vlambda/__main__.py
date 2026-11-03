@@ -54,7 +54,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -284,7 +284,7 @@ def main() -> None:
     register_get_task(_get_task)
 
     import atexit
-    from vlambda.metrics import record as _metrics_record, query as _metrics_query, stats as _metrics_query_stats, summary as _metrics_summary, aggregate as _metrics_aggregate, query_logs as _metrics_logs, export_csv as _metrics_export
+    from vlambda.metrics import record as _metrics_record, query as _metrics_query, stats as _metrics_query_stats, summary as _metrics_summary, aggregate as _metrics_aggregate, query_logs as _metrics_logs, export_csv as _metrics_export, delete_metrics as _metrics_delete, delete_logs as _metrics_delete_logs
     import json as _json
 
     def _record_metric(request_id, slug, method, path, latency_ms, error):
@@ -347,6 +347,23 @@ def main() -> None:
         return _json.dumps(_metrics_logs(d, slug))
 
     register_query_logs(_query_logs)
+
+    def _delete_metrics(days, slug=""):
+        try:
+            d = int(days)
+        except (ValueError, TypeError):
+            d = 0
+        return _json.dumps(_metrics_delete(d, slug))
+
+    def _delete_logs(days, slug=""):
+        try:
+            d = int(days)
+        except (ValueError, TypeError):
+            d = 0
+        return _json.dumps(_metrics_delete_logs(d, slug))
+
+    register_delete_metrics(_delete_metrics)
+    register_delete_logs(_delete_logs)
     register_export_metrics(_export_metrics)
     register_pool_stats(_pool_stats)
 

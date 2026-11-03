@@ -189,7 +189,9 @@ Project exports include text files. Binary files are listed in
 - `GET /metrics/aggregate?days=N&slug=` — Per-lambda aggregates
 - `GET /metrics/summary?days=N&slug=` — Daily rollups
 - `GET /metrics/export?days=N&slug=` — CSV export
+- `DELETE /metrics/history?days=N&slug=` — Delete metrics older than N days (`days=0` deletes all)
 - `GET /logs/history?days=N&slug=` — Persisted lambda logs
+- `DELETE /logs/history?days=N&slug=` — Delete logs older than N days (`days=0` deletes all)
 - `GET /pool/stats`, `GET /dlq`
 - `POST /shutdown` — Graceful shutdown
 
@@ -207,6 +209,10 @@ def handler(request):
 Logs are stored in the metrics database and can be queried with
 `GET /logs/history?days=1&slug=<slug>`. The UI Logs view shows them alongside
 invocations. The "Save logs" template in the editor is a ready-to-run example.
+
+Metrics and logs are pruned after `VLAMBDA_METRICS_RETENTION` days (default 7).
+From the UI you can also prune data older than the selected period, or delete
+all matching rows, with the current lambda filter applied.
 
 ## Lambda Format
 

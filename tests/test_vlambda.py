@@ -395,6 +395,33 @@ def test_lambda_logs():
     assert any(i.get("message") == "hello from lambda" and i.get("slug") == slug for i in body.get("items", []))
 
 
+def test_delete_metrics_and_logs():
+    token = test_register_login()
+    code = "def handler(request):\n    request.log('delete me')\n    return {'ok': True}"
+    status, body = req("POST", "/vlambda?name=cleanup", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200
+    time.sleep(1.2)
+
+    # Pruning recent data must not remove anything.
+    status, body = req("DELETE", f"/metrics/history?days=1&slug={slug}", token=token)
+    assert status == 200 and body.get("deleted") == 0, body
+
+    status, body = req("DELETE", f"/metrics/history?days=0&slug={slug}", token=token)
+    assert status == 200 and body.get("deleted", 0) >= 1, body
+    status, body = req("GET", f"/metrics/aggregate?days=1&slug={slug}", token=token)
+    assert status == 200 and body.get("requests_total") == 0, body
+
+    status, body = req("DELETE", f"/logs/history?days=1&slug={slug}", token=token)
+    assert status == 200 and body.get("deleted") == 0, body
+    status, body = req("DELETE", f"/logs/history?days=0&slug={slug}", token=token)
+    assert status == 200 and body.get("deleted", 0) >= 1, body
+    status, body = req("GET", f"/logs/history?days=1&slug={slug}", token=token)
+    assert status == 200 and body.get("count") == 0, body
+
+
 def test_admin_reset():
     token = test_register_login()
     req("POST", "/vlambda", "def handler(request): return {'ok': 1}", token)
@@ -549,7 +576,7 @@ if __name__ == "__main__":
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
-             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs,
+             test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_rate_limit]

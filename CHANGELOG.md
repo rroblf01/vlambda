@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install PyPI packages per lambda/project from the web UI.
 - Persistent lambda logs via `request.log()` and a "Save logs" template.
 - Metrics filter by lambda slug or name.
+- Delete metrics and logs from the UI or with `DELETE /metrics/history` and `DELETE /logs/history`, optionally pruned by age and lambda.
 - Lambda invoke URLs in the dashboard, editor and project view, with copy/open actions.
 - HTML page template built with `str.format()`; HTML responses are served as `text/html`.
 - Redesigned IDE: theme-aware CodeMirror, file toolbar, project tabs and a cursor/status bar.
@@ -54,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Response cache stores serialized payloads for GET requests.
 - Compiled handlers are cached and executed without per-request `exec`.
 - Metrics are optional and sampled via environment variables.
+- Logs now follow the same retention period as metrics.
 - In-memory lambda metrics are optional.
 - Async tasks no longer spawn one thread per task.
 - Removed optional Nuitka compilation path.

@@ -370,6 +370,8 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         <select id="metrics-days" onchange="loadMetrics()"><option value="1">24h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
         <button class="btn btn-sm" onclick="loadMetrics()">Refresh</button>
         <button class="btn btn-sm" onclick="exportMetrics()">Export CSV</button>
+        <button class="btn btn-sm" onclick="deleteMetrics(false)" title="Delete metrics older than the selected period">Prune older</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteMetrics(true)">Delete all</button>
       </div>
     </div>
     <div class="grid3">
@@ -392,6 +394,8 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         <input id="logs-slug" placeholder="filter slug" style="width:160px;">
         <select id="logs-days"><option value="1">24h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
         <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+        <button class="btn btn-sm" onclick="deleteLogs(false)" title="Delete logs older than the selected period">Prune older</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteLogs(true)">Delete all</button>
       </div>
     </div>
     <div class="card" style="overflow:auto;max-height:35vh;margin-bottom:14px;">
@@ -1236,6 +1240,19 @@ async function exportMetrics() {
     flog('info', 'metrics exported', { days, bytes: text.length });
   } catch (e) { reportError('metrics-alert', e); }
 }
+async function deleteMetrics(all) {
+  const days = document.getElementById('metrics-days').value || '7';
+  const slug = resolveMetricsFilter();
+  const scope = slug ? ' for ' + slug : '';
+  const what = all ? 'ALL metrics' : 'metrics older than ' + days + ' days';
+  if (!confirm('Delete ' + what + scope + '? This cannot be undone.')) return;
+  try {
+    const data = await api('/metrics/history?days=' + (all ? 0 : days) + (slug ? '&slug=' + encodeURIComponent(slug) : ''),
+      { method: 'DELETE' });
+    showAlert('metrics-alert', 'Deleted ' + (data.deleted || 0) + ' metric rows', 'success');
+    await loadMetrics();
+  } catch (e) { reportError('metrics-alert', e); }
+}
 
 /* ---------- logs ---------- */
 async function loadLogs() {
@@ -1272,6 +1289,19 @@ function showDetailAt(idx) {
   const item = detailItems[idx];
   document.getElementById('detail-body').textContent = JSON.stringify(item, null, 2);
   show('detail-modal');
+}
+async function deleteLogs(all) {
+  const days = document.getElementById('logs-days').value || '7';
+  const slug = document.getElementById('logs-slug').value.trim();
+  const scope = slug ? ' for ' + slug : '';
+  const what = all ? 'ALL logs' : 'logs older than ' + days + ' days';
+  if (!confirm('Delete ' + what + scope + '? This cannot be undone.')) return;
+  try {
+    const data = await api('/logs/history?days=' + (all ? 0 : days) + (slug ? '&slug=' + encodeURIComponent(slug) : ''),
+      { method: 'DELETE' });
+    showAlert('logs-alert', 'Deleted ' + (data.deleted || 0) + ' log rows', 'success');
+    await loadLogs();
+  } catch (e) { reportError('logs-alert', e); }
 }
 
 /* ---------- system ---------- */

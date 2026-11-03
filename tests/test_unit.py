@@ -298,6 +298,30 @@ def test_logs_persistence(tmp_path):
     close()
 
 
+def test_delete_metrics_and_logs(tmp_path):
+    from vlambda.metrics import (
+        init, record, record_log, close, aggregate, query_logs,
+        delete_metrics, delete_logs,
+    )
+    db = str(tmp_path / "metrics.db")
+    init(db, 7)
+    record("r1", "slug1", "GET", "/f/x", 1.0, "")
+    record("r2", "slug1", "GET", "/f/x", 2.0, "")
+    record_log("r1", "slug1", "info", "hello log")
+    close()
+    init(db, 7)
+
+    # Recent data survives a prune of older entries.
+    assert delete_metrics(1, "slug1")["deleted"] == 0
+    assert aggregate(1)["requests_total"] == 2
+
+    assert delete_metrics(0, "slug1")["deleted"] >= 2
+    assert aggregate(1)["requests_total"] == 0
+    assert delete_logs(0, "slug1")["deleted"] >= 1
+    assert query_logs(7, "slug1")["count"] == 0
+    close()
+
+
 def test_transfer_normalize_files():
     from vlambda.transfer import _normalize_files
     files, err = _normalize_files({"main.py": "x", "../evil": "y"})

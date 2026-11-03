@@ -34,6 +34,8 @@ __global (
 	vlambda_query_summary = voidptr(0)
 	vlambda_query_aggregate = voidptr(0)
 	vlambda_query_logs = voidptr(0)
+	vlambda_delete_metrics = voidptr(0)
+	vlambda_delete_logs = voidptr(0)
 	vlambda_export_metrics = voidptr(0)
 	vlambda_pool_stats = voidptr(0)
 	vlambda_query_stats = voidptr(0)
@@ -689,7 +691,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		mut days := 1
+		if req.method != .get && req.method != .delete {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut days := if req.method == .delete { 0 } else { 1 }
 		mut slug := ''
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
@@ -697,6 +702,27 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') { days = part.all_after('=').int() }
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
+		}
+		if req.method == .delete {
+			mut body := '{"deleted": 0}'
+			ptr := &body
+			if vlambda_delete_logs != unsafe { nil } {
+				vcraft.with_gil(fn [days, slug, ptr] () {
+					args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+					r := vcraft.call(vlambda_delete_logs, args)
+					vcraft.borrow(args[0]).decref()
+					vcraft.borrow(args[1]).decref()
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"deleted": 0}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		mut body := '{"days": ${days}, "count": 0, "items": []}'
 		ptr := &body
@@ -777,14 +803,45 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		mut days := 7
+		if req.method != .get && req.method != .delete {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut days := if req.method == .delete { 0 } else { 7 }
+		mut slug := ''
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') {
 					days = part.all_after('=').int()
 				}
+				if part.starts_with('slug=') {
+					slug = decode_query_value(part.all_after('='))
+				}
 			}
+		}
+		if req.method == .delete {
+			mut body := '{"deleted": 0}'
+			ptr := &body
+			if vlambda_delete_metrics != unsafe { nil } {
+				vcraft.with_gil(fn [days, slug, ptr] () {
+					args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+					r := vcraft.call(vlambda_delete_metrics, args)
+					vcraft.borrow(args[0]).decref()
+					vcraft.borrow(args[1]).decref()
+					if r.is_null() {
+						vcraft.clear_error()
+						return
+					}
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"deleted": 0}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		mut body := '{"days": ${days}, "items": []}'
 		ptr := &body
@@ -2502,6 +2559,16 @@ pub fn register_query_aggregate(cb voidptr) {
 @[vc_fn]
 pub fn register_query_logs(cb voidptr) {
 	vlambda_query_logs = cb
+}
+
+@[vc_fn]
+pub fn register_delete_metrics(cb voidptr) {
+	vlambda_delete_metrics = cb
+}
+
+@[vc_fn]
+pub fn register_delete_logs(cb voidptr) {
+	vlambda_delete_logs = cb
 }
 
 @[vc_fn]

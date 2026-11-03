@@ -31,6 +31,8 @@ _worker: threading.Thread | None = None
 _last_cleanup = 0.0
 _last_rollup = 0.0
 _seen_slugs: set[str] = set()
+_metrics_purge_before = 0.0
+_logs_purge_before = 0.0
 
 
 def init(db_path: str | None = None, retention_days: int | None = None):
@@ -132,9 +134,14 @@ def record_log(request_id: str, slug: str, level: str, message: str):
 
 
 def _flush_logs(batch: list[tuple]):
+    global _logs_purge_before
     if not batch or _conn is None:
         return
     with _lock:
+        if _logs_purge_before:
+            batch = [item for item in batch if item[0] >= _logs_purge_before]
+        if not batch:
+            return
         _conn.executemany(
             "INSERT INTO logs (ts, request_id, slug, level, message) VALUES (?, ?, ?, ?, ?)",
             batch,
@@ -143,9 +150,14 @@ def _flush_logs(batch: list[tuple]):
 
 
 def _flush(batch: list[tuple]):
+    global _metrics_purge_before
     if not batch or _conn is None:
         return
     with _lock:
+        if _metrics_purge_before:
+            batch = [item for item in batch if item[0] >= _metrics_purge_before]
+        if not batch:
+            return
         _conn.executemany(
             "INSERT INTO metrics (ts, request_id, slug, method, path, latency_ms, error, error_type, cold_start) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -205,6 +217,7 @@ def _cleanup():
     with _lock:
         _conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff,))
         _conn.execute("DELETE FROM metrics_daily WHERE day < date(?, 'unixepoch')", (cutoff,))
+        _conn.execute("DELETE FROM logs WHERE ts < ?", (cutoff,))
         _conn.commit()
     _last_cleanup = time.time()
 
@@ -455,6 +468,68 @@ def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         "errors": errors,
         "cold_starts": cold_starts,
     }
+
+
+def delete_metrics(days: int = 0, slug: str | None = None) -> dict[str, Any]:
+    """Delete metrics older than ``days`` (0 = all), optionally for one slug."""
+    global _metrics_purge_before
+    if _conn is None:
+        return {"deleted": 0, "metrics": 0, "daily": 0}
+    days = max(0, days)
+    now = time.time()
+    cutoff = now - days * 86400
+    cutoff_day = time.strftime("%Y-%m-%d", time.gmtime(cutoff))
+    with _lock:
+        _metrics_purge_before = max(_metrics_purge_before, cutoff)
+        if days > 0:
+            sql = "DELETE FROM metrics WHERE ts < ?"
+            params: list[Any] = [cutoff]
+            daily_sql = "DELETE FROM metrics_daily WHERE day < ?"
+            daily_params: list[Any] = [cutoff_day]
+        else:
+            sql = "DELETE FROM metrics WHERE 1=1"
+            params = []
+            daily_sql = "DELETE FROM metrics_daily WHERE 1=1"
+            daily_params = []
+        if slug:
+            sql += " AND slug = ?"
+            params.append(slug)
+            daily_sql += " AND slug = ?"
+            daily_params.append(slug)
+        metrics_deleted = max(0, _conn.execute(sql, params).rowcount)
+        daily_deleted = max(0, _conn.execute(daily_sql, daily_params).rowcount)
+        _conn.commit()
+    return {
+        "deleted": metrics_deleted + daily_deleted,
+        "metrics": metrics_deleted,
+        "daily": daily_deleted,
+        "days": days,
+        "slug": slug or "",
+    }
+
+
+def delete_logs(days: int = 0, slug: str | None = None) -> dict[str, Any]:
+    """Delete lambda logs older than ``days`` (0 = all), optionally for one slug."""
+    global _logs_purge_before
+    if _conn is None:
+        return {"deleted": 0, "logs": 0}
+    days = max(0, days)
+    now = time.time()
+    cutoff = now - days * 86400
+    with _lock:
+        _logs_purge_before = max(_logs_purge_before, cutoff)
+        if days > 0:
+            sql = "DELETE FROM logs WHERE ts < ?"
+            params: list[Any] = [cutoff]
+        else:
+            sql = "DELETE FROM logs WHERE 1=1"
+            params = []
+        if slug:
+            sql += " AND slug = ?"
+            params.append(slug)
+        deleted = max(0, _conn.execute(sql, params).rowcount)
+        _conn.commit()
+    return {"deleted": deleted, "logs": deleted, "days": days, "slug": slug or ""}
 
 
 def close():

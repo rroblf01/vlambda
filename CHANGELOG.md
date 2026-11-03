@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-03
+
+### Added
+- Pre-warmed fork supervisor pool: each supervisor imports Python once and forks a fresh, Landlock + seccomp confined child per invocation.
+
+### Changed
+- Docker uses `VLAMBDA_SANDBOX=fork` by default. The per-invocation process is still fresh, but Python startup is no longer paid on every request.
+- Latency target for a trivial sandboxed invocation is single-digit milliseconds.
+
 ## [0.2.4] - 2026-11-03
 
 ### Fixed
@@ -209,7 +218,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
-[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/rroblf01/vlambda/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/rroblf01/vlambda/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/rroblf01/vlambda/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/rroblf01/vlambda/compare/v0.2.1...v0.2.2

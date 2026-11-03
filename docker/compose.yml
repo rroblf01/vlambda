@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: Dockerfile
       args:
-        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-0.2.4}
+        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-0.3.0}
     image: ghcr.io/rroblf01/vlambda:latest
     restart: unless-stopped
     ports:
@@ -16,7 +16,7 @@ services:
       VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:?set VLAMBDA_ADMIN_TOKEN}
       VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
       VLAMBDA_REGISTRATION: ${VLAMBDA_REGISTRATION:-1}
-      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-landlock}
+      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-fork}
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 256

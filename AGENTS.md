@@ -53,10 +53,10 @@ Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon t
 ## Docker
 - `Dockerfile` installs vlambda from PyPI; `Dockerfile.dev` builds the local wheel.
 - Both use uv to create a free-threaded venv and run vlambda directly on port 8080 (no gofly; Dokploy handles TLS and the proxy).
-- Each invocation runs in a fresh Landlock + seccomp sandbox: filesystem allow-list, hidden `/data` and `/proc`, no network or cross-process signals, rlimits. Set `VLAMBDA_SANDBOX=landlock`; no Docker security flags or host sysctl changes are required (kernel >= 5.13).
+- Each invocation runs in a fresh Landlock + seccomp child forked from a pre-warmed supervisor (`VLAMBDA_SANDBOX=fork`): filesystem allow-list, hidden `/data` and `/proc`, no network or cross-process signals, rlimits. No Docker security flags or host sysctl changes are required (kernel >= 5.13).
 - The container speaks HTTP on port 8080; TLS is terminated by Dokploy or another proxy.
 - Registration is open by default for the toy deployment; set `VLAMBDA_REGISTRATION=0` to close it, then create users with `POST /admin/users` and `X-Admin-Token`.
-- `VLAMBDA_SANDBOX=landlock` (Docker default) runs each invocation in a fresh Landlock + seccomp process. `nsjail` and `process` are optional modes.
+- `VLAMBDA_SANDBOX=fork` (Docker default) forks a fresh Landlock + seccomp child from a pre-warmed supervisor. `landlock`, `nsjail` and `process` are optional modes.
 - Reset: `python -m vlambda reset --yes --url http://127.0.0.1:8080 --token $VLAMBDA_ADMIN_TOKEN`.
 - See `docker/README.md`.
 

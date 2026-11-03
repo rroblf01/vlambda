@@ -79,6 +79,47 @@ def _sandbox_args(argv: list[str]) -> tuple[bool, list[str], list[str], int]:
     return enabled, read_paths, rw_paths, cpu_sec
 
 
+def handle_payload(req: dict) -> dict:
+    """Execute one request payload and return the protocol envelope."""
+    _current_logs.clear()
+    try:
+        code = req.get("code", "")
+        method = req.get("method", "GET")
+        path = req.get("path", "/")
+        query = req.get("query_string", "")
+        body = base64.b64decode(req.get("body_b64", "")) if req.get("body_b64") else b""
+        vendor_dir = req.get("vendor_dir", "")
+        if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
+            sys.path.insert(0, vendor_dir)
+        if req.get("kind") == "project":
+            result = _execute_project(
+                req.get("project_dir", ""), req.get("entrypoint", "main.py"),
+                method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
+            )
+        else:
+            result = _execute(code, method, path, query, body, req.get("request_id", ""), req.get("slug", ""))
+        if isinstance(result, str):
+            payload = result
+        elif isinstance(result, bytes):
+            payload = result.decode("utf-8", "replace")
+        elif isinstance(result, (dict, list, tuple)):
+            import json as _json
+
+            def _default(value):
+                if isinstance(value, (bytes, bytearray)):
+                    return bytes(value).decode("utf-8", "replace")
+                if isinstance(value, set):
+                    return list(value)
+                return str(value)
+
+            payload = _json.dumps(result, default=_default)
+        else:
+            payload = str(result)
+        return {"ok": True, "payload": payload, "logs": list(_current_logs)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "logs": list(_current_logs)}
+
+
 def main() -> None:
     sandboxed, read_paths, rw_paths, cpu_sec = _sandbox_args(sys.argv[1:])
     if sandboxed:
@@ -93,44 +134,12 @@ def main() -> None:
         line = line.strip()
         if not line:
             continue
-        _current_logs.clear()
         try:
             req = json.loads(line)
-            code = req.get("code", "")
-            method = req.get("method", "GET")
-            path = req.get("path", "/")
-            query = req.get("query_string", "")
-            body = base64.b64decode(req.get("body_b64", "")) if req.get("body_b64") else b""
-            vendor_dir = req.get("vendor_dir", "")
-            if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
-                sys.path.insert(0, vendor_dir)
-            if req.get("kind") == "project":
-                result = _execute_project(
-                    req.get("project_dir", ""), req.get("entrypoint", "main.py"),
-                    method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
-                )
-            else:
-                result = _execute(code, method, path, query, body, req.get("request_id",""), req.get("slug",""))
-            if isinstance(result, str):
-                payload = result
-            elif isinstance(result, bytes):
-                payload = result.decode("utf-8", "replace")
-            elif isinstance(result, (dict, list, tuple)):
-                import json as _json
-
-                def _default(value):
-                    if isinstance(value, (bytes, bytearray)):
-                        return bytes(value).decode("utf-8", "replace")
-                    if isinstance(value, set):
-                        return list(value)
-                    return str(value)
-
-                payload = _json.dumps(result, default=_default)
-            else:
-                payload = str(result)
-            print(json.dumps({"ok": True, "payload": payload, "logs": _current_logs}), flush=True)
         except Exception as e:
-            print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "logs": _current_logs}), flush=True)
+            print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "logs": []}), flush=True)
+            continue
+        print(json.dumps(handle_payload(req)), flush=True)
 
 
 if __name__ == "__main__":

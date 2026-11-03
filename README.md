@@ -92,9 +92,9 @@ token with `DELETE /tokens/<id>`. Tokens do not expire.
 
 The repository includes a production image (`Dockerfile`, installs from PyPI) and
 a development image (`Dockerfile.dev`, builds the local wheel). Both use a
-free-threaded Python 3.14 venv, run each invocation in a Landlock + seccomp
-sandbox and expose plain HTTP on port `8080`; Dokploy (or another proxy) handles
-TLS and the public domain.
+free-threaded Python 3.14 venv, a pre-warmed fork supervisor and a fresh
+Landlock + seccomp child per invocation, and expose plain HTTP on port `8080`;
+Dokploy (or another proxy) handles TLS and the public domain.
 
 The sandbox needs no extra Docker flags, capabilities or host sysctl changes.
 It requires a Linux kernel with Landlock (5.13+; Ubuntu 22.04+, Debian 12+).

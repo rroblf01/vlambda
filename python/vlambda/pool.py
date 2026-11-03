@@ -430,6 +430,136 @@ class ProcessPool:
             worker.stop()
 
 
+class ForkWorker:
+    """A pre-warmed supervisor that forks one sandboxed child per request."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc = None
+        self._start()
+
+    def _start(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = _runner_env()
+        env["HOME"] = "/tmp"
+        env["TMPDIR"] = "/tmp"
+        self._proc = subprocess.Popen(
+            [sys.executable, "-m", "vlambda.forkd"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            cwd=root,
+            env=env,
+        )
+
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+        payload = {
+            "kind": "code",
+            "code": code,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "vendor_dir": vendor_dir or "",
+            "request_id": request_id or "",
+            "slug": slug or "",
+            "timeout": timeout,
+        }
+        return self._call(payload, timeout)
+
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+        payload = {
+            "kind": "project",
+            "project_dir": project_dir,
+            "entrypoint": entrypoint,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "request_id": request_id or "",
+            "slug": slug or "",
+            "timeout": timeout,
+        }
+        return self._call(payload, timeout)
+
+    def _call(self, payload: dict, timeout: int):
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start()
+            try:
+                self._proc.stdin.write(json.dumps(payload) + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                self._start()
+                return {"error": "fork supervisor unavailable"}
+            ready, _, _ = select.select([self._proc.stdout], [], [], timeout + 4)
+            if not ready:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+                self._proc = None
+                return {"error": "invocation timeout"}
+            line = self._proc.stdout.readline()
+            if not line:
+                self._proc = None
+                return {"error": "fork supervisor exited"}
+            try:
+                envelope = json.loads(line)
+            except json.JSONDecodeError:
+                self._proc = None
+                return {"error": "invalid runner response"}
+            _record_runner_logs(envelope.get("logs"))
+            if envelope.get("ok"):
+                return envelope.get("payload")
+            return {"error": envelope.get("error", "execution failed")}
+
+    def stop(self):
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+
+
+class ForkPool:
+    def __init__(self, size: int):
+        self._workers = [ForkWorker() for _ in range(max(1, size))]
+        self._counter = itertools.count()
+        self._lock = threading.Lock()
+        self._max_workers = len(self._workers)
+
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        with self._lock:
+            workers = list(self._workers)
+        idx = next(self._counter) % len(workers)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        with self._lock:
+            workers = list(self._workers)
+        idx = next(self._counter) % len(workers)
+        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+
+    def _queue_depth(self) -> int:
+        return 0
+
+    def stats(self):
+        return {"workers": self._max_workers, "max_workers": self._max_workers, "queue_depth": 0, "mode": "fork"}
+
+    def stop(self):
+        for worker in self._workers:
+            worker.stop()
+
+
 def _landlock_read_paths() -> list[str]:
     """Paths the runner needs for Python and its own code."""
     candidates = ["/opt", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"]
@@ -663,7 +793,9 @@ class NsjailPool:
 
 
 _sandbox_mode = os.environ.get("VLAMBDA_SANDBOX", "").lower()
-if _sandbox_mode == "landlock":
+if _sandbox_mode in ("fork", "forklandlock"):
+    Pool = ForkPool
+elif _sandbox_mode == "landlock":
     Pool = LandlockPool
 elif _sandbox_mode == "nsjail" or os.environ.get("VLAMBDA_NSJAIL", "0") == "1":
     Pool = NsjailPool

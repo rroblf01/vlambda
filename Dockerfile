@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Production image: installs vlambda from PyPI and listens on port 8080.
 # TLS and the public reverse proxy are handled by Dokploy.
-ARG VLAMBDA_VERSION=0.2.4
+ARG VLAMBDA_VERSION=0.3.0
 ARG PYTHON_VERSION=3.14t
 
 FROM debian:bookworm-slim AS python-env
@@ -39,7 +39,7 @@ ENV PATH=/opt/venv/bin:$PATH \
     VLAMBDA_PROJECTS_DIR=/data/projects \
     VLAMBDA_PACKAGES_DIR=/data/packages \
     VLAMBDA_CACHE_DIR=/data/cache \
-    VLAMBDA_SANDBOX=landlock \
+    VLAMBDA_SANDBOX=fork \
     VLAMBDA_REGISTRATION=1 \
     VLAMBDA_COROUTINES=4 \
     VLAMBDA_MAX_BODY=1048576 \

@@ -419,6 +419,75 @@ def test_landlock_sandbox():
         stop_server()
 
 
+
+def test_fork_sandbox():
+    try:
+        from vlambda.sandbox_os import sandbox_supported
+        import ctypes.util
+        if not sandbox_supported() or not ctypes.util.find_library("seccomp"):
+            return
+    except Exception:
+        return
+    stop_server()
+    start_server({
+        "VLAMBDA_SANDBOX": "fork",
+        "VLAMBDA_SECRET": "test-secret",
+        "VLAMBDA_COROUTINES": "2",
+        "VLAMBDA_TIMEOUT": "5",
+    })
+    try:
+        token, slug = _upload_project("fork", {
+            "main.py": (
+                "import os, threading\n"
+                "def handler(request):\n"
+                "    out = {}\n"
+                "    for name, fn in (\n"
+                "        ('data', lambda: os.listdir('/data')),\n"
+                "        ('db', lambda: open('/data/db/vlambda.db', 'rb').read(1)),\n"
+                "        ('proc', lambda: open('/proc/1/environ', 'rb').read()),\n"
+                "        ('kill', lambda: os.kill(1, 0)),\n"
+                "        ('fork', lambda: os.fork()),\n"
+                "        ('subprocess', lambda: __import__('subprocess').run(['/bin/true'])),\n"
+                "    ):\n"
+                "        try:\n"
+                "            fn(); out[name] = 'ok'\n"
+                "        except Exception as e:\n"
+                "            out[name] = type(e).__name__\n"
+                "    request.log('fork log line')\n"
+                "    values = []\n"
+                "    thread = threading.Thread(target=lambda: values.append(1))\n"
+                "    thread.start(); thread.join()\n"
+                "    out['thread'] = values\n"
+                "    out['pid'] = os.getpid()\n"
+                "    return out\n"
+            ),
+        })
+        pids = []
+        for _ in range(3):
+            status, body = req("GET", f"/f/{slug}")
+            assert status == 200, body
+            assert body.get("data") in ("PermissionError", "FileNotFoundError"), body
+            assert body.get("db") in ("PermissionError", "FileNotFoundError"), body
+            assert body.get("proc") == "PermissionError", body
+            assert body.get("kill") == "PermissionError", body
+            assert body.get("fork") == "PermissionError", body
+            assert body.get("subprocess") == "PermissionError", body
+            assert body.get("thread") == [1], body
+            pids.append(body.get("pid"))
+        assert len(set(pids)) == 3, pids
+        deadline = time.time() + 4
+        logs = {}
+        while time.time() < deadline:
+            status, logs = req("GET", f"/logs/history?days=1&slug={slug}", token=token)
+            assert status == 200
+            if len(logs.get("items", [])) >= 3:
+                break
+            time.sleep(0.3)
+        assert logs.get("count", 0) >= 3, logs
+    finally:
+        stop_server()
+
+
 def test_async_task():
     token, slug = test_create_invoke()
     status, body = req("POST", f"/async/{slug}")
@@ -761,6 +830,7 @@ if __name__ == "__main__":
              test_isolated_projects,
              test_nsjail_sandbox,
              test_landlock_sandbox,
+             test_fork_sandbox,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,

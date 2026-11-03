@@ -5,17 +5,17 @@ Two images are provided:
 - `Dockerfile`: installs `vlambda` from PyPI (production).
 - `Dockerfile.dev`: builds a wheel from this checkout with vcraft (development).
 
-Both use a free-threaded Python 3.14 venv created with uv, run each invocation
-in a Landlock + seccomp sandbox and expose plain HTTP on port `8080`. TLS and the
-public reverse proxy are handled by Dokploy or the platform in front of the
-container.
+Both use a free-threaded Python 3.14 venv created with uv, a pre-warmed fork
+supervisor and a fresh Landlock + seccomp child per invocation, and expose plain
+HTTP on port `8080`. TLS and the public reverse proxy are handled by Dokploy or
+the platform in front of the container.
 
 ## Build
 
 PyPI image:
 
 ```bash
-docker build --build-arg VLAMBDA_VERSION=0.2.4 -t vlambda:latest .
+docker build --build-arg VLAMBDA_VERSION=0.3.0 -t vlambda:latest .
 ```
 
 Local development image:

@@ -14,7 +14,7 @@ services:
       VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:-dev-admin}
       VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
       VLAMBDA_REGISTRATION: ${VLAMBDA_REGISTRATION:-1}
-      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-landlock}
+      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-fork}
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 256

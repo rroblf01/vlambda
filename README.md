@@ -22,7 +22,7 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **Auth** — JWT-based authentication with per-user ownership
 - **Web UI** — Dashboard for managing lambdas, code editor, metrics
 - **Async invocation** — Fire-and-forget with task tracking
-- **Sandbox** — Restricted Python builtins, blocked dangerous modules
+- **Sandbox** — nsjail namespaces in Docker, plus restricted Python builtins and blocked modules
 - **Metrics** — Prometheus-compatible + Chart.js dashboard
 - **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
 - **Naming** — Human-readable names for lambdas
@@ -92,8 +92,13 @@ token with `DELETE /tokens/<id>`. Tokens do not expire.
 
 The repository includes a production image (`Dockerfile`, installs from PyPI) and
 a development image (`Dockerfile.dev`, builds the local wheel). Both use a
-free-threaded Python 3.14 venv and expose plain HTTP on port `8080`; Dokploy (or
-another proxy) handles TLS and the public domain.
+free-threaded Python 3.14 venv, run each invocation in nsjail and expose plain
+HTTP on port `8080`; Dokploy (or another proxy) handles TLS and the public
+domain.
+
+nsjail needs unprivileged user namespaces, so the container must run with
+`--security-opt seccomp=unconfined` (nsjail applies its own seccomp policy to
+the sandbox) or an equivalent custom profile. The compose files already set it.
 
 ```bash
 export VLAMBDA_SECRET="$(openssl rand -hex 32)"
@@ -237,18 +242,18 @@ Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `fun
 
 ### Security
 
-The Python sandbox is defense-in-depth, **not a hard security boundary**. It
-restricts builtins and imports and strips secrets from runner processes. Code
-lambdas and, when `VLAMBDA_ISOLATE=1`, projects run in separate runner
-processes, but all share the container filesystem and network.
+User code runs inside nsjail with a separate user, PID, mount and network
+namespace. The sandbox sees only `/opt` and the current project/vendor (read-only),
+has no access to `/data`, cannot read the server's `/proc`, and has no network.
+Resource limits and a seccomp deny-list are also applied. The server process and
+the database stay outside the sandbox.
 
 The Docker image keeps public registration open by default for toy deployments.
 Set `VLAMBDA_REGISTRATION=0` to close it and create users with
-`POST /admin/users` instead. Registration is not a security boundary: a daily
-data reset removes state but does not prevent code execution in the container.
-Do not keep valuable secrets in this deployment, and add OS-level isolation
-(nsjail, gVisor, Firecracker, or one container per tenant) before accepting
-untrusted code.
+`POST /admin/users` instead. A daily data reset removes state, but it does not
+undo a kernel-level escape. Keep this deployment disposable and do not store
+valuable secrets in it; for stronger isolation use gVisor, Firecracker or one
+container per tenant.
 
 ## Web UI
 

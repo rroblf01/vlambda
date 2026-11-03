@@ -17,6 +17,7 @@ import base64
 import select
 import subprocess
 import shutil
+import tempfile
 from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
@@ -197,35 +198,89 @@ class InProcessPool:
 
 
 def _runner_command():
-    """Return the command used to start an isolated runner process."""
-    python = sys.executable
-    if os.environ.get("VLAMBDA_NSJAIL", "0") != "1":
-        return [python, "-m", "vlambda.runner"]
-    nsjail = shutil.which("nsjail")
-    if not nsjail:
-        return [python, "-m", "vlambda.runner"]
-    extra = os.environ.get("VLAMBDA_NSJAIL_ARGS", "").split()
-    return [
-        nsjail,
-        "--mode", "o",
-        "--chroot", "/",
-        "--disable_clone_newnet",
-        "--disable_proc",
-        "--rlimit_as", os.environ.get("VLAMBDA_NSJAIL_AS_MB", "80"),
-        "--rlimit_cpu", os.environ.get("VLAMBDA_NSJAIL_CPU", "5"),
-        "--rlimit_nofile", "64",
-        "--rlimit_nproc", "16",
-        "--time_limit", os.environ.get("VLAMBDA_NSJAIL_TIME", "5"),
-        "--tmpfs", "/tmp",
-        *extra,
-        "--",
-        python, "-m", "vlambda.runner",
+    """Return the command used to start a persistent runner process."""
+    return [sys.executable, "-m", "vlambda.runner"]
+
+
+_NSJAIL_SECCOMP = (
+    "POLICY vlambda { DENY { mount, umount, pivot_root, chroot, setns, unshare, "
+    "ptrace, process_vm_readv, process_vm_writev, bpf, perf_event_open, "
+    "keyctl, add_key, request_key, kexec_load, kexec_file_load, reboot, "
+    "swapon, swapoff, init_module, finit_module, delete_module, "
+    "open_by_handle_at, name_to_handle_at, userfaultfd, io_uring_setup, "
+    "io_uring_enter, io_uring_register, acct, quotactl, syslog, adjtimex, "
+    "clock_settime, settimeofday, sethostname, setdomainname, vhangup, "
+    "nfsservctl, open_tree, move_mount, fsopen, fsconfig, fsmount, fspick, "
+    "mount_setattr, setuid, setgid, setreuid, setregid, setresuid, setresgid, "
+    "setgroups, capset } } USE vlambda DEFAULT ALLOW"
+)
+
+
+def _nsjail_config(project_dir: str = "", vendor_dir: str = "") -> str:
+    mounts = [
+        'mount { src: "/" dst: "/" is_bind: true rw: false }',
+        'mount { src: "/opt/python" dst: "/opt/python" is_bind: true rw: false }',
+        'mount { src: "/opt/venv" dst: "/opt/venv" is_bind: true rw: false }',
     ]
+    if project_dir:
+        mounts.append(f'mount {{ src: "{project_dir}" dst: "/work" is_bind: true rw: false }}')
+    if vendor_dir:
+        mounts.append(f'mount {{ src: "{vendor_dir}" dst: "/vendor" is_bind: true rw: false }}')
+    # Hide the server's data/secret-bearing paths after binding what the runner needs.
+    for hidden in ("/data", "/home", "/root", "/run", "/sys", "/proc"):
+        mounts.append(f'mount {{ src: "/opt/empty" dst: "{hidden}" is_bind: true rw: false }}')
+    mounts.extend([
+        'mount { dst: "/tmp" fstype: "tmpfs" rw: true }',
+        'mount { dst: "/dev/shm" fstype: "tmpfs" rw: true }',
+    ])
+    return f"""name: "vlambda"
+mode: ONCE
+hostname: "vlambda"
+cwd: "/tmp"
+clone_newnet: true
+clone_newuser: true
+clone_newns: true
+clone_newpid: true
+clone_newipc: true
+clone_newuts: true
+clone_newcgroup: false
+iface_no_lo: true
+mount_proc: false
+keep_caps: false
+rlimit_as: {os.environ.get("VLAMBDA_NSJAIL_AS_MB", "256")}
+rlimit_cpu: {os.environ.get("VLAMBDA_NSJAIL_CPU", "5")}
+rlimit_nofile: 64
+rlimit_nproc: 16
+rlimit_fsize: 16
+time_limit: {os.environ.get("VLAMBDA_NSJAIL_TIME", "5")}
+max_cpus: 1
+uidmap {{
+  inside_id: "65534"
+  outside_id: ""
+  count: 1
+}}
+gidmap {{
+  inside_id: "65534"
+  outside_id: ""
+  count: 1
+}}
+{"\n".join(mounts)}
+seccomp_string: "{_NSJAIL_SECCOMP}"
+exec_bin {{
+  path: "/opt/venv/bin/python"
+  arg: "-m"
+  arg: "vlambda.runner"
+}}
+"""
 
 
 def _runner_env() -> dict[str, str]:
     """Environment for lambda runners; server configuration must not leak into user code."""
-    return {key: value for key, value in os.environ.items() if not key.startswith("VLAMBDA_")}
+    env = {key: value for key, value in os.environ.items() if not key.startswith("VLAMBDA_")}
+    env["HOME"] = "/tmp"
+    env["TMPDIR"] = "/tmp"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
 
 
 class ProcessWorker:
@@ -351,7 +406,113 @@ class ProcessPool:
             worker.stop()
 
 
-if os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
+class NsjailWorker:
+    """Run one invocation in a fresh nsjail sandbox."""
+
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        vendor = vendor_dir or ""
+        if vendor and not os.path.isdir(vendor):
+            vendor = ""
+        payload = {
+            "kind": "code",
+            "code": code,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "vendor_dir": "/vendor" if vendor else "",
+            "request_id": request_id or "",
+            "slug": slug or "",
+        }
+        return self._run(payload, timeout, vendor_dir=vendor)
+
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        payload = {
+            "kind": "project",
+            "project_dir": "/work",
+            "entrypoint": entrypoint,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "request_id": request_id or "",
+            "slug": slug or "",
+        }
+        return self._run(payload, timeout, project_dir=project_dir)
+
+    def _run(self, payload: dict, timeout: int = 0, project_dir: str = "", vendor_dir: str = ""):
+        nsjail = shutil.which("nsjail") or "/usr/local/bin/nsjail"
+        if not os.path.exists(nsjail):
+            return {"error": "sandbox unavailable"}
+        timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+        config_path = ""
+        try:
+            fd, config_path = tempfile.mkstemp(prefix="vlambda-", suffix=".cfg", dir="/tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_nsjail_config(project_dir, vendor_dir))
+            proc = subprocess.Popen(
+                [nsjail, "--config", config_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_runner_env(),
+            )
+            try:
+                out, err = proc.communicate(json.dumps(payload) + "\n", timeout=timeout + 2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return {"error": "invocation timeout"}
+        except Exception as e:
+            print(f"nsjail setup failed: {e}", file=sys.stderr, flush=True)
+            return {"error": "sandbox failed"}
+        finally:
+            if config_path:
+                try:
+                    os.unlink(config_path)
+                except OSError:
+                    pass
+        lines = [line for line in out.splitlines() if line.strip()]
+        if not lines:
+            if err.strip():
+                print(f"nsjail error: {err.strip()[-2000:]}", file=sys.stderr, flush=True)
+            return {"error": "sandbox exited"}
+        try:
+            envelope = json.loads(lines[-1])
+        except json.JSONDecodeError:
+            return {"error": "invalid runner response"}
+        if envelope.get("ok"):
+            return envelope.get("payload")
+        return {"error": envelope.get("error", "execution failed")}
+
+
+class NsjailPool:
+    def __init__(self, size: int):
+        self._sem = threading.BoundedSemaphore(max(1, size))
+        self._max_workers = max(1, size)
+
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        with self._sem:
+            return NsjailWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        with self._sem:
+            return NsjailWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+
+    def _queue_depth(self) -> int:
+        return 0
+
+    def stats(self):
+        return {"workers": self._max_workers, "max_workers": self._max_workers, "queue_depth": 0, "mode": "nsjail"}
+
+    def stop(self):
+        pass
+
+
+if os.environ.get("VLAMBDA_NSJAIL", "0") == "1":
+    Pool = NsjailPool
+elif os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
     Pool = ProcessPool
 else:
     Pool = InProcessPool

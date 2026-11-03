@@ -5,9 +5,9 @@ Two images are provided:
 - `Dockerfile`: installs `vlambda` from PyPI (production).
 - `Dockerfile.dev`: builds a wheel from this checkout with vcraft (development).
 
-Both use a free-threaded Python 3.14 venv created with uv and expose plain HTTP
-on port `8080`. TLS and the public reverse proxy are handled by Dokploy or the
-platform in front of the container.
+Both use a free-threaded Python 3.14 venv created with uv, run each invocation
+in nsjail and expose plain HTTP on port `8080`. TLS and the public reverse proxy
+are handled by Dokploy or the platform in front of the container.
 
 ## Build
 
@@ -43,6 +43,18 @@ With Dokploy, create an application from the image, point the domain to the
 container port `8080`, and set `VLAMBDA_SECRET` and `VLAMBDA_ADMIN_TOKEN` in the
 environment. Dokploy handles TLS certificates.
 
+nsjail needs unprivileged user namespaces. Run the container with
+`seccomp=unconfined` (nsjail applies its own seccomp policy inside the sandbox)
+or an equivalent custom profile:
+
+```bash
+docker run --security-opt seccomp=unconfined ...
+```
+
+In Dokploy, set the equivalent security option in the application's advanced
+settings. If the host blocks user namespaces and nsjail cannot start, set
+`VLAMBDA_NSJAIL=0` only as a temporary, less secure fallback.
+
 Public registration is open by default for toy deployments. To close it, set
 `VLAMBDA_REGISTRATION=0` and create users with the admin token:
 
@@ -52,8 +64,9 @@ curl -X POST https://your-domain/admin/users \
   -d "alice:change-me"
 ```
 
-A daily reset removes users and lambdas, but it does not make arbitrary code
-execution safe. Keep only disposable data and secrets in this deployment.
+A daily reset removes users and lambdas. Keep only disposable data and secrets
+in this deployment, and rotate `VLAMBDA_SECRET` and `VLAMBDA_ADMIN_TOKEN` if you
+want a compromise to expire with the reset.
 
 ## Reset
 
@@ -81,9 +94,11 @@ is not reachable, it falls back to deleting the data directly.
 ## Verified
 
 - `GET /health` and `/ready` on port `8080`.
-- Lambda invocations run in isolated runner processes.
-- Infinite-loop lambda killed after the configured timeout; the next request succeeds.
-- Memory-hog lambda returns `MemoryError`; the next request succeeds.
+- Code and project lambdas run inside nsjail.
+- Project code cannot see `/data`, cannot read `/proc/1/environ`, and cannot
+  open network connections.
+- The sandbox runs as UID/GID 65534 without `VLAMBDA_*` environment variables.
+- Infinite-loop lambda killed at the time limit; the next request succeeds.
 - Online reset via `/admin/reset` empties lambdas and users.
 - PyPI package installation into the per-lambda vendor directory.
 
@@ -92,15 +107,18 @@ is not reachable, it falls back to deleting the data directly.
 - Docker: 512 MB RAM, 1 CPU, 256 PIDs.
 - vlambda: 4 workers, 400 MB soft limit, 5 s timeout, 20 req/s per IP.
 - Max lambdas per user: `VLAMBDA_MAX_LAMBDAS` (default 20).
-- Lambdas run in separate runner processes; the container remains the outer
-  security and resource boundary.
+- Lambdas run in per-invocation nsjail sandboxes; the container remains the
+  outer security and resource boundary.
 
 ## Security
 
-This image is intended for a disposable toy deployment. Registration is open by
-default, and runner processes no longer inherit `VLAMBDA_*` configuration or
-secrets. Code lambdas and projects still share the container filesystem and
-network, so a daily reset only removes data; it does not prevent code execution
-during the day. Keep disposable secrets and no valuable data in this
-deployment, or add an OS-level sandbox (nsjail, gVisor, Firecracker or one
-container per tenant).
+Each invocation runs in nsjail with a separate user, PID, mount and network
+namespace. The sandbox sees only `/opt` and the current project/vendor
+(read-only), has no `/data`, no access to the server's `/proc`, and no network.
+It also gets rlimits and a seccomp deny-list. The server and database stay
+outside the sandbox.
+
+This is suitable for a disposable toy deployment with open registration, but it
+is not a hypervisor. Keep the host and image updated, keep only disposable
+secrets, and use gVisor, Firecracker or one container per tenant if you need a
+stronger boundary.

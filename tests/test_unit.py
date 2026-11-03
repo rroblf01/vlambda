@@ -95,6 +95,23 @@ def test_runner_env_strips_secrets(monkeypatch):
     assert not any(key.startswith("VLAMBDA_") for key in env)
 
 
+def test_nsjail_config():
+    from vlambda.pool import _nsjail_config
+    cfg = _nsjail_config("/data/projects/x", "/data/packages/y")
+    assert "clone_newuser: true" in cfg
+    assert "clone_newpid: true" in cfg
+    assert "clone_newnet: true" in cfg
+    assert "iface_no_lo: true" in cfg
+    assert "mount_proc: false" in cfg
+    assert 'src: "/data/projects/x" dst: "/work"' in cfg
+    assert 'src: "/data/packages/y" dst: "/vendor"' in cfg
+    assert 'src: "/opt/empty" dst: "/data"' in cfg
+    assert 'src: "/opt/empty" dst: "/proc"' in cfg
+    assert "uidmap" in cfg and 'inside_id: "65534"' in cfg
+    assert "DENY {" in cfg and "mount" in cfg
+    assert 'path: "/opt/venv/bin/python"' in cfg
+
+
 def test_metrics_persistence(tmp_path):
     db = str(tmp_path / "metrics.db")
     metrics_init(db, 1)

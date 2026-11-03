@@ -308,6 +308,49 @@ def test_project_zip():
     status, body = req("DELETE", f"/vlambda/{slug}", token=token)
     assert status == 200
 
+def test_nsjail_sandbox():
+    import shutil
+    if not shutil.which("nsjail"):
+        return
+    stop_server()
+    start_server({
+        "VLAMBDA_NSJAIL": "1",
+        "VLAMBDA_ISOLATE": "1",
+        "VLAMBDA_SECRET": "test-secret",
+        "VLAMBDA_COROUTINES": "2",
+    })
+    try:
+        token, slug = _upload_project("nsjail", {
+            "main.py": (
+                "import os, socket\n"
+                "def handler(request):\n"
+                "    out = {'data': os.listdir('/data'), 'uid': os.getuid()}\n"
+                "    out['db'] = os.path.exists('/data/db/vlambda.db')\n"
+                "    out['vl'] = [k for k in os.environ if k.startswith('VLAMBDA_')]\n"
+                "    try:\n"
+                "        open('/proc/1/environ', 'rb').read()\n"
+                "        out['proc'] = 'readable'\n"
+                "    except OSError:\n"
+                "        out['proc'] = 'blocked'\n"
+                "    try:\n"
+                "        s = socket.socket(); s.settimeout(1); s.connect(('1.1.1.1', 80))\n"
+                "        out['net'] = 'connected'\n"
+                "    except OSError:\n"
+                "        out['net'] = 'blocked'\n"
+                "    return out\n"
+            ),
+        })
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200 and body.get("uid") == 65534, body
+        assert body.get("data") == []
+        assert body.get("db") is False
+        assert body.get("vl") == []
+        assert body.get("proc") == "blocked"
+        assert body.get("net") == "blocked"
+    finally:
+        stop_server()
+
+
 def test_async_task():
     token, slug = test_create_invoke()
     status, body = req("POST", f"/async/{slug}")
@@ -638,6 +681,7 @@ if __name__ == "__main__":
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,
+             test_nsjail_sandbox,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /admin/users` for creating accounts with `X-Admin-Token` when registration is disabled.
 
 ### Changed
-- Docker images now run vlambda directly on port 8080; gofly and nsjail were removed because Dokploy terminates TLS and proxies requests.
+- Docker images now run vlambda directly on port 8080; gofly was removed because Dokploy terminates TLS and proxies requests.
 - Project handlers now run in the same runner pool as code lambdas, including separate processes when `VLAMBDA_ISOLATE=1`.
 - Docker images keep public registration open by default; set `VLAMBDA_REGISTRATION=0` to close it.
 
@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blocked additional escape-prone modules, including `posix`, `_socket`, `resource`, `fcntl` and `sqlite3`.
 - Container processes drop all capabilities and create data files with `umask 077`.
 - Project code no longer runs inside the server process.
+- Each invocation runs in nsjail with separate user, PID, mount and network namespaces, a read-only view without `/data` or the server `/proc`, no network, rlimits and a seccomp deny-list.
 
 ## [0.2.0] - 2026-11-03
 

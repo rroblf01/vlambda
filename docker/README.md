@@ -15,7 +15,7 @@ the platform in front of the container.
 PyPI image:
 
 ```bash
-docker build --build-arg VLAMBDA_VERSION=0.3.0 -t vlambda:latest .
+docker build --build-arg VLAMBDA_VERSION=0.4.0 -t vlambda:latest .
 ```
 
 Local development image:
@@ -107,6 +107,27 @@ it falls back to deleting the data directly.
 - Lambdas run in per-invocation Landlock + seccomp processes; the container
   remains the outer security and resource boundary. Expect a small cold start
   per invocation (fresh Python process).
+
+## gVisor
+
+Use the gVisor runtime for an outer isolation layer:
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.gvisor.yml up -d
+# or: docker run --runtime=runsc ...
+```
+
+`scripts/gvisor-smoke.sh` skips when `runsc` is not installed/registered. The
+internal per-invocation fork + Landlock + seccomp sandbox is unchanged.
+
+## Single-host HA
+
+`docker/compose.ha.yml` runs two replicas behind nginx with a shared local
+volume. Run it with `docker compose -f docker/compose.ha.yml up -d --build
+--scale vlambda=2`. The scheduler uses a database lease, async tasks are claimed
+with a lease, project GC only runs on the leader and `/shutdown` drains in-flight
+work. SQLite must stay on a local volume, not NFS. Multi-host HA requires an
+external database and is deferred.
 
 ## Security
 

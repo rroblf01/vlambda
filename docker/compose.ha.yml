@@ -1,0 +1,44 @@
+# Single-host HA example: two vlambda replicas behind nginx.
+# Both replicas share /data (local volume; do not use NFS) and SQLite WAL.
+services:
+  vlambda:
+    image: ghcr.io/rroblf01/vlambda:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    volumes:
+      - vlambda-ha-data:/data
+    environment:
+      VLAMBDA_SECRET: ${VLAMBDA_SECRET:?set VLAMBDA_SECRET}
+      VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:?set VLAMBDA_ADMIN_TOKEN}
+      VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
+      VLAMBDA_REGISTRATION: ${VLAMBDA_REGISTRATION:-1}
+      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-fork}
+      VLAMBDA_INSTANCE_ID: ${VLAMBDA_INSTANCE_ID:-}
+      VLAMBDA_DRAIN_TIMEOUT: ${VLAMBDA_DRAIN_TIMEOUT:-20}
+      VLAMBDA_TASK_LEASE: ${VLAMBDA_TASK_LEASE:-600}
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+
+  proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.ha.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - vlambda
+
+volumes:
+  vlambda-ha-data:

@@ -122,6 +122,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
     <a href="#" id="nav-playground" onclick="showView('playground');return false;">Playground</a>
     <a href="#" id="nav-metrics" onclick="showView('metrics');return false;">Metrics</a>
     <a href="#" id="nav-logs" onclick="showView('logs');return false;">Logs</a>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
     <a href="#" id="nav-system" onclick="showView('system');return false;">System</a>
     <a href="#" id="nav-theme" onclick="toggleTheme();return false;" style="margin-left:auto;">Theme</a>
     <a href="#" id="nav-logout" onclick="logout();return false;">Logout</a>
@@ -236,6 +237,10 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
               <div class="form-group" style="flex:1;"><label>Timeout</label><input id="edit-timeout" type="number"></div>
             </div>
             <div class="form-group"><label>Memory (MB)</label><input id="edit-memory" type="number"></div>
+            <div class="form-group"><label>OpenAPI summary</label><input id="edit-summary" maxlength="200"></div>
+            <div class="form-group"><label>OpenAPI tags (comma separated)</label><input id="edit-tags" maxlength="500"></div>
+            <div class="form-group"><label>OpenAPI description</label><textarea id="edit-description" rows="2" style="width:100%"></textarea></div>
+            <button class="btn btn-sm" onclick="saveMeta()">Save metadata</button>
             <div class="flex"><button class="btn btn-primary" onclick="saveCodeLambda()">Save</button><button class="btn" onclick="runCurrent()">Run</button></div>
           </div>
           <div class="card">
@@ -252,6 +257,26 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
               <input id="edit-kv-value" placeholder="value (JSON or text)" style="flex:1;">
               <input id="edit-kv-ttl" type="number" min="1" placeholder="TTL s" style="width:80px;">
               <button class="btn btn-sm" onclick="setKV()">Set</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Egress allow-list</h3>
+            <div class="form-group"><label>Hosts (one per line; *.example.com allowed)</label><textarea id="edit-egress" rows="3" style="width:100%"></textarea></div>
+            <button class="btn btn-sm" onclick="saveEgress()">Save egress</button>
+          </div>
+          <div class="card">
+            <h3>Schedules</h3>
+            <div id="edit-schedules-list" class="muted">—</div>
+            <div class="flex" style="margin-top:8px;flex-wrap:wrap;">
+              <input id="edit-schedule-name" placeholder="name" style="width:90px;">
+              <input id="edit-schedule-cron" placeholder="*/5 * * * *" style="flex:1;min-width:130px;">
+              <input id="edit-schedule-tz" placeholder="UTC" style="width:80px;">
+              <select id="edit-schedule-method" style="width:90px;"><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
+            </div>
+            <div class="flex" style="margin-top:6px;">
+              <input id="edit-schedule-path" placeholder="/schedule" value="/schedule" style="width:140px;">
+              <input id="edit-schedule-payload" placeholder="request body" style="flex:1;">
+              <button class="btn btn-sm" onclick="createSchedule()">Add</button>
             </div>
           </div>
           <div class="card">
@@ -329,6 +354,10 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
             </div>
           </div>
           <div class="form-group"><label>Entrypoint</label><input id="project-entry"></div>
+          <div class="form-group"><label>OpenAPI summary</label><input id="project-summary" maxlength="200"></div>
+          <div class="form-group"><label>OpenAPI tags (comma separated)</label><input id="project-tags" maxlength="500"></div>
+          <div class="form-group"><label>OpenAPI description</label><textarea id="project-description" rows="2" style="width:100%"></textarea></div>
+          <button class="btn btn-sm" onclick="saveMeta()">Save metadata</button>
           <div class="form-group"><label>Requirements</label><textarea id="project-reqs" rows="5" style="width:100%"></textarea></div>
           <div class="flex"><button class="btn btn-primary" onclick="saveProject()">Save</button><button class="btn" onclick="runProject()">Run</button><button class="btn" onclick="installPackages()">Install deps</button></div>
           <div id="project-packages-list" class="muted" style="margin-top:8px;">—</div>
@@ -347,6 +376,26 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
             <input id="project-kv-value" placeholder="value (JSON or text)" style="flex:1;">
             <input id="project-kv-ttl" type="number" min="1" placeholder="TTL s" style="width:80px;">
             <button class="btn btn-sm" onclick="setKV()">Set</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Egress allow-list</h3>
+          <div class="form-group"><label>Hosts (one per line; *.example.com allowed)</label><textarea id="project-egress" rows="3" style="width:100%"></textarea></div>
+          <button class="btn btn-sm" onclick="saveEgress()">Save egress</button>
+        </div>
+        <div class="card">
+          <h3>Schedules</h3>
+          <div id="project-schedules-list" class="muted">—</div>
+          <div class="flex" style="margin-top:8px;flex-wrap:wrap;">
+            <input id="project-schedule-name" placeholder="name" style="width:90px;">
+            <input id="project-schedule-cron" placeholder="*/5 * * * *" style="flex:1;min-width:130px;">
+            <input id="project-schedule-tz" placeholder="UTC" style="width:80px;">
+            <select id="project-schedule-method" style="width:90px;"><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
+          </div>
+          <div class="flex" style="margin-top:6px;">
+            <input id="project-schedule-path" placeholder="/schedule" value="/schedule" style="width:140px;">
+            <input id="project-schedule-payload" placeholder="request body" style="flex:1;">
+            <button class="btn btn-sm" onclick="createSchedule()">Add</button>
           </div>
         </div>
       </div>
@@ -898,6 +947,9 @@ async function editLambda(slug, kind) {
     await loadPackages();
     await loadEnv(slug);
     await loadKV(slug);
+    await loadEgress(slug);
+    await loadSchedules(slug);
+    await loadMeta(slug);
     flog('info', 'editing code lambda', { slug });
   } catch (e) { reportError('editor-alert', e); }
 }
@@ -1028,6 +1080,125 @@ async function deleteKV(key) {
   } catch (e) { reportError(kvPrefix() === 'project' ? 'project-alert' : 'editor-alert', e); }
 }
 
+function egressPrefix() { return currentKind === 'project' ? 'project' : 'edit'; }
+async function loadEgress(slug) {
+  const el = document.getElementById(egressPrefix() + '-egress');
+  if (!el) return;
+  try {
+    const data = await api('/vlambda/' + slug + '/egress');
+    el.value = (data.hosts || []).join('\n');
+  } catch (e) { flog('warn', 'egress load failed', e.message); }
+}
+async function saveEgress() {
+  const prefix = egressPrefix();
+  const el = document.getElementById(prefix + '-egress');
+  const hosts = (el.value || '').split('\n').map(x => x.trim()).filter(Boolean);
+  try {
+    await api('/vlambda/' + currentSlug + '/egress', {
+      method: 'PUT', headers: authHeaders(true), body: JSON.stringify({ hosts }),
+    });
+    showAlert(prefix === 'project' ? 'project-alert' : 'editor-alert', 'Egress allow-list saved', 'success');
+    await loadEgress(currentSlug);
+  } catch (e) { reportError(prefix === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+
+function schedulePrefix() { return currentKind === 'project' ? 'project' : 'edit'; }
+function scheduleDate(value) {
+  if (!value) return '—';
+  try { return new Date(value * 1000).toLocaleString(); } catch (e) { return String(value); }
+}
+async function loadSchedules(slug) {
+  const prefix = schedulePrefix();
+  const el = document.getElementById(prefix + '-schedules-list');
+  if (!el) return;
+  try {
+    const data = await api('/vlambda/' + slug + '/schedules');
+    const items = data.schedules || [];
+    el.innerHTML = items.length ? items.map(item =>
+      '<div class="flex-between" style="padding:3px 0;gap:8px;">' +
+        '<span class="mono" style="overflow:hidden;text-overflow:ellipsis;">' +
+          escapeHtml(item.name) + ' · ' + escapeHtml(item.cron) + ' · ' + escapeHtml(item.timezone) +
+          '<br><span class="muted">next ' + escapeHtml(scheduleDate(item.next_run)) +
+          ' · last ' + escapeHtml(scheduleDate(item.last_run)) +
+          (item.last_status ? ' (' + escapeHtml(item.last_status) + ')' : '') + '</span></span>' +
+        '<span class="flex">' +
+          '<button class="btn btn-sm" onclick="runSchedule(' + Number(item.id) + ')">Run</button>' +
+          '<button class="btn btn-sm" onclick="deleteSchedule(' + Number(item.id) + ')">Del</button>' +
+        '</span>' +
+      '</div>'
+    ).join('') : '<span class="muted">—</span>';
+  } catch (e) { flog('warn', 'schedules load failed', e.message); }
+}
+async function createSchedule() {
+  const prefix = schedulePrefix();
+  const value = id => (document.getElementById(prefix + '-' + id).value || '').trim();
+  const name = value('schedule-name');
+  const cron = value('schedule-cron');
+  if (!name || !cron) {
+    showAlert(prefix === 'project' ? 'project-alert' : 'editor-alert', 'Schedule name and cron are required', 'error');
+    return;
+  }
+  const payload = {
+    name, cron,
+    timezone: value('schedule-tz') || 'UTC',
+    method: document.getElementById(prefix + '-schedule-method').value,
+    path: value('schedule-path') || '/schedule',
+    payload: value('schedule-payload'),
+    enabled: true,
+  };
+  try {
+    await api('/vlambda/' + currentSlug + '/schedules', {
+      method: 'POST', headers: authHeaders(true), body: JSON.stringify(payload),
+    });
+    document.getElementById(prefix + '-schedule-name').value = '';
+    document.getElementById(prefix + '-schedule-cron').value = '';
+    document.getElementById(prefix + '-schedule-payload').value = '';
+    await loadSchedules(currentSlug);
+  } catch (e) { reportError(prefix === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+async function runSchedule(id) {
+  try {
+    await api('/vlambda/' + currentSlug + '/schedules/' + id + '/run', {
+      method: 'POST', headers: authHeaders(false),
+    });
+    await loadSchedules(currentSlug);
+  } catch (e) { reportError(schedulePrefix() === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+async function deleteSchedule(id) {
+  try {
+    await api('/vlambda/' + currentSlug + '/schedules/' + id, {
+      method: 'DELETE', headers: authHeaders(false),
+    });
+    await loadSchedules(currentSlug);
+  } catch (e) { reportError(schedulePrefix() === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+
+function metaPrefix() { return currentKind === 'project' ? 'project' : 'edit'; }
+async function loadMeta(slug) {
+  const prefix = metaPrefix();
+  try {
+    const data = await api('/vlambda/' + slug + '/meta');
+    document.getElementById(prefix + '-summary').value = data.summary || '';
+    document.getElementById(prefix + '-tags').value = data.tags || '';
+    document.getElementById(prefix + '-description').value = data.description || '';
+  } catch (e) { flog('warn', 'metadata load failed', e.message); }
+}
+async function saveMeta() {
+  const prefix = metaPrefix();
+  const payload = {
+    summary: document.getElementById(prefix + '-summary').value,
+    tags: document.getElementById(prefix + '-tags').value,
+    description: document.getElementById(prefix + '-description').value,
+  };
+  try {
+    await api('/vlambda/' + currentSlug + '/meta', {
+      method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload),
+    });
+    showAlert(prefix === 'project' ? 'project-alert' : 'editor-alert', 'Metadata saved', 'success');
+    await loadMeta(currentSlug);
+  } catch (e) { reportError(prefix === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+
 function parseEnvLines(text) {
   const out = {};
   (text || '').split('\n').forEach(line => {
@@ -1119,6 +1290,9 @@ async function openProject(slug) {
     await loadPackages();
     await loadEnv(slug);
     await loadKV(slug);
+    await loadEgress(slug);
+    await loadSchedules(slug);
+    await loadMeta(slug);
     flog('info', 'opened project', { slug, files: names.length });
   } catch (e) { reportError('project-alert', e); }
 }

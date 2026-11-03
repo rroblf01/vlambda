@@ -155,6 +155,63 @@ def cmd_kv(args):
     _print_response(status, {}, rb)
 
 
+def cmd_egress(args):
+    base = args.url.rstrip("/") + f"/vlambda/{args.slug}/egress"
+    if args.clear:
+        hosts = []
+    else:
+        hosts = args.set
+    if hosts is not None:
+        status, _, rb = _request(base, args.token, "PUT",
+                                 json.dumps({"hosts": hosts}).encode(),
+                                 {"Content-Type": "application/json"})
+    else:
+        status, _, rb = _request(base, args.token)
+    _print_response(status, {}, rb)
+
+
+def cmd_schedule(args):
+    if args.action in ("delete", "run", "runs") and not args.schedule_id:
+        raise SystemExit(f"vlambda: schedule {args.action} requires an id")
+    base = args.url.rstrip("/") + f"/vlambda/{args.slug}/schedules"
+    if args.action == "list":
+        status, _, rb = _request(base, args.token)
+    elif args.action == "create":
+        if not args.name or not args.cron:
+            raise SystemExit("vlambda: schedule create requires --name and --cron")
+        payload = {
+            "name": args.name,
+            "cron": args.cron,
+            "timezone": args.timezone,
+            "method": args.method,
+            "path": args.path,
+            "payload": args.payload,
+            "enabled": not args.disabled,
+        }
+        status, _, rb = _request(base, args.token, "POST", json.dumps(payload).encode(),
+                                 {"Content-Type": "application/json"})
+    elif args.action == "delete":
+        status, _, rb = _request(base + f"/{args.schedule_id}", args.token, "DELETE")
+    elif args.action == "run":
+        status, _, rb = _request(base + f"/{args.schedule_id}/run", args.token, "POST")
+    else:
+        status, _, rb = _request(base + f"/{args.schedule_id}/runs", args.token)
+    _print_response(status, {}, rb)
+
+
+def cmd_openapi(args):
+    status, _, body = _request(args.url.rstrip("/") + "/openapi.json", args.token)
+    if status >= 400:
+        _print_response(status, {}, body)
+        raise SystemExit(1)
+    if args.out:
+        with open(args.out, "wb") as handle:
+            handle.write(body)
+        print(args.out)
+    else:
+        _print_response(status, {}, body)
+
+
 def cmd_task(args):
     status, _, rb = _request(args.url.rstrip("/") + f"/task/{args.task_id}", args.token)
     _print_response(status, {}, rb)
@@ -210,6 +267,29 @@ def main(argv=None) -> int:
     kv.add_argument("--clear", action="store_true")
     kv.add_argument("--ttl", type=float, default=None)
     kv.set_defaults(func=cmd_kv)
+
+    egress = sub.add_parser("egress", help="read or replace the egress allow-list", parents=[common])
+    egress.add_argument("slug")
+    egress.add_argument("--set", action="append", help="allowed host (repeatable)")
+    egress.add_argument("--clear", action="store_true", help="remove every allowed host")
+    egress.set_defaults(func=cmd_egress)
+
+    schedule = sub.add_parser("schedule", help="manage cron schedules", parents=[common])
+    schedule.add_argument("action", choices=["list", "create", "delete", "run", "runs"])
+    schedule.add_argument("slug")
+    schedule.add_argument("schedule_id", nargs="?")
+    schedule.add_argument("--name", default="")
+    schedule.add_argument("--cron", default="")
+    schedule.add_argument("--timezone", default="UTC")
+    schedule.add_argument("--method", default="POST")
+    schedule.add_argument("--path", default="/schedule")
+    schedule.add_argument("--payload", default="")
+    schedule.add_argument("--disabled", action="store_true")
+    schedule.set_defaults(func=cmd_schedule)
+
+    openapi = sub.add_parser("openapi", help="export the OpenAPI document", parents=[common])
+    openapi.add_argument("--out", default="")
+    openapi.set_defaults(func=cmd_openapi)
 
     args = parser.parse_args(argv)
     if not args.token:

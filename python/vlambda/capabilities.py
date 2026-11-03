@@ -17,6 +17,23 @@ class CapabilityError(RuntimeError):
     pass
 
 
+class EgressResponse:
+    def __init__(self, status: int, headers: dict, body: bytes):
+        self.status = status
+        self.headers = headers
+        self.body = body
+
+    @property
+    def text(self) -> str:
+        return self.body.decode("utf-8", "replace")
+
+    def json(self):
+        return json.loads(self.body)
+
+    def __repr__(self):
+        return f"EgressResponse(status={self.status}, bytes={len(self.body)})"
+
+
 class CapabilityUnavailable(CapabilityError):
     pass
 
@@ -107,6 +124,31 @@ class CapabilityClient:
     def incr(self, key: str, amount: int | float = 1):
         return self._call("kv.incr", key=key, amount=amount).get("value")
 
+    def fetch(self, url: str, method: str = "GET", headers=None, data=None,
+              json_payload=None, timeout: float | None = None) -> EgressResponse:
+        fields = {"url": url, "method": method}
+        if headers:
+            fields["headers"] = headers
+        if data is not None:
+            if isinstance(data, (bytes, bytearray)):
+                import base64
+
+                fields["data_b64"] = base64.b64encode(bytes(data)).decode("ascii")
+            else:
+                fields["body"] = str(data)
+        if json_payload is not None:
+            fields["json"] = json_payload
+        if timeout is not None:
+            fields["timeout"] = timeout
+        result = self._call("http.fetch", **fields)
+        import base64
+
+        return EgressResponse(
+            int(result.get("status", 0)),
+            dict(result.get("headers") or {}),
+            base64.b64decode(str(result.get("body_b64", "")).encode("ascii")),
+        )
+
 
 _local = threading.local()
 
@@ -148,4 +190,15 @@ class _KVProxy:
         return current().incr(key, amount)
 
 
+class _FetchProxy:
+    """Project-facing proxy for allow-listed egress."""
+
+    def __call__(self, url, method="GET", headers=None, data=None, json=None, timeout=None):
+        return current().fetch(
+            url, method=method, headers=headers, data=data,
+            json_payload=json, timeout=timeout,
+        )
+
+
 kv = _KVProxy()
+fetch = _FetchProxy()

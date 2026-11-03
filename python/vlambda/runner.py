@@ -62,25 +62,25 @@ set_log_sink(_log_sink)
 
 def _execute(code: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = "",
              headers=None, remote_ip: str = "", host: str = "", scheme: str = "http", env=None,
-             kv_client=None):
+             kv_client=None, fetch_client=None):
     compiled, ns_template, handler = get_compiled(code)
     if handler is None:
         raise ValueError("no handler function defined")
     ns = dict(ns_template)
     req = Request(method=method, path=path, query_string=query, headers=headers or {}, body=body,
                   request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
-                  kv_client=kv_client)
+                  kv_client=kv_client, fetch_client=fetch_client)
     ns["request"] = req
     return handler(req)
 
 
 def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, query: str, body: bytes,
                      request_id: str = "", slug: str = "", headers=None, remote_ip: str = "",
-                     host: str = "", scheme: str = "http", env=None, kv_client=None):
+                     host: str = "", scheme: str = "http", env=None, kv_client=None, fetch_client=None):
     from vlambda.project import execute_project
     req = Request(method=method, path=path, query_string=query, headers=headers or {}, body=body,
                   request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
-                  kv_client=kv_client)
+                  kv_client=kv_client, fetch_client=fetch_client)
     return execute_project(project_dir, entrypoint, req)
 
 
@@ -145,12 +145,12 @@ def handle_payload(req: dict) -> dict:
                 req.get("project_dir", ""), req.get("entrypoint", "main.py"),
                 method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
                 headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
-                kv_client=client,
+                kv_client=client, fetch_client=client,
             )
         else:
             result = _execute(code, method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
                               headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
-                              kv_client=client)
+                              kv_client=client, fetch_client=client)
         return {"ok": True, "response": serialize(result), "logs": list(_current_logs)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "logs": list(_current_logs)}

@@ -6,13 +6,14 @@ PORT = 9799
 DB = "/tmp/test_vlambda.db"
 PROC = None
 
-def start_server(extra_env=None):
+def start_server(extra_env=None, keep_db=False):
     import os
     global PROC
     metrics_db = DB.replace(".db", "_metrics.db")
-    for f in [DB, DB+"-wal", DB+"-shm", metrics_db, metrics_db+"-wal", metrics_db+"-shm"]:
-        try: os.remove(f)
-        except FileNotFoundError: pass
+    if not keep_db:
+        for f in [DB, DB+"-wal", DB+"-shm", metrics_db, metrics_db+"-wal", metrics_db+"-shm"]:
+            try: os.remove(f)
+            except FileNotFoundError: pass
     base = os.environ.get("VLAMBDA_BASE", os.getcwd())
     # If running from vlambda/, adjust
     if os.path.exists(os.path.join(base, "python", "vlambda")):
@@ -299,6 +300,183 @@ def test_response_binary():
     assert resp.status == 200
     assert resp.headers.get("Content-Type", "").startswith("application/octet-stream")
     assert resp.read() == b"\x00\xff"
+
+
+def test_egress_fetch():
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    port = upstream.server_address[1]
+    stop_server()
+    start_server({
+        "VLAMBDA_SANDBOX": "fork",
+        "VLAMBDA_EGRESS_ALLOW_HTTP": "1",
+        "VLAMBDA_EGRESS_ALLOW_PRIVATE": "1",
+    })
+    try:
+        token = test_register_login()
+        code = f"def handler(r): return {{'text': r.fetch('http://127.0.0.1:{port}/hello').text}}"
+        assert len(code.encode()) < 100
+        status, body = req("POST", "/vlambda?name=egress", code, token)
+        assert status == 201, body
+        slug = body["slug"]
+        status, body = req("PUT", f"/vlambda/{slug}/egress",
+                           json.dumps({"hosts": ["127.0.0.1"]}), token,
+                           extra_headers={"Content-Type": "application/json"})
+        assert status == 200, body
+        status, body = req("GET", f"/vlambda/{slug}/egress", token=token)
+        assert status == 200 and body["hosts"] == ["127.0.0.1"], body
+        status, body = req("GET", f"/vlambda/{slug}/egress")
+        assert status == 401, body
+        other = test_register_login()
+        status, body = req("GET", f"/vlambda/{slug}/egress", token=other)
+        assert status == 403, body
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200 and '"ok": true' in body["text"], body
+
+        status, body = req("PUT", f"/vlambda/{slug}/egress",
+                           json.dumps({"hosts": []}), token,
+                           extra_headers={"Content-Type": "application/json"})
+        assert status == 200, body
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 500 and "not allowed" in body.get("error", ""), body
+    finally:
+        upstream.shutdown()
+        stop_server()
+
+
+def test_schedules():
+    import sqlite3
+
+    stop_server()
+    start_server({"VLAMBDA_SANDBOX": "fork", "VLAMBDA_SCHEDULE_TICK": "0.2"})
+    try:
+        token = test_register_login()
+        code = "def handler(r): return {'v': (r.kv.set('s', r.kv.get('s',0)+1), r.kv.get('s'))[1]}"
+        status, body = req("POST", "/vlambda?name=scheduled", code, token)
+        assert status == 201, body
+        slug = body["slug"]
+
+        status, body = req("POST", f"/vlambda/{slug}/schedules",
+                           json.dumps({"name": "nightly", "cron": "0 3 * * *"}), token,
+                           extra_headers={"Content-Type": "application/json"})
+        assert status == 200, body
+        schedule = body["schedule"]
+        schedule_id = schedule["id"]
+        assert schedule["name"] == "nightly" and schedule["next_run"], body
+
+        status, body = req("GET", f"/vlambda/{slug}/schedules", token=token)
+        assert status == 200 and body["schedules"][0]["id"] == schedule_id, body
+        status, body = req("GET", f"/vlambda/{slug}/schedules")
+        assert status == 401, body
+        other = test_register_login()
+        status, body = req("GET", f"/vlambda/{slug}/schedules", token=other)
+        assert status == 403, body
+
+        status, body = req("POST", f"/vlambda/{slug}/schedules/{schedule_id}/run", token=token)
+        assert status == 200 and body["run_id"], body
+        for _ in range(40):
+            status, body = req("GET", f"/vlambda/{slug}/schedules/{schedule_id}/runs", token=token)
+            if body["runs"] and body["runs"][0]["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        assert body["runs"][0]["status"] == "completed", body
+
+        def kv_value():
+            status, body = req("GET", f"/vlambda/{slug}/kv", token=token)
+            assert status == 200, body
+            return {item["key"]: item["value"] for item in body["items"]}.get("s")
+
+        assert kv_value() == 1
+
+        # Force the next automatic run by moving next_run into the past.
+        conn = sqlite3.connect(DB)
+        conn.execute("UPDATE schedules SET next_run=?, enabled=1 WHERE id=?",
+                     (time.time() - 1, schedule_id))
+        conn.commit()
+        conn.close()
+        for _ in range(50):
+            if kv_value() == 2:
+                break
+            time.sleep(0.1)
+        assert kv_value() == 2
+
+        status, body = req("PUT", f"/vlambda/{slug}/schedules/{schedule_id}",
+                           json.dumps({"enabled": False}), token,
+                           extra_headers={"Content-Type": "application/json"})
+        assert status == 200, body
+        assert body["schedule"]["enabled"] is False, body
+        assert body["schedule"]["next_run"] is None, body
+
+        status, body = req("DELETE", f"/vlambda/{slug}/schedules/{schedule_id}", token=token)
+        assert status == 200 and body["deleted"] is True, body
+        status, body = req("GET", f"/vlambda/{slug}/schedules", token=token)
+        assert status == 200 and body["schedules"] == [], body
+    finally:
+        stop_server()
+
+
+def test_openapi():
+    token = test_register_login()
+    code = "def handler(r): return {'ok': True}"
+    status, body = req("POST", "/vlambda?name=documented", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{slug}/meta",
+                       json.dumps({"summary": "Demo", "tags": "api,demo", "description": "Desc"}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    assert body["summary"] == "Demo", body
+    status, body = req("GET", f"/vlambda/{slug}/meta", token=token)
+    assert status == 200 and body["tags"] == "api,demo", body
+
+    status, body = req("GET", "/openapi.json", token=token)
+    assert status == 200, body
+    operation = body["paths"][f"/f/{slug}"]["get"]
+    assert operation["summary"] == "Demo" and operation["tags"] == ["api", "demo"], operation
+
+    status, body = req("GET", "/openapi.json")
+    assert status == 401, body
+    other = test_register_login()
+    status, body = req("GET", "/openapi.json", token=other)
+    assert status == 200 and f"/f/{slug}" not in body["paths"], body
+
+    import urllib.request
+    docs = urllib.request.urlopen(f"http://localhost:{PORT}/docs").read()
+    assert b"openapi.json" in docs
+
+    status, body = req("GET", f"/vlambda/{slug}/meta")
+    assert status == 401, body
+    status, body = req("GET", f"/vlambda/{slug}/meta", token=other)
+    assert status == 403, body
+
+
+def test_openapi_public():
+    stop_server()
+    start_server({"VLAMBDA_OPENAPI_PUBLIC": "1"})
+    try:
+        token = test_register_login()
+        status, body = req("POST", "/vlambda?name=public", "def handler(r): return {}", token)
+        assert status == 201, body
+        status, body = req("GET", "/openapi.json")
+        assert status == 200 and any(path.startswith("/f/") for path in body["paths"]), body
+    finally:
+        stop_server()
 
 
 def test_response_injection_blocked():
@@ -776,7 +954,8 @@ def test_async_task():
     status, body = req("POST", "/vlambda?name=async-env", code, token)
     assert status == 201, body
     env_slug = body["slug"]
-    status, body = req("PUT", f"/vlambda/{env_slug}/env", json.dumps({"vars": {"A": "1"}}),
+    status, body = req("PUT", f"/vlambda/{env_slug}/env",
+                       json.dumps({"vars": {"A": "1"}, "secrets": {"S": "s3cret"}}),
                        token, extra_headers={"Content-Type": "application/json"})
     assert status == 200, body
     status, body = req("POST", f"/async/{env_slug}", token=token, extra_headers={"X-Test": "yes"})
@@ -789,7 +968,68 @@ def test_async_task():
         time.sleep(0.1)
     assert body.get("status") == "completed", body
     payload = json.loads(body["result"]["body"])
-    assert payload == {"env": {"A": "1"}, "slug": env_slug, "header": "yes"}, payload
+    assert payload == {"env": {"A": "1", "S": "s3cret"}, "slug": env_slug, "header": "yes"}, payload
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    stored = conn.execute(
+        "SELECT request_meta FROM tasks ORDER BY created DESC LIMIT 1"
+    ).fetchone()[0]
+    conn.close()
+    assert "s3cret" not in stored, "task metadata persisted a decrypted secret"
+
+def test_task_recovery():
+    stop_server()
+    start_server({"VLAMBDA_SANDBOX": "fork", "VLAMBDA_TASK_LEASE": "1"})
+    token = test_register_login()
+    code = "import time\ndef handler(r):\n    time.sleep(3)\n    return {'ok': True}\n"
+    status, body = req("POST", "/vlambda?name=recover", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("POST", f"/async/{slug}", token=token)
+    assert status == 202, body
+    task_id = body["task_id"]
+    time.sleep(0.4)
+    status, body = req("GET", f"/task/{task_id}", token=token)
+    assert body.get("status") in ("pending", "running"), body
+
+    # Simulate a hard crash, not a graceful drain.
+    PROC.kill()
+    PROC.wait(timeout=5)
+    time.sleep(0.5)
+
+    start_server({"VLAMBDA_SANDBOX": "fork", "VLAMBDA_TASK_LEASE": "1"}, keep_db=True)
+    for _ in range(80):
+        status, body = req("GET", f"/task/{task_id}", token=token)
+        if body.get("status") in ("completed", "failed"):
+            break
+        time.sleep(0.2)
+    assert body.get("status") == "completed", body
+    assert body.get("attempts", 0) >= 2, body
+    stop_server()
+
+
+def test_shutdown_drains():
+    import threading
+
+    stop_server()
+    start_server({"VLAMBDA_SANDBOX": "fork", "VLAMBDA_DRAIN_TIMEOUT": "5"})
+    token = test_register_login()
+    code = "import time\ndef handler(r):\n    time.sleep(1)\n    return {'ok': True}\n"
+    status, body = req("POST", "/vlambda?name=slow", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    result = {}
+    def invoke():
+        result["value"] = req("GET", f"/f/{slug}")
+    thread = threading.Thread(target=invoke)
+    thread.start()
+    time.sleep(0.2)
+    status, body = req("POST", "/shutdown", extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200, body
+    thread.join(timeout=10)
+    assert result.get("value", (0, {}))[0] == 200, result
+    PROC.wait(timeout=10)
+
 
 def test_metrics_history():
     token, slug = test_create_invoke()
@@ -1174,14 +1414,14 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_response_injection_blocked, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,
              test_nsjail_sandbox,
              test_landlock_sandbox,
              test_fork_sandbox,
-             test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
+             test_async_task, test_task_recovery, test_shutdown_drains, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,

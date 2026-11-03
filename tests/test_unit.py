@@ -343,6 +343,219 @@ def test_kv_store_roundtrip(tmp_path, monkeypatch):
         dbpool.close_all()
 
 
+def test_cron_expressions():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    from vlambda.cron import Cron, CronError
+
+    tz = ZoneInfo("UTC")
+    base = dt.datetime(2026, 1, 1, 0, 0, tzinfo=tz)
+    assert Cron("*/15 * * * *").next_after(base, tz) == base + dt.timedelta(minutes=15)
+    assert Cron("0 9 * * mon-fri").next_after(base, tz) == dt.datetime(2026, 1, 1, 9, 0, tzinfo=tz)
+    assert Cron("0 0 1 * *").next_after(base, tz) == dt.datetime(2026, 2, 1, 0, 0, tzinfo=tz)
+    assert Cron("0 0 * * sun").next_after(base, tz) == dt.datetime(2026, 1, 4, 0, 0, tzinfo=tz)
+    assert Cron("0 0 * * 7").next_after(base, tz) == dt.datetime(2026, 1, 4, 0, 0, tzinfo=tz)
+    assert Cron("0 0 * * 1").next_after(base, tz) == dt.datetime(2026, 1, 5, 0, 0, tzinfo=tz)
+    with pytest.raises(CronError):
+        Cron("* * *")
+    with pytest.raises(CronError):
+        Cron("60 * * * *")
+
+
+def test_openapi_build(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    from vlambda import dbpool, openapi
+
+    db = tmp_path / "openapi.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE lambdas (slug TEXT, name TEXT, method TEXT, kind TEXT,"
+        " owner_id INTEGER, summary TEXT, description TEXT, tags TEXT)"
+    )
+    conn.execute("INSERT INTO lambdas VALUES ('l1','demo','GET','code',1,'Demo','Desc','api,demo')")
+    conn.execute("INSERT INTO lambdas VALUES ('p1','site','GET','project',1,'','','')")
+    conn.execute("INSERT INTO lambdas VALUES ('l2','other','POST','code',2,'Other','','')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    dbpool.close_all()
+    dbpool.init(str(db))
+    try:
+        spec = openapi.build(1, "https://example.test")
+        assert spec["openapi"].startswith("3.")
+        assert spec["servers"][0]["url"] == "https://example.test"
+        assert spec["paths"]["/f/l1"]["get"]["summary"] == "Demo"
+        assert spec["paths"]["/f/l1"]["get"]["tags"] == ["api", "demo"]
+        assert "/f/l2" not in spec["paths"]
+        assert "/f/p1/{path}" in spec["paths"]
+        body = json.loads(openapi.get_meta("l1", "1"))
+        assert body["summary"] == "Demo"
+        body = json.loads(openapi.set_meta("l1", "1", json.dumps({"summary": "New", "tags": "a,b"})))
+        assert body["summary"] == "New" and body["tags"] == "a,b"
+        body = json.loads(openapi.get_meta("l1", "2"))
+        assert "error" in body
+        body = json.loads(openapi.handle_api("1", "https://x"))
+        assert "/f/l1" in body["paths"]
+    finally:
+        dbpool.close_all()
+
+
+def test_schedules_store(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    from vlambda import dbpool, schedules
+
+    db = tmp_path / "schedules.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute("INSERT INTO lambdas VALUES ('l1', 1)")
+    conn.execute("INSERT INTO lambdas VALUES ('l2', 2)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    dbpool.close_all()
+    dbpool.init(str(db))
+    try:
+        schedules.ensure_schema()
+        item = schedules.create_schedule("l1", 1, {
+            "name": "nightly", "cron": "0 3 * * *", "timezone": "UTC",
+            "method": "POST", "path": "/job", "payload": '{"x": 1}',
+        })
+        assert item["name"] == "nightly" and item["next_run"] > 0
+        assert schedules.list_schedules("l1", 1)[0]["name"] == "nightly"
+        updated = schedules.update_schedule("l1", 1, item["id"], {"enabled": False})
+        assert updated["enabled"] is False and updated["next_run"] is None
+        body = json.loads(schedules.handle_api("l1", "1", "", "GET", "", ""))
+        assert body["schedules"][0]["name"] == "nightly"
+        body = json.loads(schedules.handle_api("l1", "2", "", "GET", "", ""))
+        assert "error" in body
+        body = json.loads(schedules.handle_api("l1", "1", "", "POST", "", '{"name":"bad"}'))
+        assert "error" in body
+        assert schedules.delete_schedule("l1", 1, item["id"]) is True
+        assert schedules.list_schedules("l1", 1) == []
+    finally:
+        dbpool.close_all()
+
+
+def test_egress_store_allowlist(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    from vlambda import dbpool, egress_store
+
+    db = tmp_path / "egress.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute(
+        "CREATE TABLE lambda_egress (slug TEXT NOT NULL, pattern TEXT NOT NULL,"
+        " PRIMARY KEY (slug, pattern))"
+    )
+    conn.execute("INSERT INTO lambdas VALUES ('l1', 1)")
+    conn.execute("INSERT INTO lambdas VALUES ('l2', 2)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    dbpool.close_all()
+    dbpool.init(str(db))
+    try:
+        assert egress_store.set_hosts("l1", ["API.Example.com", "*.example.org"]) == [
+            "api.example.com", "*.example.org"
+        ]
+        assert egress_store.list_hosts("l1") == ["*.example.org", "api.example.com"]
+        assert egress_store.host_allowed("l1", "api.example.com")
+        assert egress_store.host_allowed("l1", "sub.example.org")
+        assert egress_store.host_allowed("l1", "example.org")
+        assert not egress_store.host_allowed("l1", "other.example.com")
+        with pytest.raises(egress_store.EgressError):
+            egress_store.set_hosts("l1", ["https://example.com/path"])
+        with pytest.raises(egress_store.EgressError):
+            egress_store.set_hosts("l1", [f"h{i}.example.com" for i in range(21)])
+        body = json.loads(egress_store.handle_api("l1", "1", "PUT", json.dumps({"hosts": ["x.test"]})))
+        assert body["hosts"] == ["x.test"]
+        body = json.loads(egress_store.handle_api("l1", "1", "GET", ""))
+        assert body["hosts"] == ["x.test"]
+        body = json.loads(egress_store.handle_api("l1", "2", "GET", ""))
+        assert "error" in body
+    finally:
+        dbpool.close_all()
+
+
+def test_capability_broker_egress(tmp_path, monkeypatch):
+    import http.server
+    import json
+    import sqlite3
+    import threading
+    from vlambda import broker, dbpool
+    from vlambda.capabilities import CapabilityClient, CapabilityError
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"ok": True, "path": self.path}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    port = upstream.server_address[1]
+
+    db = tmp_path / "egress-broker.db"
+    sock = tmp_path / "egress.sock"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute("CREATE TABLE lambda_kv (slug TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_at REAL, updated_at REAL NOT NULL, PRIMARY KEY (slug, key))")
+    conn.execute("CREATE TABLE lambda_egress (slug TEXT NOT NULL, pattern TEXT NOT NULL, PRIMARY KEY (slug, pattern))")
+    conn.execute("INSERT INTO lambdas VALUES ('l1', 1)")
+    conn.execute("INSERT INTO lambda_egress VALUES ('l1', 'localhost')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    monkeypatch.setenv("VLAMBDA_BROKER_SOCKET", str(sock))
+    monkeypatch.setenv("VLAMBDA_EGRESS_ALLOW_HTTP", "1")
+    dbpool.close_all()
+    dbpool.init(str(db))
+    broker.stop()
+    try:
+        assert broker.start()
+        client = CapabilityClient(str(sock), broker.issue("l1", "req-egress"))
+        with pytest.raises(CapabilityError, match="not public"):
+            client.fetch(f"http://localhost:{port}/private")
+        monkeypatch.setenv("VLAMBDA_EGRESS_ALLOW_PRIVATE", "1")
+        response = client.fetch(f"http://localhost:{port}/hello")
+        assert response.status == 200
+        assert response.json()["path"] == "/hello"
+        with pytest.raises(CapabilityError, match="host not allowed"):
+            client.fetch(f"http://127.0.0.1:{port}/nope")
+        monkeypatch.delenv("VLAMBDA_EGRESS_ALLOW_HTTP", raising=False)
+        with pytest.raises(CapabilityError, match="http egress is disabled"):
+            client.fetch(f"http://localhost:{port}/hello")
+    finally:
+        broker.stop()
+        upstream.shutdown()
+        dbpool.close_all()
+
+
+def test_lifecycle_drain():
+    import threading
+    from vlambda import lifecycle
+
+    lifecycle.reset()
+    assert lifecycle.begin() is True
+    lifecycle.stop_accepting()
+    assert lifecycle.begin() is False
+    thread = threading.Thread(target=lambda: (time.sleep(0.1), lifecycle.end()))
+    thread.start()
+    assert lifecycle.drain(1.0) is True
+    thread.join()
+    lifecycle.reset()
+
+
 def test_capability_context_is_thread_local():
     import threading
     from vlambda.capabilities import clear_current, current, set_current

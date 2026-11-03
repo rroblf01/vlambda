@@ -13,7 +13,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from vlambda.reset import main as reset_main
         raise SystemExit(reset_main(sys.argv[2:]))
-    if any(arg in ("invoke", "deploy", "logs", "env", "task", "kv") for arg in sys.argv[1:]):
+    if any(arg in ("invoke", "deploy", "logs", "env", "task", "kv", "egress", "schedule", "openapi") for arg in sys.argv[1:]):
         from vlambda.cli import main as cli_main
         raise SystemExit(cli_main(sys.argv[1:]))
 
@@ -64,7 +64,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password, new_auth_epoch
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, register_kv, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, register_kv, register_egress, register_schedules, register_meta, register_openapi, register_shutdown, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -73,7 +73,7 @@ def main() -> None:
     from vlambda.dbpool import init as pool_init
     pool_init(args.sqlite_path)
 
-    from vlambda import broker as _broker
+    from vlambda import broker as _broker, lifecycle as _lifecycle
     if _broker.start():
         os.environ["VLAMBDA_BROKER_SOCKET"] = _broker.SOCKET_PATH
 
@@ -100,7 +100,8 @@ def main() -> None:
     from vlambda.pool import Pool
     pool = Pool(args.num_coroutines)
 
-    from vlambda.tasks import create_task, get_task
+    from vlambda.tasks import create_task, get_task, start as start_tasks
+    start_tasks(pool)
 
     def _task_owner(owner_id):
         try:
@@ -112,7 +113,7 @@ def main() -> None:
         import json
         task_id = create_task(code, method, path, query, body, pool,
                               owner_id=_task_owner(owner_id), slug=slug,
-                              request_meta=_meta_with_env(slug, request_meta))
+                              request_meta=request_meta)
         return json.dumps({"task_id": task_id, "status": "pending"})
 
     def _get_task(task_id, owner_id="0"):
@@ -120,7 +121,7 @@ def main() -> None:
         task = get_task(task_id, _task_owner(owner_id))
         if task is None:
             return json.dumps({"error": "task not found"})
-        result = {"task_id": task_id, "status": task["status"]}
+        result = {"task_id": task_id, "status": task["status"], "attempts": task.get("attempts", 0)}
         if task["status"] == "completed":
             r = task["result"]
             result["result"] = json.loads(r) if isinstance(r, str) else r
@@ -146,6 +147,14 @@ def main() -> None:
         path = path or "/"
         query = query or ""
         body = body or b""
+        import json as _json
+        if not _lifecycle.accepting():
+            return _json.dumps({
+                "status": 503,
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "body": _json.dumps({"error": "shutting down"}),
+                "body_b64": "",
+            })
         # Response cache for idempotent GET requests, storing the final payload.
         cache_key = None
         if method == "GET" and _response_cacheable(code):
@@ -154,7 +163,6 @@ def main() -> None:
             cached = get_response(cache_key)
             if cached is not None:
                 return cached
-        import json as _json
 
         def _json_default(value):
             if isinstance(value, (bytes, bytearray)):
@@ -180,12 +188,22 @@ def main() -> None:
                 pass
         if not timeout:
             timeout = args.invoke_timeout
-        request_meta = _meta_with_env(slug, request_meta)
-        request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
+        if not _lifecycle.begin():
+            return _json.dumps({
+                "status": 503,
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "body": _json.dumps({"error": "shutting down"}),
+                "body_b64": "",
+            })
         try:
-            result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+            request_meta = _meta_with_env(slug, request_meta)
+            request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
+            try:
+                result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+            finally:
+                _broker.release(broker_token)
         finally:
-            _broker.release(broker_token)
+            _lifecycle.end()
         from vlambda.response import serialize
         if isinstance(result, dict) and "status" in result and ("body" in result or "body_b64" in result):
             response = result
@@ -391,6 +409,32 @@ def main() -> None:
 
     register_kv(_kv_cb)
 
+    from vlambda.egress_store import handle_api as _egress_api
+
+    def _egress_cb(slug, owner_id, method, body):
+        return _egress_api(slug, owner_id, method, body)
+
+    register_egress(_egress_cb)
+
+    from vlambda.schedules import handle_api as _schedules_api
+
+    def _schedules_cb(slug, owner_id, action, method, schedule_id, body):
+        return _schedules_api(slug, owner_id, action, method, schedule_id, body)
+
+    register_schedules(_schedules_cb)
+
+    from vlambda.openapi import get_meta as _get_meta, set_meta as _set_meta, handle_api as _openapi_api
+
+    def _meta_cb(slug, owner_id, method, body):
+        return _get_meta(slug, owner_id) if method == "GET" else _set_meta(slug, owner_id, body)
+
+    register_meta(_meta_cb)
+
+    def _openapi_cb(owner_id, base_url):
+        return _openapi_api(owner_id, base_url)
+
+    register_openapi(_openapi_cb)
+
     def _record_metric(request_id, slug, method, path, latency_ms, error):
         _metrics_record(request_id, slug, method, path, float(latency_ms), error)
 
@@ -436,7 +480,11 @@ def main() -> None:
 
     def _pool_stats():
         import json
-        return json.dumps(pool.stats())
+        stats = pool.stats()
+        stats["instance_id"] = f"{os.environ.get('VLAMBDA_INSTANCE_ID') or os.uname().nodename}:{os.getpid()}"
+        stats["inflight"] = _lifecycle.inflight()
+        stats["accepting"] = _lifecycle.accepting()
+        return json.dumps(stats)
 
     register_query_summary(_query_summary)
 
@@ -483,13 +531,23 @@ def main() -> None:
         import json
         timeout = args.invoke_timeout
         from vlambda.response import serialize
+        if not _lifecycle.begin():
+            return json.dumps({
+                "status": 503,
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "body": json.dumps({"error": "shutting down"}),
+                "body_b64": "",
+            })
         try:
-            request_meta = _meta_with_env(slug, request_meta)
-            request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
             try:
-                result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug, request_meta=request_meta)
+                request_meta = _meta_with_env(slug, request_meta)
+                request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
+                try:
+                    result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug, request_meta=request_meta)
+                finally:
+                    _broker.release(broker_token)
             finally:
-                _broker.release(broker_token)
+                _lifecycle.end()
             if isinstance(result, dict) and "status" in result and ("body" in result or "body_b64" in result):
                 return json.dumps(result)
             if isinstance(result, dict) and set(result.keys()) == {"error"}:
@@ -508,6 +566,58 @@ def main() -> None:
                 "body_b64": "",
             })
 
+    def _scheduled_execute(slug, method, path, payload, request_id, schedule_name):
+        import json
+        import vlambda_native
+        from vlambda.packages import lambda_target
+
+        if not _lifecycle.begin():
+            return {"status": 503, "body": json.dumps({"error": "shutting down"}),
+                    "headers": [], "body_b64": ""}
+        headers = {
+            "X-Vlambda-Trigger": "schedule",
+            "X-Vlambda-Schedule": schedule_name,
+        }
+        meta = json.dumps({"headers": headers, "remote_ip": "", "host": "", "scheme": "http"})
+        path_only, _, query = path.partition("?")
+        body = payload.encode("utf-8") if payload else b""
+        broker_token = None
+        try:
+            meta = _meta_with_env(slug, meta)
+            meta, broker_token = _broker.attach(meta, slug, request_id)
+            project_info = vlambda_native.db_get_project(slug)
+            if project_info:
+                parts = project_info.split("|")
+                project_dir = parts[0] if parts else ""
+                entrypoint = parts[1] if len(parts) > 1 else "main.py"
+                return pool.execute_project(
+                    project_dir, entrypoint, method, path_only, query, body,
+                    timeout=args.invoke_timeout, request_id=request_id,
+                    slug=slug, request_meta=meta,
+                )
+            code_info = vlambda_native.db_get_lambda_code(slug)
+            if not code_info:
+                return {"status": 404, "body": json.dumps({"error": "lambda not found"}),
+                        "headers": [], "body_b64": ""}
+            parts = code_info.split("|")
+            code = parts[0] if parts else ""
+            timeout = int(parts[2]) if len(parts) > 2 and parts[2] else args.invoke_timeout
+            memory_mb = int(parts[3]) if len(parts) > 3 and parts[3] else 0
+            vendor_dir = ""
+            try:
+                candidate = lambda_target(slug)
+                if os.path.isdir(candidate):
+                    vendor_dir = candidate
+            except Exception:
+                pass
+            return pool.execute(
+                code, method, path_only, query, body, timeout, memory_mb,
+                vendor_dir, request_id, slug, meta,
+            )
+        finally:
+            _broker.release(broker_token)
+            _lifecycle.end()
+
     def _delete_project(project_dir):
         _delete_project_impl(project_dir)
         return None
@@ -515,6 +625,19 @@ def main() -> None:
     register_run_project(_run_project)
     register_create_project(_create_project)
     register_delete_project(_delete_project)
+
+    from vlambda.schedules import start as _schedules_start, stop as _schedules_stop
+    _schedules_start(_scheduled_execute)
+
+    def _drain_and_stop():
+        _lifecycle.stop_accepting()
+        _schedules_stop()
+        _lifecycle.drain()
+        import vlambda.tasks as _drain_tasks
+        _drain_tasks.stop()
+        return "{}"
+
+    register_shutdown(_drain_and_stop)
 
     def _schedule_delete(project_dir):
         _schedule_delete_impl(project_dir)
@@ -539,11 +662,13 @@ def main() -> None:
         from vlambda.project import gc_orphans as _gc_orphans
         def _project_gc():
             import time, threading
+            from vlambda import schedules as _schedules
             while True:
                 try:
-                    removed = _gc_orphans()
-                    if removed:
-                        print(f"project gc removed {removed} orphan directories", file=sys.stderr)
+                    if not _schedules.running() or _schedules.is_leader():
+                        removed = _gc_orphans()
+                        if removed:
+                            print(f"project gc removed {removed} orphan directories", file=sys.stderr)
                 except Exception as e:
                     print(f"project gc failed: {e}", file=sys.stderr)
                 time.sleep(300)
@@ -553,7 +678,7 @@ def main() -> None:
         print(f"project gc not started: {e}", file=sys.stderr)
 
     import vlambda.tasks as _tasks
-    atexit.register(lambda: _tasks._get_executor().shutdown(wait=False) if _tasks._EXECUTOR is not None else None)
+    atexit.register(_tasks.stop)
     atexit.register(pool.stop)
 
     # Run server in a thread so signals can be handled
@@ -604,6 +729,10 @@ def main() -> None:
     # Graceful shutdown
     def _shutdown(signum, frame):
         print("\nShutting down gracefully...", file=sys.stderr)
+        _lifecycle.stop_accepting()
+        _schedules_stop()
+        _lifecycle.drain()
+        _tasks.stop()
         pool.stop()
         _broker.stop()
         from vlambda.dbpool import close_all

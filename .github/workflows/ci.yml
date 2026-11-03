@@ -44,3 +44,11 @@ jobs:
           . .venv/bin/activate
           vcraft develop ${{ matrix.free_threading && '--free-threading' || '' }} --interpreter ${{ matrix.interpreter }}
           python tests/test_vlambda.py
+
+  gvisor:
+    name: gvisor-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: gVisor smoke (skips when runsc is unavailable)
+        run: ./scripts/gvisor-smoke.sh

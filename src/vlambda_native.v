@@ -81,15 +81,20 @@ __global (
 	vlambda_code_cache = map[string]string{}
 	vlambda_missing_cache = map[string]bool{}
 	// Shutdown
-	vlambda_shutdown = false
 	vlambda_overloaded = false
 	vlambda_resetting = false
+	vlambda_draining = false
 	vlambda_admin_reset = voidptr(0)
 	vlambda_install_packages = voidptr(0)
 	vlambda_list_packages = voidptr(0)
 	vlambda_list_env = voidptr(0)
 	vlambda_save_env = voidptr(0)
 	vlambda_kv = voidptr(0)
+	vlambda_egress = voidptr(0)
+	vlambda_schedules = voidptr(0)
+	vlambda_meta = voidptr(0)
+	vlambda_openapi = voidptr(0)
+	vlambda_shutdown = voidptr(0)
 	// Rate limiter (token bucket per IP)
 	vlambda_rate_buckets = map[string]TokenBucket{}
 )
@@ -123,11 +128,21 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('ALTER TABLE lambdas ADD COLUMN timeout INTEGER NOT NULL DEFAULT 0;') or {}
 	db.exec('ALTER TABLE lambdas ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 0;') or {}
 	db.exec('ALTER TABLE lambdas ADD COLUMN version INTEGER NOT NULL DEFAULT 1;') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN summary TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN description TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('ALTER TABLE lambdas ADD COLUMN tags TEXT NOT NULL DEFAULT "";') or {}
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, method TEXT NOT NULL DEFAULT "GET", entrypoint TEXT NOT NULL DEFAULT "", project_dir TEXT NOT NULL DEFAULT "", kind TEXT NOT NULL DEFAULT "code", created_at TEXT NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_aliases (alias TEXT PRIMARY KEY, slug TEXT NOT NULL, version INTEGER NOT NULL, owner_id INTEGER NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_env (slug TEXT NOT NULL, key TEXT NOT NULL, is_secret INTEGER NOT NULL DEFAULT 0, value TEXT NOT NULL, PRIMARY KEY (slug, key));')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_kv (slug TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_at REAL, updated_at REAL NOT NULL, PRIMARY KEY (slug, key));')!
 	db.exec('CREATE INDEX IF NOT EXISTS idx_lambda_kv_slug ON lambda_kv(slug);')!
+	db.exec('CREATE TABLE IF NOT EXISTS lambda_egress (slug TEXT NOT NULL, pattern TEXT NOT NULL, PRIMARY KEY (slug, pattern));')!
+	db.exec('CREATE INDEX IF NOT EXISTS idx_lambda_egress_slug ON lambda_egress(slug);')!
+	db.exec('CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, owner_id INTEGER NOT NULL, name TEXT NOT NULL, cron TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT "UTC", method TEXT NOT NULL DEFAULT "POST", path TEXT NOT NULL DEFAULT "/schedule", payload TEXT NOT NULL DEFAULT "", enabled INTEGER NOT NULL DEFAULT 1, running INTEGER NOT NULL DEFAULT 0, run_started REAL, next_run REAL, last_run REAL, last_status TEXT, created_at REAL NOT NULL, UNIQUE(slug, name));')!
+	db.exec('CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_run);')!
+	db.exec('CREATE TABLE IF NOT EXISTS schedule_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, schedule_id INTEGER NOT NULL, slug TEXT NOT NULL, request_id TEXT, started REAL NOT NULL, finished REAL, status TEXT NOT NULL, error TEXT);')!
+	db.exec('CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(schedule_id, id);')!
+	db.exec('CREATE TABLE IF NOT EXISTS scheduler_lease (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, expires REAL NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS api_tokens (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id INTEGER NOT NULL,
@@ -719,6 +734,39 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
+	// Route: /openapi.json (owner scoped unless public)
+	if req.url == '/openapi.json' {
+		public := os.getenv('VLAMBDA_OPENAPI_PUBLIC') in ['1', 'true', 'yes', 'on']
+		if auth_uid < 0 && !public {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		owner_id := if public && auth_uid < 0 { 0 } else { request_owner(req, auth_uid) }
+		scheme := req.header.get_custom('X-Forwarded-Proto', http.HeaderQueryConfig{}) or { 'http' }
+		base_url := scheme + '://' + req.host
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_openapi != unsafe { nil } {
+			vcraft.with_gil(fn [owner_id, base_url, ptr] () {
+				args := [vcraft.to_py_string(owner_id.str()).ptr, vcraft.to_py_string(base_url).ptr]
+				r := vcraft.call(vlambda_openapi, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"error": "openapi failed"}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		status := if body.starts_with('{"error"') { 500 } else { 200 }
+		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /config (public runtime flags for the UI)
 	if req.url == '/config' && req.method == .get {
 		reg := if vlambda_registration_enabled { 'true' } else { 'false' }
@@ -740,7 +788,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /ready
 	if req.url == '/ready' {
-		if vlambda_executor == unsafe { nil } {
+		if vlambda_draining || vlambda_executor == unsafe { nil } {
 			return http.Response{
 				status_code: 503
 				body: '{"status": "not ready"}'
@@ -763,8 +811,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
+		vlambda_draining = true
+		if vlambda_shutdown != unsafe { nil } {
+			vcraft.with_gil(fn () {
+				args := []voidptr{}
+				r := vcraft.call(vlambda_shutdown, args)
+				if !r.is_null() { r.decref() }
+			})
+		}
 		spawn fn () {
-			time.sleep(200 * time.millisecond)
+			time.sleep(150 * time.millisecond)
 			C.exit(0)
 		}()
 		return http.Response{
@@ -781,6 +837,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			body: get_ui_html()
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
 		}
+	}
+
+	// Route: /docs (lightweight OpenAPI viewer)
+	if req.url == '/docs' || req.url == '/docs/' {
+		body := get_asset('docs.html')
+		if body == '' {
+			return http.Response{ status_code: 404, body: 'docs not found', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' }) }
+		}
+		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html; charset=utf-8' }) }
 	}
 
 	// Route: /assets/<name>
@@ -1278,6 +1343,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			})
 		}
 		vlambda_resetting = false
+	vlambda_draining = false
 		return http.Response{
 			status_code: 200
 			body: body
@@ -1914,6 +1980,166 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			})
 		}
 		status := if body.starts_with('{"error"') { 400 } else { 200 }
+		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /vlambda/<slug>/egress (GET list, PUT replace)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/egress') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/egress')
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method != .get && req.method != .put {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		request_body := req.data
+		if req.method == .put && request_body.len > vlambda_max_body_size {
+			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_egress != unsafe { nil } {
+			method := req.method.str()
+			vcraft.with_gil(fn [slug, auth_uid, method, request_body, ptr] () {
+				args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(auth_uid.str()).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(request_body).ptr]
+				r := vcraft.call(vlambda_egress, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"error": "egress failed"}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		status := if body.starts_with('{"hosts"') { 200 } else { 400 }
+		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /vlambda/<slug>/schedules[/<id>[/run|/runs]]
+	if req.url.starts_with('/vlambda/') && req.url.contains('/schedules') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/schedules')
+		rest := url_path.all_after('/schedules').trim_left('/')
+		mut schedule_id := ''
+		mut action := ''
+		if rest != '' {
+			parts := rest.split('/')
+			schedule_id = parts[0]
+			if parts.len > 1 {
+				action = parts[1]
+			}
+		}
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if action == 'run' && req.method != .post {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if action == 'runs' && req.method != .get {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if action == '' && schedule_id != '' && req.method != .put && req.method != .delete {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		request_body := req.data
+		if request_body.len > vlambda_max_body_size {
+			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_schedules != unsafe { nil } {
+			method := req.method.str()
+			vcraft.with_gil(fn [slug, auth_uid, action, method, schedule_id, request_body, ptr] () {
+				args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(auth_uid.str()).ptr, vcraft.to_py_string(action).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(schedule_id).ptr, vcraft.to_py_string(request_body).ptr]
+				r := vcraft.call(vlambda_schedules, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"error": "schedules failed"}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		status := if body.starts_with('{"error"') { 400 } else { 200 }
+		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
+	// Route: /vlambda/<slug>/meta (GET/PUT OpenAPI metadata)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/meta') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/meta')
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method != .get && req.method != .put {
+			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		request_body := req.data
+		if req.method == .put && request_body.len > vlambda_max_body_size {
+			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut body := '{"error": "not configured"}'
+		ptr := &body
+		if vlambda_meta != unsafe { nil } {
+			method := req.method.str()
+			vcraft.with_gil(fn [slug, auth_uid, method, request_body, ptr] () {
+				args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(auth_uid.str()).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(request_body).ptr]
+				r := vcraft.call(vlambda_meta, args)
+				for a in args { vcraft.borrow(a).decref() }
+				if r.is_null() {
+					vcraft.clear_error()
+					return
+				}
+				if r.type_name() == 'str' {
+					ss := vcraft.from_py_string(r, 'result') or { '{"error": "meta failed"}' }
+					r.decref()
+					unsafe { *ptr = ss + '' }
+					return
+				}
+				r.decref()
+			})
+		}
+		status := if body.starts_with('{"summary"') { 200 } else { 400 }
 		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
@@ -2574,6 +2800,10 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 	// Remove per-lambda state so a future lambda cannot inherit it.
 	db.exec_param_many('DELETE FROM lambda_env WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_kv WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM lambda_egress WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM schedule_runs WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM schedules WHERE slug = ?;', [slug]) or {}
+	db.exec_param_many('DELETE FROM tasks WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_versions WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_aliases WHERE slug = ?;', [slug]) or {}
 	vlambda_code_cache.delete(slug)
@@ -3100,6 +3330,21 @@ pub fn register_save_env(cb voidptr) { vlambda_save_env = cb }
 
 @[vc_fn]
 pub fn register_kv(cb voidptr) { vlambda_kv = cb }
+
+@[vc_fn]
+pub fn register_egress(cb voidptr) { vlambda_egress = cb }
+
+@[vc_fn]
+pub fn register_schedules(cb voidptr) { vlambda_schedules = cb }
+
+@[vc_fn]
+pub fn register_meta(cb voidptr) { vlambda_meta = cb }
+
+@[vc_fn]
+pub fn register_openapi(cb voidptr) { vlambda_openapi = cb }
+
+@[vc_fn]
+pub fn register_shutdown(cb voidptr) { vlambda_shutdown = cb }
 
 @[vc_fn]
 pub fn register_install_packages(cb voidptr) { vlambda_install_packages = cb }

@@ -5,16 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-03
 
 ### Added
 - Per-lambda KV store with typed values, TTL, atomic increments, quotas, REST API, UI card and CLI.
 - Capability broker over a Unix socket: per-invocation tokens, scoped KV access and automatic release for sync and async invocations.
 - Sandboxes now allow only `AF_UNIX` client sockets; `AF_INET`/`AF_INET6` remain blocked.
+- Per-lambda egress allow-lists, `request.fetch`/`vlambda.fetch`, SSRF protections, response limits and an egress CLI.
+- Egress audit logs for denied hosts and quota failures.
+- Persistent five-field cron schedules with timezones, per-schedule method/path/payload, run history, manual runs and a UI card.
+- Single-leader scheduler lease, overlap skipping and missed-run recording.
+- OpenAPI metadata for lambdas, owner-scoped `/openapi.json`, a bundled `/docs` viewer and `vlambda openapi` export.
+- gVisor container-runtime mode, compose override and a skip-aware smoke script.
+- Single-host HA building blocks: persistent task payloads, cross-replica task claiming with leases, leader-only project GC, graceful drain and a compose/nginx example.
 
 ### Security
 - The broker token is passed as internal request metadata, not through the lambda environment.
 - KV operations are owner-checked at the HTTP layer and scoped to the token's slug at runtime.
+- Egress rejects private, loopback, link-local and reserved addresses, URL credentials, fragments and redirects.
+- Schedules are owner-only and only the lease leader executes automatic runs.
+- OpenAPI is owner-scoped unless `VLAMBDA_OPENAPI_PUBLIC=1` is explicitly set.
+- `/ready` reports draining and `/shutdown` waits for in-flight work before exit.
+- Async task metadata is persisted without decrypted environment values; secrets are read only at execution time.
+
+### Fixed
+- Recovered async tasks are claimed after a replica crash instead of remaining stuck in `running`.
+- Landlock and nsjail pools now forward request metadata, so KV/env/egress work in every sandbox mode.
+- The scheduler lease prevents duplicate automatic runs across replicas.
+- Deleting a lambda also removes its KV, egress, schedules, runs and pending tasks.
 
 ## [0.3.0] - 2026-11-03
 

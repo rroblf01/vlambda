@@ -23,6 +23,9 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **Web UI** — Dashboard for managing lambdas, code editor, metrics
 - **Async invocation** — Fire-and-forget with task tracking
 - **KV store** — per-lambda typed key/value state with TTL and atomic increments
+- **Controlled egress** — allow-listed HTTPS calls from the sandbox via `request.fetch`
+- **Schedules** — persistent five-field cron jobs with timezones, run history and a single leader
+- **OpenAPI** — owner-scoped spec, metadata editor, `/docs` viewer and CLI export
 - **Sandbox** — Landlock + seccomp in Docker, plus restricted Python builtins and blocked modules
 - **Metrics** — Prometheus-compatible + Chart.js dashboard
 - **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
@@ -204,6 +207,19 @@ Project exports include text files. Binary files are listed in
 - `GET /vlambda/<slug>/packages` — List requirements
 - `POST /vlambda/<slug>/packages` — Install PyPI packages into the vendor dir
 
+### KV, egress and schedules
+- `GET/PUT/DELETE /vlambda/<slug>/kv[/<key>]` — Read, write or delete KV entries
+- `GET/PUT /vlambda/<slug>/egress` — Read or replace the egress allow-list
+- `GET/POST /vlambda/<slug>/schedules` — List or create schedules
+- `PUT/DELETE /vlambda/<slug>/schedules/<id>` — Update or delete a schedule
+- `POST /vlambda/<slug>/schedules/<id>/run` — Run a schedule now
+- `GET /vlambda/<slug>/schedules/<id>/runs` — Run history
+
+### Metadata and OpenAPI
+- `GET/PUT /vlambda/<slug>/meta` — Summary, tags and description
+- `GET /openapi.json` — Owner-scoped OpenAPI 3.1 document
+- `GET /docs` — Bundled OpenAPI viewer
+
 ### Monitoring (requires auth)
 - `GET /health` — Health check
 - `GET /ready` — Readiness
@@ -340,6 +356,118 @@ Management API (owner only, `X-Admin-Token` not needed):
 
 The UI exposes a KV card in the code and project editors.
 
+## Egress
+
+Lambdas cannot open TCP sockets. They can call allow-listed hostnames through
+the capability broker:
+
+```python
+def handler(request):
+    response = request.fetch("https://api.example.com/items", timeout=5)
+    return {"status": response.status, "data": response.json()}
+```
+
+Projects use `from vlambda import fetch`. Supported methods are `GET`, `HEAD`,
+`POST`, `PUT`, `PATCH` and `DELETE`; pass `data=` for raw bodies or
+`json_payload=` for JSON. The response exposes `status`, `headers`, `body`,
+`text` and `json()`.
+
+Configure the allow-list per lambda (`GET/PUT /vlambda/<slug>/egress`):
+
+```bash
+python -m vlambda egress <slug> --set api.example.com --set "*.example.org"
+```
+
+Matching is exact, or `*.example.org` for the apex and subdomains. HTTPS is
+required by default; set `VLAMBDA_EGRESS_ALLOW_HTTP=1` for local development.
+Private, loopback, link-local and reserved addresses are rejected; set
+`VLAMBDA_EGRESS_ALLOW_PRIVATE=1` only for tests. Redirects are not followed.
+Each invocation is limited to 20 calls, 1 MiB request bodies and 2 MiB
+responses, with a 10 s maximum timeout. Denied hosts are logged without query
+strings.
+
+## Schedules
+
+Create persistent cron jobs per lambda:
+
+```bash
+python -m vlambda schedule create <slug> --name nightly --cron "0 3 * * *" \
+  --method POST --path /schedule --payload '{"job": "cleanup"}'
+python -m vlambda schedule list <slug>
+python -m vlambda schedule run <slug> <id>
+python -m vlambda schedule runs <slug> <id>
+python -m vlambda schedule delete <slug> <id>
+```
+
+Supported expressions use five fields (`minute hour day-of-month month weekday`),
+with lists, ranges and steps, plus month/day names and IANA timezones. The
+scheduler runs one leader per database lease; overlapping runs are skipped and
+windows missed by more than `VLAMBDA_SCHEDULE_GRACE` seconds are recorded as
+`missed`. Run history is retained for `VLAMBDA_SCHEDULE_RETENTION` days (7 by
+default, max 1000 runs per schedule).
+
+API:
+
+- `GET/POST /vlambda/<slug>/schedules`
+- `PUT/DELETE /vlambda/<slug>/schedules/<id>`
+- `POST /vlambda/<slug>/schedules/<id>/run`
+- `GET /vlambda/<slug>/schedules/<id>/runs`
+
+The UI exposes a schedules card in the code and project editors.
+
+## gVisor
+
+For a second isolation boundary, run the container with the gVisor runtime:
+
+```bash
+docker run --runtime=runsc ... ghcr.io/rroblf01/vlambda:latest
+# or merge the compose override:
+docker compose -f docker/compose.yml -f docker/compose.gvisor.yml up -d
+```
+
+Kubernetes uses `runtimeClassName: gvisor` on the pod. The internal fork +
+Landlock + seccomp sandbox remains active. `scripts/gvisor-smoke.sh` builds the
+image, runs the health check under `runsc` and skips cleanly when gVisor is not
+installed. Firecracker/microVM-per-invocation is deferred to 0.5.0.
+
+## High availability (single host)
+
+0.4.0 supports multiple replicas on one host sharing a local `/data` volume.
+SQLite WAL, a scheduler lease, task claiming and graceful drain keep scheduled
+runs and tasks single-execution across replicas.
+
+```bash
+docker compose -f docker/compose.ha.yml up -d --build --scale vlambda=2
+```
+
+The sample puts nginx in front of two replicas. Do not place SQLite on NFS; use
+a local volume on the same host. Multi-host HA needs an external database and is
+deferred to 0.5.0.
+
+Relevant settings:
+
+- `VLAMBDA_INSTANCE_ID` — unique replica name (defaults to hostname:pid)
+- `VLAMBDA_DRAIN_TIMEOUT` — graceful shutdown wait (seconds, default 20)
+- `VLAMBDA_TASK_LEASE` — task claim lease (seconds, default 600)
+- `VLAMBDA_SCHEDULE_GRACE` / `VLAMBDA_SCHEDULE_RETENTION` — cron behavior
+- `/ready` returns `503` while a replica is draining
+
+## OpenAPI
+
+Every lambda can carry `summary`, `tags` and `description` metadata, editable
+from the code/project editor or `PUT /vlambda/<slug>/meta`. The generated spec is
+available at `/openapi.json` (authenticated and owner-scoped by default; set
+`VLAMBDA_OPENAPI_PUBLIC=1` for a public spec) and a lightweight viewer is served
+at `/docs` without external assets.
+
+```bash
+python -m vlambda openapi --out openapi.json
+```
+
+The spec describes `/f/<slug>` for every owned lambda, its method, request body
+for write methods, generic JSON/text/binary responses and the `X-Request-Id`
+header. Project static files are described under `/f/<slug>/{path}`.
+
 ## CLI
 
 The CLI talks to a running server and uses `VLAMBDA_URL`/`VLAMBDA_TOKEN` or
@@ -352,6 +480,9 @@ python -m vlambda logs --slug <slug> --days 1
 python -m vlambda env <slug> --set PLAIN=hello --secret TOKEN=s3cret
 python -m vlambda kv <slug> --set hits=0 --ttl 3600
 python -m vlambda kv <slug> --get hits
+python -m vlambda egress <slug> --set api.example.com
+python -m vlambda schedule list <slug>
+python -m vlambda openapi --out openapi.json
 python -m vlambda task <task-id>
 ```
 

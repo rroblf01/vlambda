@@ -8,18 +8,27 @@ receiving a network socket.
 
 from __future__ import annotations
 
+import base64
+import ipaddress
 import json
 import os
 import secrets
+import socket
 import socketserver
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from vlambda import kv_store
+from vlambda import egress_store, kv_store
 
 _MAX_LINE = 1024 * 1024
 _MAX_OPS = 200
+_MAX_HTTP_CALLS = 20
+_MAX_HTTP_BODY = 1024 * 1024
+_MAX_HTTP_RESPONSE = 2 * 1024 * 1024
 _TOKEN_TTL = 3600.0
 
 _tokens: dict[str, dict] = {}
@@ -44,7 +53,11 @@ def _socket_path() -> str:
 
 def issue(slug: str, request_id: str = "") -> str:
     token = secrets.token_urlsafe(32)
+    now = time.time()
     with _tokens_lock:
+        if len(_tokens) > 1000:
+            for key in [key for key, value in _tokens.items() if value["expires"] <= now]:
+                _tokens.pop(key, None)
         _tokens[token] = {
             "slug": slug,
             "request_id": request_id,
@@ -66,7 +79,7 @@ def clear_tokens() -> None:
         _tokens.clear()
 
 
-def _context(token: str) -> dict:
+def _context(token: str, operation: str = "") -> dict:
     with _tokens_lock:
         context = _tokens.get(token)
         if context is None:
@@ -77,6 +90,10 @@ def _context(token: str) -> dict:
         context["ops"] += 1
         if context["ops"] > _MAX_OPS:
             raise BrokerError("capability operation quota exceeded")
+        if operation == "http.fetch":
+            context["http"] = context.get("http", 0) + 1
+            if context["http"] > _MAX_HTTP_CALLS:
+                raise BrokerError("egress call quota exceeded")
         return dict(context)
 
 
@@ -103,6 +120,125 @@ def _wire_value(value):
             "value_b64": base64.b64encode(bytes(value)).decode("ascii"),
         }
     return {"binary": False, "value": value}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _bool_env(name: str) -> bool:
+    return os.environ.get(name, "0").lower() in ("1", "true", "yes", "on")
+
+
+def _http_fetch(context: dict, payload: dict) -> dict:
+    url = str(payload.get("url", ""))
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise BrokerError(f"invalid url: {error}") from error
+    if parsed.scheme not in ("http", "https"):
+        raise BrokerError("only http and https URLs are allowed")
+    if parsed.username or parsed.password:
+        raise BrokerError("URL credentials are not allowed")
+    if parsed.fragment:
+        raise BrokerError("URL fragments are not allowed")
+    if parsed.scheme == "http" and not _bool_env("VLAMBDA_EGRESS_ALLOW_HTTP"):
+        raise BrokerError("http egress is disabled")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise BrokerError("URL has no host")
+    if not egress_store.host_allowed(context["slug"], host):
+        raise BrokerError(f"host not allowed: {host}")
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    allow_private = _bool_env("VLAMBDA_EGRESS_ALLOW_PRIVATE")
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as error:
+        raise BrokerError(f"cannot resolve {host}: {error}") from error
+    if not addresses:
+        raise BrokerError(f"cannot resolve {host}")
+    if not allow_private:
+        for info in addresses:
+            try:
+                address = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                raise BrokerError(f"invalid resolved address for {host}")
+            if not address.is_global:
+                raise BrokerError(f"egress target is not public: {host}")
+    method = str(payload.get("method", "GET")).upper()
+    if method not in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
+        raise BrokerError("method not allowed")
+    supplied = payload.get("headers") or {}
+    if isinstance(supplied, list):
+        supplied = dict(supplied)
+    if not isinstance(supplied, dict) or len(supplied) > 32:
+        raise BrokerError("invalid headers")
+    headers = {}
+    for key, value in supplied.items():
+        key = str(key)
+        value = str(value)
+        lowered = key.lower()
+        if not key or any(char in key + value for char in ("\r", "\n", "\x00")):
+            raise BrokerError("invalid header")
+        if lowered in (
+            "host", "content-length", "connection", "transfer-encoding",
+            "upgrade", "keep-alive", "te", "trailer", "proxy-authorization",
+        ):
+            continue
+        headers[key] = value
+    body = None
+    if "json" in payload:
+        try:
+            body = json.dumps(
+                payload["json"], ensure_ascii=False, allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise BrokerError(f"invalid json body: {error}") from error
+        headers.setdefault("Content-Type", "application/json")
+    elif "data_b64" in payload:
+        try:
+            body = base64.b64decode(str(payload["data_b64"]).encode("ascii"))
+        except Exception as error:
+            raise BrokerError("invalid data_b64") from error
+    elif "body" in payload:
+        body = str(payload["body"]).encode("utf-8")
+    if body is not None and len(body) > _MAX_HTTP_BODY:
+        raise BrokerError(f"request body exceeds {_MAX_HTTP_BODY} bytes")
+    if method in ("GET", "HEAD"):
+        body = None
+    try:
+        timeout = float(payload.get("timeout", 5))
+    except (TypeError, ValueError):
+        timeout = 5.0
+    timeout = min(10.0, max(0.1, timeout))
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    opener = urllib.request.build_opener(_NoRedirect())
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        response = error
+    except Exception as error:
+        raise BrokerError(f"egress request failed: {type(error).__name__}") from error
+    try:
+        status = int(getattr(response, "status", getattr(response, "code", 0)))
+        raw = response.read(_MAX_HTTP_RESPONSE + 1)
+        response_headers = dict(response.headers.items()) if response.headers else {}
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+    if len(raw) > _MAX_HTTP_RESPONSE:
+        raise BrokerError(f"response exceeds {_MAX_HTTP_RESPONSE} bytes")
+    return {
+        "status": status,
+        "headers": response_headers,
+        "body_b64": base64.b64encode(raw).decode("ascii"),
+    }
 
 
 def _dispatch(payload: dict, context: dict):
@@ -137,6 +273,8 @@ def _dispatch(payload: dict, context: dict):
         return kv_store.incr_value(
             slug, str(payload.get("key", "")), payload.get("amount", 1)
         )
+    if operation == "http.fetch":
+        return _http_fetch(context, payload)
     raise BrokerError(f"unknown operation: {operation}")
 
 
@@ -160,7 +298,7 @@ class _Handler(socketserver.StreamRequestHandler):
                 return
             token = str(payload.pop("token", ""))
             try:
-                context = _context(token)
+                context = _context(token, str(payload.get("op", "")))
             except BrokerError as error:
                 self._write({"ok": False, "error": str(error)})
                 return
@@ -188,6 +326,30 @@ class _Handler(socketserver.StreamRequestHandler):
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        limit = max(1, int(os.environ.get("VLAMBDA_BROKER_MAX_CONNECTIONS", "64")))
+        self._slots = threading.BoundedSemaphore(limit)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def shutdown_request(self, request):
+        try:
+            super().shutdown_request(request)
+        finally:
+            self._slots.release()
 
 
 def start() -> bool:

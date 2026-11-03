@@ -1,6 +1,6 @@
 # vlambda 0.4.0 roadmap
 
-Status: Phase 1 in progress (capability broker + KV implemented)
+Status: implemented; release candidate for 0.4.0
 Theme: safe capabilities, automation and operations
 Baseline: 0.3.0 (`3fb9726`)
 
@@ -8,12 +8,12 @@ Baseline: 0.3.0 (`3fb9726`)
 
 - [x] Phase 0: migration scaffold, broker skeleton, ADR decisions.
 - [x] Phase 1: capability broker, per-lambda KV, REST API, UI card, CLI and tests.
-- [ ] Phase 2: controlled egress (`request.fetch`).
-- [ ] Phase 3: schedules.
-- [ ] Phase 4: OpenAPI.
-- [ ] Phase 5: single-host HA.
-- [ ] Phase 6: gVisor runtime mode.
-- [ ] Phase 7: release.
+- [x] Phase 2: controlled egress (`request.fetch`), allow-lists and SSRF checks.
+- [x] Phase 3: schedules with leader lease, history and UI/CLI.
+- [x] Phase 4: OpenAPI metadata, spec, docs and CLI.
+- [x] Phase 5: single-host HA (task claims, scheduler lease, GC leader, drain, compose example).
+- [x] Phase 6: gVisor runtime mode, hardening and limits.
+- [x] Phase 7: docs, release build and packaging.
 
 ## Goals
 

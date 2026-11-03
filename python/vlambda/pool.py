@@ -60,6 +60,7 @@ class Worker:
                     scheme=meta.get("scheme", "http"),
                     env=meta.get("env", {}),
                     kv_client=client,
+                    fetch_client=client,
                 )
                 if task.get("kind") == "project":
                     from vlambda.project import execute_project

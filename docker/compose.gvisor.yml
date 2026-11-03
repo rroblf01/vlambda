@@ -1,0 +1,6 @@
+# Run vlambda under the gVisor container runtime.
+# Merge with the main compose file:
+#   docker compose -f docker/compose.yml -f docker/compose.gvisor.yml up -d
+services:
+  vlambda:
+    runtime: runsc

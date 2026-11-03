@@ -137,8 +137,15 @@ See `docker/README.md` for details, limits and the reset command.
 | `--cert` | `VLAMBDA_CERT` | | TLS certificate path |
 | `--key` | `VLAMBDA_KEY` | | TLS key path |
 | | `VLAMBDA_REGISTRATION` | 1 | Allow public registration (`0` disables it) |
+| | `VLAMBDA_SQLITE_JOURNAL` | auto | `wal` or `delete`; auto falls back to `delete` when CPython and system SQLite versions differ |
 | | `VLAMBDA_RESP_CACHE_TTL` | 0 | GET response cache TTL in seconds (0 disables it) |
 | | `VLAMBDA_CACHE_BACKEND` | memory | `memory`, `file` or `redis` for the optional response cache |
+
+vlambda normally uses SQLite WAL. When CPython bundles a SQLite version
+different from the system `libsqlite3` used by the V extension (for example on
+Python 3.15), it automatically falls back to the rollback journal to avoid
+cross-library WAL corruption. Set `VLAMBDA_SQLITE_JOURNAL=wal` or `delete` to
+override it.
 
 The GET response cache is disabled by default because a handler can depend on
 headers, cookies, `request.env`, time or other request state. Enable it only for

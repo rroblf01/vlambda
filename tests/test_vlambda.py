@@ -1,6 +1,6 @@
 """Integration tests for vlambda."""
 
-import subprocess, time, json, urllib.request, os, signal, sys
+import subprocess, time, json, urllib.request, os, signal, socket, sys
 
 PORT = 9799
 DB = "/tmp/test_vlambda.db"
@@ -25,12 +25,15 @@ def start_server(extra_env=None, keep_db=False):
     else:
         python_bin = "python3"
         cwd = base
+    python_bin = os.environ.get("VLAMBDA_PYTHON", python_bin)
     env = os.environ.copy()
     env["VLAMBDA_ADMIN_TOKEN"] = "test-admin"
     env["VLAMBDA_SECRET"] = "test-secret"
     env["VLAMBDA_DB"] = DB
     env["VLAMBDA_METRICS_DB"] = DB.replace(".db", "_metrics.db")
     env.update(extra_env or {})
+    if not _port_free(10.0):
+        raise RuntimeError(f"port {PORT} is still in use")
     PROC = subprocess.Popen(
         [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
         cwd=cwd,
@@ -38,20 +41,45 @@ def start_server(extra_env=None, keep_db=False):
         stdout=open("/tmp/vlambda_test_server.log", "w"), stderr=subprocess.STDOUT,
     )
     for _ in range(30):
+        if PROC.poll() is not None:
+            try:
+                log = open("/tmp/vlambda_test_server.log", errors="replace").read()[-3000:]
+            except Exception:
+                log = ""
+            raise RuntimeError(f"server exited during startup:\n{log}")
         try:
-            urllib.request.urlopen(f"http://localhost:{PORT}/health")
+            urllib.request.urlopen(f"http://localhost:{PORT}/health", timeout=2)
             return
         except Exception:
             time.sleep(0.5)
     raise RuntimeError("server did not start")
 
+def _port_free(timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", PORT), timeout=0.1):
+                pass
+        except OSError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def stop_server():
     global PROC
     if PROC:
         PROC.terminate()
-        try: PROC.wait(timeout=5)
-        except subprocess.TimeoutExpired: PROC.kill()
+        try:
+            PROC.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            PROC.kill()
+            try:
+                PROC.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         PROC = None
+    _port_free(5.0)
 
 def req(method, path, data=None, token=None, extra_headers=None):
     url = f"http://localhost:{PORT}{path}"

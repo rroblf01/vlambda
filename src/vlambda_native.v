@@ -103,7 +103,11 @@ __global (
 
 fn init_db(db_path string) !sqlite.DB {
 	mut db := sqlite.connect(db_path)!
-	db.exec('PRAGMA journal_mode=WAL;')!
+	if os.getenv('VLAMBDA_SQLITE_JOURNAL').to_lower() == 'delete' {
+		db.exec('PRAGMA journal_mode=DELETE;')!
+	} else {
+		db.exec('PRAGMA journal_mode=WAL;')!
+	}
 	db.exec('PRAGMA busy_timeout=5000;')!
 	db.exec('CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

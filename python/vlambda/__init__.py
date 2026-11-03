@@ -2,6 +2,10 @@
 
 import os
 
+from vlambda.sqlite_compat import configure as _configure_sqlite
+
+_configure_sqlite()
+
 from vlambda.capabilities import EgressResponse, fetch, kv  # noqa: F401
 from vlambda.response import Response  # noqa: F401
 

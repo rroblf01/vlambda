@@ -52,6 +52,11 @@ def init(db_path: str | None = None, retention_days: int | None = None):
             _conn = None
         if _conn is None:
             _conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+            mode = os.environ.get("VLAMBDA_SQLITE_JOURNAL", "wal").upper()
+            if mode not in ("WAL", "DELETE"):
+                mode = "WAL"
+            _conn.execute(f"PRAGMA journal_mode={mode}")
+            _conn.execute("PRAGMA busy_timeout=5000")
             _CONN_PATH = target
             try:
                 _conn.execute("ALTER TABLE metrics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")

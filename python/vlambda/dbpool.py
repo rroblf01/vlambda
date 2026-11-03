@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -13,7 +14,10 @@ _MAX = 8
 
 def _make_conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
+    mode = os.environ.get("VLAMBDA_SQLITE_JOURNAL", "wal").upper()
+    if mode not in ("WAL", "DELETE"):
+        mode = "WAL"
+    conn.execute(f"PRAGMA journal_mode={mode}")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 

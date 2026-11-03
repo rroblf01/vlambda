@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Landlock and nsjail pools now forward request metadata, so KV/env/egress work in every sandbox mode.
 - The scheduler lease prevents duplicate automatic runs across replicas.
 - Deleting a lambda also removes its KV, egress, schedules, runs and pending tasks.
+- Python 3.15 uses a rollback journal when CPython and system SQLite versions differ, avoiding WAL files being unlinked across libraries.
 
 ## [0.3.0] - 2026-11-03
 

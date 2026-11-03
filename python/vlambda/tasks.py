@@ -28,6 +28,10 @@ def _db_path() -> str:
 
 def _connect():
     conn = sqlite3.connect(_db_path(), timeout=10)
+    mode = os.environ.get("VLAMBDA_SQLITE_JOURNAL", "wal").upper()
+    if mode not in ("WAL", "DELETE"):
+        mode = "WAL"
+    conn.execute(f"PRAGMA journal_mode={mode}")
     conn.execute("PRAGMA busy_timeout=10000")
     return conn
 

@@ -37,6 +37,13 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **POC templates** — HTML + `fetch`, webhook, JSON API, static site
 - **Free-threaded builds** — `cp314t`/`cp315t` wheels
 
+## Roadmap
+
+0.4.0 is in planning: per-lambda KV, allow-listed egress, cron schedules,
+OpenAPI, single-host HA and an optional gVisor runtime. See
+[docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md) for architecture, API contracts,
+phases and release criteria.
+
 ## Installation
 
 ```bash

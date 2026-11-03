@@ -572,8 +572,17 @@ function showAlert(id, msg, type) {
   setTimeout(() => { el.innerHTML = ''; }, 6000);
   flog(type === 'error' ? 'error' : 'info', msg);
 }
+function clearAlerts() {
+  document.querySelectorAll('[id$="-alert"]').forEach(el => { el.innerHTML = ''; });
+}
+function reportError(alertId, e) {
+  // 401 already redirected to the login screen; do not flash "unauthorized".
+  if (e && e.auth) return;
+  showAlert(alertId, e && e.message ? e.message : String(e), 'error');
+}
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
+  const requestToken = token;
   if (token) headers['Authorization'] = 'Bearer ' + token;
   const t0 = performance.now();
   flog('debug', 'request ' + (opts.method || 'GET') + ' ' + path);
@@ -592,9 +601,16 @@ async function api(path, opts = {}) {
   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = text; }
   if (!resp.ok) {
     if (resp.status === 401 && path !== '/login' && path !== '/register') {
-      token = null;
-      localStorage.removeItem('vlambda_token');
-      checkAuth();
+      // Only invalidate the session if this request used the current token.
+      // An old request finishing after a new login must not log the user out.
+      if (requestToken && token === requestToken) {
+        token = null;
+        localStorage.removeItem('vlambda_token');
+        checkAuth();
+      }
+      const authError = new Error((data && data.error) ? data.error : 'unauthorized');
+      authError.auth = true;
+      throw authError;
     }
     const msg = (data && data.error) ? data.error : ('HTTP ' + resp.status);
     throw new Error(msg);
@@ -609,6 +625,7 @@ function authHeaders(json) {
 
 /* ---------- auth ---------- */
 function checkAuth() {
+  clearAlerts();
   if (!token) {
     hide('nav');
     ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
@@ -628,6 +645,7 @@ async function doLogin() {
     const data = await api('/login', { method: 'POST', body: u + ':' + p });
     token = data.token;
     localStorage.setItem('vlambda_token', token);
+    clearAlerts();
     flog('info', 'login ok', { user: u });
     checkAuth();
   } catch (e) { showAlert('login-alert', e.message, 'error'); }
@@ -657,6 +675,8 @@ function showView(name) {
   hide('view-login');
   ['dashboard','playground','metrics','logs','system','editor','project'].forEach(v => hide('view-' + v));
   show('view-' + name);
+  const viewAlert = document.getElementById(name + '-alert');
+  if (viewAlert) viewAlert.innerHTML = '';
   document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));
   const nav = document.getElementById('nav-' + name);
   if (nav) nav.classList.add('active');
@@ -684,7 +704,7 @@ async function loadLambdas() {
     document.getElementById('page-label').textContent = 'page ' + (page + 1);
     renderLambdaTable();
     flog('info', 'loaded ' + lambdas.length + ' lambdas');
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 function renderLambdaTable() {
   const q = (document.getElementById('search').value || '').toLowerCase();
@@ -736,7 +756,7 @@ async function createLambda() {
     showAlert('dashboard-alert', 'Created ' + data.slug, 'success');
     hide('create-code');
     loadLambdas();
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 async function createProject() {
   const file = document.getElementById('proj-file').files[0];
@@ -758,7 +778,7 @@ async function createProject() {
     showAlert('dashboard-alert', 'Created project ' + data.slug, 'success');
     hide('create-project');
     loadLambdas();
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 
 /* ---------- edit code lambda ---------- */
@@ -784,7 +804,7 @@ async function editLambda(slug, kind) {
     await loadAliases(slug);
     await loadPackages();
     flog('info', 'editing code lambda', { slug });
-  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+  } catch (e) { reportError('editor-alert', e); }
 }
 async function saveCodeLambda() {
   const code = codeEditor ? VLambdaEditor.getValue(codeEditor) : '';
@@ -797,7 +817,7 @@ async function saveCodeLambda() {
       { method: 'PUT', body: code, headers: authHeaders(false) });
     showAlert('editor-alert', 'Saved', 'success');
     await loadVersions(currentSlug);
-  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+  } catch (e) { reportError('editor-alert', e); }
 }
 async function runCurrent() {
   await saveCodeLambda();
@@ -819,7 +839,7 @@ async function viewVersion(version) {
     document.getElementById('detail-body').textContent = code;
     show('detail-modal');
     flog('info', 'viewed version', { slug: currentSlug, version });
-  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+  } catch (e) { reportError('editor-alert', e); }
 }
 async function rollbackVersion(version) {
   if (!confirm('Restore version ' + version + '?')) return;
@@ -827,7 +847,7 @@ async function rollbackVersion(version) {
     await api('/vlambda/' + currentSlug + '/rollback?version=' + version, { method: 'POST', headers: authHeaders(false) });
     showAlert('editor-alert', 'Restored v' + version, 'success');
     await loadVersions(currentSlug);
-  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+  } catch (e) { reportError('editor-alert', e); }
 }
 
 async function loadAliases(slug) {
@@ -845,7 +865,7 @@ async function createAlias() {
     await api('/vlambda/' + currentSlug + '/alias?name=' + encodeURIComponent(name) + '&version=' + version, { method: 'POST', headers: authHeaders(false) });
     showAlert('editor-alert', 'Alias saved', 'success');
     await loadAliases(currentSlug);
-  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+  } catch (e) { reportError('editor-alert', e); }
 }
 
 async function loadPackages() {
@@ -880,7 +900,7 @@ async function installPackages() {
     showAlert('editor-alert', 'Installed ' + (data.installed || []).length + ' package(s)', 'success');
     await loadPackages();
     flog('info', 'packages installed', data.installed);
-  } catch (e) { showAlert('editor-alert', e.message, 'error'); }
+  } catch (e) { reportError('editor-alert', e); }
 }
 
 /* ---------- project editor ---------- */
@@ -905,7 +925,7 @@ async function openProject(slug) {
     else VLambdaEditor.setValue(projectEditor, activeProjectFile ? projectFiles[activeProjectFile] : '');
     await loadPackages();
     flog('info', 'opened project', { slug, files: names.length });
-  } catch (e) { showAlert('project-alert', e.message, 'error'); }
+  } catch (e) { reportError('project-alert', e); }
 }
 function renderProjectTree() {
   const tree = document.getElementById('file-tree');
@@ -948,7 +968,7 @@ async function saveProject() {
       body: JSON.stringify({ files: projectFiles, entrypoint })
     });
     showAlert('project-alert', 'Saved ' + (data.entrypoint || ''), 'success');
-  } catch (e) { showAlert('project-alert', e.message, 'error'); }
+  } catch (e) { reportError('project-alert', e); }
 }
 async function runProject() {
   await saveProject();
@@ -968,7 +988,7 @@ async function invokeLambda(slug, method) {
     const box = document.getElementById('run-result') || document.getElementById('project-result');
     if (box) box.innerHTML = '<div class="muted" style="margin-bottom:4px;">' + resp.status + ' · ' + ms + 'ms</div><pre>' + escapeHtml(pretty(text)) + '</pre>';
     flog('info', 'invoked ' + slug + ' -> ' + resp.status + ' (' + ms + 'ms)', text.slice(0, 200));
-  } catch (e) { flog('error', 'invoke failed', e.message); showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { flog('error', 'invoke failed', e.message); reportError('dashboard-alert', e); }
 }
 function pretty(text) {
   try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
@@ -1018,7 +1038,7 @@ async function deleteLambda(slug) {
     await api('/vlambda/' + slug, { method: 'DELETE', headers: authHeaders(false) });
     showAlert('dashboard-alert', 'Deleted ' + slug, 'success');
     loadLambdas();
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 
 /* ---------- export / import / duplicate ---------- */
@@ -1036,7 +1056,7 @@ async function exportLambda(slug) {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     showAlert('dashboard-alert', 'Exported ' + slug, 'success');
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 async function importLambda(event) {
   const file = event.target.files[0];
@@ -1051,14 +1071,14 @@ async function importLambda(event) {
     });
     showAlert('dashboard-alert', 'Imported as ' + data.slug, 'success');
     loadLambdas();
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 async function duplicateLambda(slug) {
   try {
     const data = await api('/vlambda/' + encodeURIComponent(slug) + '/duplicate', { method: 'POST' });
     showAlert('dashboard-alert', 'Duplicated as ' + data.slug, 'success');
     loadLambdas();
-  } catch (e) { showAlert('dashboard-alert', e.message, 'error'); }
+  } catch (e) { reportError('dashboard-alert', e); }
 }
 
 /* ---------- metrics ---------- */
@@ -1150,7 +1170,7 @@ async function loadMetrics() {
       }
     }
     flog('info', 'metrics loaded', { days, filter: filterSlug || 'all', reqs: agg.requests_total, p99: stats.p99_ms });
-  } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
+  } catch (e) { reportError('metrics-alert', e); }
   finally { metricsBusy = false; }
 }
 async function exportMetrics() {
@@ -1165,7 +1185,7 @@ async function exportMetrics() {
     a.download = 'vlambda-metrics-' + days + 'd.csv';
     a.click();
     flog('info', 'metrics exported', { days, bytes: text.length });
-  } catch (e) { showAlert('metrics-alert', e.message, 'error'); }
+  } catch (e) { reportError('metrics-alert', e); }
 }
 
 /* ---------- logs ---------- */
@@ -1197,7 +1217,7 @@ async function loadLogs() {
       '<td class="mono">' + escapeHtml(l.message) + '</td></tr>'
     ).join('') || '<tr><td colspan="5" class="muted">No lambda logs</td></tr>';
     flog('info', 'logs loaded', { count: (data.items || []).length, lambda_logs: (logData.items || []).length });
-  } catch (e) { showAlert('logs-alert', e.message, 'error'); }
+  } catch (e) { reportError('logs-alert', e); }
 }
 function showDetailAt(idx) {
   const item = detailItems[idx];
@@ -1221,7 +1241,7 @@ async function loadSystem() {
     document.getElementById('status-pill').style.background = ok ? '#238636' : '#9e6a03';
     await loadTokens();
     flog('info', 'system loaded', { health: health.status, ready: ready.status, pool });
-  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+  } catch (e) { reportError('system-alert', e); }
 }
 
 /* ---------- API tokens ---------- */
@@ -1247,7 +1267,7 @@ async function loadTokens() {
         '<td>' + (t.revoked ? '' : '<button class="btn btn-sm btn-danger" onclick="revokeToken(' + t.id + ')">Revoke</button>') + '</td>';
       tbody.appendChild(tr);
     });
-  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+  } catch (e) { reportError('system-alert', e); }
 }
 async function createToken() {
   const name = document.getElementById('token-name').value.trim() || 'token';
@@ -1264,7 +1284,7 @@ async function createToken() {
     document.getElementById('token-name').value = '';
     showAlert('system-alert', 'Token created', 'success');
     await loadTokens();
-  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+  } catch (e) { reportError('system-alert', e); }
 }
 async function revokeToken(id) {
   if (!confirm('Revoke token ' + id + '?')) return;
@@ -1272,7 +1292,7 @@ async function revokeToken(id) {
     await api('/tokens/' + id, { method: 'DELETE' });
     showAlert('system-alert', 'Token revoked', 'success');
     await loadTokens();
-  } catch (e) { showAlert('system-alert', e.message, 'error'); }
+  } catch (e) { reportError('system-alert', e); }
 }
 
 /* templates */

@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow now includes provenance attestation.
 
 ### Fixed
+- The UI no longer flashes an "unauthorized" alert right after login when a request made with an expired token finishes late.
 - Lambda invocation pages no longer serve the UI favicon; `/favicon.ico` returns 404 when requested from `/f/<slug>`.
 - Metrics, logs, pool stats and DLQ endpoints now require authentication; the UI redirects to login.
 - Metrics charts now register all Chart.js controllers, reuse canvases and keep a fixed 260px height.

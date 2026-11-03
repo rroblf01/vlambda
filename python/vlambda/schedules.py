@@ -348,6 +348,13 @@ class Scheduler:
             # A killed worker must not keep a schedule locked forever.
             stale = now - max(120, float(os.environ.get("VLAMBDA_TIMEOUT", "30")) * 2)
             conn.execute(
+                "UPDATE schedule_runs SET status='failed', error='timeout', finished=?"
+                " WHERE status='running' AND schedule_id IN ("
+                " SELECT id FROM schedules WHERE running=1"
+                " AND run_started IS NOT NULL AND run_started < ?)",
+                (now, stale),
+            )
+            conn.execute(
                 "UPDATE schedules SET running=0, last_status='timeout'"
                 " WHERE running=1 AND run_started IS NOT NULL AND run_started < ?",
                 (stale,),

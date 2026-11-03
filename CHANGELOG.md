@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Pre-warmed fork supervisor pool: each supervisor imports Python once and forks a fresh, Landlock + seccomp confined child per invocation.
+- Canonical `Response` contract with status codes, headers, cookies and binary bodies; `dict`/`str`/`bytes` returns remain supported.
+- Full request metadata: real headers, cookies, parsed query, remote IP, host, scheme and `request.env`.
+- Per-lambda environment variables and encrypted secrets (`/vlambda/<slug>/env`); code lambdas use `request.env` and projects also get `os.environ`.
+- Owner-scoped metrics and logs, plus `X-Admin-Token` access for the admin view.
+- Persistent async task queue and dead-letter queue in SQLite.
+- `vlambda` CLI with `deploy`, `invoke`, `logs`, `env` and `task` commands.
 
 ### Changed
 - Docker uses `VLAMBDA_SANDBOX=fork` by default. The per-invocation process is still fresh, but Python startup is no longer paid on every request.

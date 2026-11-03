@@ -26,6 +26,7 @@ def start_server(extra_env=None):
         cwd = base
     env = os.environ.copy()
     env["VLAMBDA_ADMIN_TOKEN"] = "test-admin"
+    env["VLAMBDA_SECRET"] = "test-secret"
     env["VLAMBDA_DB"] = DB
     env["VLAMBDA_METRICS_DB"] = DB.replace(".db", "_metrics.db")
     env.update(extra_env or {})
@@ -201,6 +202,45 @@ def test_lambda_names():
     assert status == 200, payload
     item = next(x for x in payload["lambdas"] if x["slug"] == project)
     assert item["name"] == "Proyecto Ñandú"
+
+
+
+def test_response_contract():
+    token = test_register_login()
+    code = 'def handler(r): return __import__("vlambda").Response.json({"h":r.header("X-Test")},201)'
+    status, body = req("POST", "/vlambda?name=contract", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    import urllib.request
+    request = urllib.request.Request(
+        f"http://localhost:{PORT}/f/{slug}",
+        headers={"X-Test": "yes"},
+    )
+    resp = urllib.request.urlopen(request)
+    assert resp.status == 201
+    assert resp.headers.get("Content-Type", "").startswith("application/json")
+    assert json.loads(resp.read()) == {"h": "yes"}
+
+
+
+def test_lambda_env():
+    token = test_register_login()
+    code = "def handler(request): return {'env': request.env}"
+    status, body = req("POST", "/vlambda?name=env", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps({
+        "vars": {"PLAIN": "hello"},
+        "secrets": {"TOKEN": "s3cret"},
+    }), token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    entries = {item["key"]: item for item in body["env"]}
+    assert entries["PLAIN"] == {"key": "PLAIN", "secret": False, "value": "hello"}
+    assert entries["TOKEN"]["secret"] is True and entries["TOKEN"]["value"] == "********"
+
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200, body
+    assert body["env"] == {"PLAIN": "hello", "TOKEN": "s3cret"}, body
 
 
 def test_html_lambda():
@@ -623,6 +663,46 @@ def test_metrics_aggregate_endpoint():
     assert all(i.get("slug") == slug for i in body.get("per_lambda", []))
 
 
+
+def test_metrics_ownership():
+    token_a = test_register_login()
+    status, body = req("POST", "/vlambda?name=owner-a",
+                       "def handler(request):\n    request.log('owner a')\n    return {'owner': 'a'}",
+                       token_a)
+    assert status == 201, body
+    slug_a = body["slug"]
+    req("GET", f"/f/{slug_a}")
+
+    token_b = test_register_login()
+    status, body = req("POST", "/vlambda?name=owner-b",
+                       "def handler(request):\n    request.log('owner b')\n    return {'owner': 'b'}",
+                       token_b)
+    assert status == 201, body
+    slug_b = body["slug"]
+    req("GET", f"/f/{slug_b}")
+    time.sleep(1.5)
+
+    status, body = req("GET", "/metrics/aggregate?days=1", token=token_a)
+    assert status == 200, body
+    assert [item["slug"] for item in body.get("per_lambda", [])] == [slug_a], body
+
+    status, body = req("GET", "/logs/history?days=1", token=token_a)
+    assert status == 200, body
+    assert body.get("items") and all(item["slug"] == slug_a for item in body["items"]), body
+
+    status, body = req("GET", "/metrics/aggregate?days=1", token=token_a,
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200, body
+    admin_slugs = {item["slug"] for item in body.get("per_lambda", [])}
+    assert {slug_a, slug_b} <= admin_slugs, body
+
+    status, body = req("DELETE", "/metrics/history?days=0", token=token_a)
+    assert status == 200, body
+    status, body = req("GET", "/metrics/aggregate?days=1", token=token_b)
+    assert status == 200, body
+    assert [item["slug"] for item in body.get("per_lambda", [])] == [slug_b], body
+
+
 def test_lambda_logs():
     token = test_register_login()
     code = "def handler(request):\n    request.log('hello from lambda')\n    return {'ok': True}"
@@ -824,7 +904,7 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_lambda_env, test_html_lambda, test_auth_required,
              test_update, test_delete, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,

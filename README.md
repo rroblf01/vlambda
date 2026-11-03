@@ -142,6 +142,8 @@ See `docker/README.md` for details, limits and the reset command.
 - `GET /vlambda/<slug>` — Get lambda code
 - `PUT /vlambda/<slug>?method=POST&name=new-name` — Update lambda
 - `DELETE /vlambda/<slug>` — Delete lambda
+- `GET /vlambda/<slug>/env` — List environment variables (secrets masked)
+- `PUT /vlambda/<slug>/env` — Replace vars/secrets: `{"vars": {...}, "secrets": {...}}`
 
 ### API tokens (requires auth)
 - `POST /tokens` — Create a token: `{"name":"ci","scopes":["read","write"]}`
@@ -218,20 +220,35 @@ Logs are stored in the metrics database and can be queried with
 `GET /logs/history?days=1&slug=<slug>`. The UI Logs view shows them alongside
 invocations. The "Save logs" template in the editor is a ready-to-run example.
 
+Metrics and logs are scoped to the authenticated user. The admin token
+(`X-Admin-Token`) can query all users through the API/CLI.
+
 Metrics and logs are pruned after `VLAMBDA_METRICS_RETENTION` days (default 7).
 From the UI you can also prune data older than the selected period, or delete
 all matching rows, with the current lambda filter applied.
 
 ## Lambda Format
 
-Every lambda must define a `handler` function:
+Every lambda must define a `handler` function. The canonical contract returns a
+`Response`; returning a `dict`, `str` or `bytes` is still accepted as shorthand:
 
 ```python
+from vlambda import Response
+
 def handler(request):
-    return {"msg": "hello", "path": request.path}
+    return Response.json(
+        {"msg": "hello", "path": request.path},
+        status=201,
+        headers={"X-Example": "yes"},
+    )
 ```
 
-The `request` object has: `method`, `path`, `query_string`, `headers`, `body`.
+The `request` object has: `method`, `path`, `query_string`, `query`, `headers`,
+`cookies`, `body`, `remote_ip`, `host`, `scheme`, `request_id`, `slug`, `env`,
+and helpers `header()`, `json()`, `form()` and `log()`.
+
+`Response` supports `json()`, `text()`, `html()`, `redirect()`, `no_content()`,
+status codes, headers, cookies and binary bodies.
 
 Safe builtins: `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `range`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`, `print`, etc.
 
@@ -254,6 +271,35 @@ Set `VLAMBDA_REGISTRATION=0` to close it and create users with
 undo a kernel-level escape. Keep this deployment disposable and do not store
 valuable secrets in it; for stronger isolation use gVisor, Firecracker or one
 container per tenant.
+
+## Environment and secrets
+
+Set per-lambda variables with `PUT /vlambda/<slug>/env`:
+
+```json
+{
+  "vars": {"PLAIN": "hello"},
+  "secrets": {"TOKEN": "s3cret"}
+}
+```
+
+Secrets are encrypted at rest, masked by the API and decrypted only for that
+lambda's runner. Code lambdas read them from `request.env`; projects also see
+them in `os.environ`. Use `VLAMBDA_ENCRYPTION_KEY` if you want to rotate
+`VLAMBDA_SECRET` without losing existing secrets.
+
+## CLI
+
+The CLI talks to a running server and uses `VLAMBDA_URL`/`VLAMBDA_TOKEN` or
+`--url`/`--token`:
+
+```bash
+python -m vlambda deploy main.py --name my-lambda --method GET
+python -m vlambda invoke <slug>
+python -m vlambda logs --slug <slug> --days 1
+python -m vlambda env <slug> --set PLAIN=hello --secret TOKEN=s3cret
+python -m vlambda task <task-id>
+```
 
 ## Web UI
 

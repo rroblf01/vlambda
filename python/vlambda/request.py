@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from urllib.parse import parse_qs
+
 _log_sink = None
 
 
@@ -17,17 +20,46 @@ def clear_log_sink():
 
 
 class Request:
-    __slots__ = ("method", "path", "query_string", "headers", "body", "request_id", "slug")
+    __slots__ = (
+        "method", "path", "query_string", "query", "headers", "cookies",
+        "body", "request_id", "slug", "remote_ip", "host", "scheme", "env",
+    )
 
     def __init__(self, method="GET", path="/", query_string="", headers=None, body=b"",
-                 request_id="", slug=""):
+                 request_id="", slug="", remote_ip="", host="", scheme="http", env=None):
         self.method = method
         self.path = path
         self.query_string = query_string
-        self.headers = headers or {}
+        self.query = {k: v[0] for k, v in parse_qs(query_string).items()}
+        self.headers = dict(headers or {})
         self.body = body
         self.request_id = request_id
         self.slug = slug
+        self.remote_ip = remote_ip
+        self.host = host
+        self.scheme = scheme
+        self.env = dict(env or {})
+        cookie_header = self.header("cookie")
+        self.cookies = {}
+        for part in cookie_header.split(";"):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                self.cookies[key.strip()] = value.strip()
+
+    def header(self, name, default=""):
+        wanted = name.lower()
+        for key, value in self.headers.items():
+            if key.lower() == wanted:
+                return value
+        return default
+
+    def json(self):
+        if not self.body:
+            return None
+        return json.loads(self.body)
+
+    def form(self):
+        return {k: v[0] for k, v in parse_qs(self.body.decode("utf-8", "replace")).items()}
 
     def log(self, message, level="info"):
         """Persist a log line for this invocation."""

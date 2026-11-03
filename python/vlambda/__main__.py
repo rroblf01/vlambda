@@ -13,6 +13,9 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from vlambda.reset import main as reset_main
         raise SystemExit(reset_main(sys.argv[2:]))
+    if any(arg in ("invoke", "deploy", "logs", "env", "task") for arg in sys.argv[1:]):
+        from vlambda.cli import main as cli_main
+        raise SystemExit(cli_main(sys.argv[1:]))
 
     parser = argparse.ArgumentParser(prog="vlambda", description="vlambda server")
     parser.add_argument("--port", type=int, default=int(os.environ.get("VLAMBDA_PORT", "8080")))
@@ -54,7 +57,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password, new_auth_epoch
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, set_overloaded
+    from vlambda_native import start_server, db_init, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, set_overloaded
 
     if not db_init(args.sqlite_path):
         print("Failed to initialize database", file=sys.stderr)
@@ -106,7 +109,7 @@ def main() -> None:
             result["error"] = task["error"]
         return json.dumps(result)
 
-    def _pool_execute(request_id, slug, code, method, path, query, body, timeout=0, memory_mb=0):
+    def _pool_execute(request_id, slug, code, method, path, query, body, timeout=0, memory_mb=0, request_meta=""):
         method = method or "GET"
         path = path or "/"
         query = query or ""
@@ -147,17 +150,21 @@ def main() -> None:
                 pass
         if not timeout:
             timeout = args.invoke_timeout
-        result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
-        if isinstance(result, str):
-            payload = result
-        elif isinstance(result, bytes):
-            payload = result.decode("utf-8", "replace")
+        request_meta = _meta_with_env(slug, request_meta)
+        result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+        from vlambda.response import serialize
+        if isinstance(result, dict) and "status" in result and ("body" in result or "body_b64" in result):
+            response = result
+        elif isinstance(result, dict) and set(result.keys()) == {"error"}:
+            response = {
+                "status": 500,
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "body": _json.dumps(result),
+                "body_b64": "",
+            }
         else:
-            try:
-                dumped = _dumps(result)
-            except Exception:
-                dumped = _json.dumps(result, default=_json_default).encode()
-            payload = dumped.decode() if isinstance(dumped, bytes) else dumped
+            response = serialize(result)
+        payload = _json.dumps(response)
         if cache_key is not None:
             from vlambda.cache import set_response
             set_response(cache_key, payload)
@@ -316,45 +323,71 @@ def main() -> None:
     register_get_task(_get_task)
 
     import atexit
+    from vlambda.env import get_env as _lambda_env, list_env as _env_list, save_env as _env_save
     from vlambda.metrics import record as _metrics_record, query as _metrics_query, stats as _metrics_query_stats, summary as _metrics_summary, aggregate as _metrics_aggregate, query_logs as _metrics_logs, export_csv as _metrics_export, delete_metrics as _metrics_delete, delete_logs as _metrics_delete_logs
     import json as _json
+
+    def _meta_with_env(slug, request_meta):
+        try:
+            meta = _json.loads(request_meta or "{}")
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["env"] = _lambda_env(slug) if slug else {}
+        return _json.dumps(meta)
+
+    def _list_env_cb(slug, owner_id):
+        return _env_list(slug, owner_id)
+
+    def _save_env_cb(slug, owner_id, body):
+        return _env_save(slug, owner_id, body)
+
+    register_list_env(_list_env_cb)
+    register_save_env(_save_env_cb)
 
     def _record_metric(request_id, slug, method, path, latency_ms, error):
         _metrics_record(request_id, slug, method, path, float(latency_ms), error)
 
-    def _query_metrics(days):
+    def _owner(value):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 0
+
+    def _query_metrics(days, owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 7
-        return _json.dumps(_metrics_query(d))
+        return _json.dumps(_metrics_query(d, owner_id=_owner(owner_id)))
 
     register_record_metric(_record_metric)
     register_query_metrics(_query_metrics)
 
-    def _query_stats(days, slug=""):
+    def _query_stats(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 7
-        return _json.dumps(_metrics_query_stats(d, slug))
+        return _json.dumps(_metrics_query_stats(d, slug, owner_id=_owner(owner_id)))
 
     register_query_stats(_query_stats)
 
 
-    def _query_summary(days, slug=""):
+    def _query_summary(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 7
-        return _json.dumps(_metrics_summary(d, slug))
+        return _json.dumps(_metrics_summary(d, slug, owner_id=_owner(owner_id)))
 
-    def _export_metrics(days, slug=""):
+    def _export_metrics(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 7
-        return _metrics_export(d, slug)
+        return _metrics_export(d, slug, owner_id=_owner(owner_id))
 
     def _pool_stats():
         import json
@@ -362,37 +395,37 @@ def main() -> None:
 
     register_query_summary(_query_summary)
 
-    def _query_aggregate(days, slug=""):
+    def _query_aggregate(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 7
-        return _json.dumps(_metrics_aggregate(d, slug))
+        return _json.dumps(_metrics_aggregate(d, slug, owner_id=_owner(owner_id)))
 
     register_query_aggregate(_query_aggregate)
 
-    def _query_logs(days, slug=""):
+    def _query_logs(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 1
-        return _json.dumps(_metrics_logs(d, slug))
+        return _json.dumps(_metrics_logs(d, slug, owner_id=_owner(owner_id)))
 
     register_query_logs(_query_logs)
 
-    def _delete_metrics(days, slug=""):
+    def _delete_metrics(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 0
-        return _json.dumps(_metrics_delete(d, slug))
+        return _json.dumps(_metrics_delete(d, slug, owner_id=_owner(owner_id)))
 
-    def _delete_logs(days, slug=""):
+    def _delete_logs(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 0
-        return _json.dumps(_metrics_delete_logs(d, slug))
+        return _json.dumps(_metrics_delete_logs(d, slug, owner_id=_owner(owner_id)))
 
     register_delete_metrics(_delete_metrics)
     register_delete_logs(_delete_logs)
@@ -401,18 +434,30 @@ def main() -> None:
 
     from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl, schedule_delete as _schedule_delete_impl
 
-    def _run_project(project_dir, entrypoint, method, path, query, body, request_id, slug):
+    def _run_project(project_dir, entrypoint, method, path, query, body, request_id, slug, request_meta):
         import json
         timeout = args.invoke_timeout
+        from vlambda.response import serialize
         try:
-            result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug)
-            if isinstance(result, str):
-                return result
-            if isinstance(result, (dict, list)):
+            request_meta = _meta_with_env(slug, request_meta)
+            result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug, request_meta=request_meta)
+            if isinstance(result, dict) and "status" in result and ("body" in result or "body_b64" in result):
                 return json.dumps(result)
-            return str(result)
+            if isinstance(result, dict) and set(result.keys()) == {"error"}:
+                return json.dumps({
+                    "status": 500,
+                    "headers": [{"name": "Content-Type", "value": "application/json"}],
+                    "body": json.dumps(result),
+                    "body_b64": "",
+                })
+            return json.dumps(serialize(result))
         except Exception as e:
-            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+            return json.dumps({
+                "status": 500,
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "body": json.dumps({"error": f"{type(e).__name__}: {e}"}),
+                "body_b64": "",
+            })
 
     def _delete_project(project_dir):
         _delete_project_impl(project_dir)

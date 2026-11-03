@@ -9,6 +9,7 @@ import strings
 import crypto.sha256
 import rand
 import json2
+import encoding.base64
 
 // ---- Global state ----
 
@@ -47,7 +48,7 @@ __global (
 	vlambda_import_lambda = voidptr(0)
 	vlambda_duplicate_lambda = voidptr(0)
 	vlambda_admin_create_user = voidptr(0)
-	vlambda_result_str = '{"error": "not started"}'
+	vlambda_result_str = error_envelope('not started')
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
 	vlambda_rate_limit = 100          // req/s per IP
@@ -85,6 +86,8 @@ __global (
 	vlambda_admin_reset = voidptr(0)
 	vlambda_install_packages = voidptr(0)
 	vlambda_list_packages = voidptr(0)
+	vlambda_list_env = voidptr(0)
+	vlambda_save_env = voidptr(0)
 	// Rate limiter (token bucket per IP)
 	vlambda_rate_buckets = map[string]TokenBucket{}
 )
@@ -120,6 +123,7 @@ fn init_db(db_path string) !sqlite.DB {
 	db.exec('ALTER TABLE lambdas ADD COLUMN version INTEGER NOT NULL DEFAULT 1;') or {}
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, method TEXT NOT NULL DEFAULT "GET", entrypoint TEXT NOT NULL DEFAULT "", project_dir TEXT NOT NULL DEFAULT "", kind TEXT NOT NULL DEFAULT "code", created_at TEXT NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_aliases (alias TEXT PRIMARY KEY, slug TEXT NOT NULL, version INTEGER NOT NULL, owner_id INTEGER NOT NULL);')!
+	db.exec('CREATE TABLE IF NOT EXISTS lambda_env (slug TEXT NOT NULL, key TEXT NOT NULL, is_secret INTEGER NOT NULL DEFAULT 0, value TEXT NOT NULL, PRIMARY KEY (slug, key));')!
 	db.exec('CREATE TABLE IF NOT EXISTS api_tokens (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id INTEGER NOT NULL,
@@ -195,6 +199,18 @@ fn hex_digit(c u8) int {
 		return int(c - `A`) + 10
 	}
 	return -1
+}
+
+
+fn is_admin_request(req http.Request) bool {
+	token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
+	expected := os.getenv('VLAMBDA_ADMIN_TOKEN')
+	return expected != '' && token == expected
+}
+
+fn request_owner(req http.Request, auth_uid int) int {
+	if is_admin_request(req) { return 0 }
+	return auth_uid
 }
 
 fn decode_query_value(value string) string {
@@ -284,6 +300,59 @@ fn serve_project_file(project_dir string, sub string) ?http.Response {
 			key: .content_type
 			value: content_type_for(sub)
 		})
+	}
+}
+
+struct LambdaResponseHeader {
+	name  string
+	value string
+}
+
+struct LambdaResponse {
+	status   int
+	headers  []LambdaResponseHeader
+	body     string
+	body_b64 string
+}
+
+fn request_meta_json(req http.Request) string {
+	mut headers := []string{}
+	for key in req.header.keys() {
+		if value := req.header.get_custom(key, http.HeaderQueryConfig{}) {
+			headers << json_str(key) + ':' + json_str(value)
+		}
+	}
+	scheme := req.header.get_custom('X-Forwarded-Proto', http.HeaderQueryConfig{}) or { 'http' }
+	return '{"headers":{' + headers.join(',') + '},"remote_ip":' + json_str(req.remote_ip()) + ',"host":' + json_str(req.host) + ',"scheme":' + json_str(scheme) + '}'
+}
+
+fn error_envelope(message string) string {
+	body := '{"error":' + json_str(message) + '}'
+	return '{"status":500,"headers":[{"name":"Content-Type","value":"application/json"}],"body":' + json_str(body) + ',"body_b64":""}'
+}
+
+fn build_lambda_response(raw string) http.Response {
+	mut lr := json2.decode[LambdaResponse](raw, json2.DecoderOptions{}) or {
+		return http.Response{
+			status_code: 200
+			body: raw
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: lambda_content_type(raw) })
+		}
+	}
+	body := if lr.body_b64 != '' { base64.decode_str(lr.body_b64) } else { lr.body }
+	status := if lr.status > 0 { lr.status } else { 200 }
+	mut hdr := http.new_header(http.HeaderConfig{ key: .content_type, value: lambda_content_type(body) })
+	for item in lr.headers {
+		if item.name.to_lower() == 'content-type' {
+			hdr.set_custom(item.name, item.value) or {}
+		} else {
+			hdr.add_custom(item.name, item.value) or {}
+		}
+	}
+	return http.Response{
+		status_code: status
+		body: body
+		header: hdr
 	}
 }
 
@@ -717,15 +786,17 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
+		owner_id := request_owner(req, auth_uid)
 		if req.method == .delete {
 			mut body := '{"deleted": 0}'
 			ptr := &body
 			if vlambda_delete_logs != unsafe { nil } {
-				vcraft.with_gil(fn [days, slug, ptr] () {
-					args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+					args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 					r := vcraft.call(vlambda_delete_logs, args)
 					vcraft.borrow(args[0]).decref()
 					vcraft.borrow(args[1]).decref()
+					vcraft.borrow(args[2]).decref()
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
 						ss := vcraft.from_py_string(r, 'result') or { '{"deleted": 0}' }
@@ -741,11 +812,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		mut body := '{"days": ${days}, "count": 0, "items": []}'
 		ptr := &body
 		if vlambda_query_logs != unsafe { nil } {
-			vcraft.with_gil(fn [days, slug, ptr] () {
-				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+			vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 				r := vcraft.call(vlambda_query_logs, args)
 				vcraft.borrow(args[0]).decref()
 				vcraft.borrow(args[1]).decref()
+				vcraft.borrow(args[2]).decref()
 				if r.is_null() { vcraft.clear_error(); return }
 				if r.type_name() == 'str' {
 					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "count": 0, "items": []}' }
@@ -833,15 +905,17 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 		}
+		owner_id := request_owner(req, auth_uid)
 		if req.method == .delete {
 			mut body := '{"deleted": 0}'
 			ptr := &body
 			if vlambda_delete_metrics != unsafe { nil } {
-				vcraft.with_gil(fn [days, slug, ptr] () {
-					args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+				vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+					args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 					r := vcraft.call(vlambda_delete_metrics, args)
 					vcraft.borrow(args[0]).decref()
 					vcraft.borrow(args[1]).decref()
+					vcraft.borrow(args[2]).decref()
 					if r.is_null() {
 						vcraft.clear_error()
 						return
@@ -860,10 +934,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		mut body := '{"days": ${days}, "items": []}'
 		ptr := &body
 		if vlambda_query_metrics != unsafe { nil } {
-			vcraft.with_gil(fn [days, ptr] () {
-				args := [vcraft.to_py_string(days.str()).ptr]
+			vcraft.with_gil(fn [days, owner_id, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 				r := vcraft.call(vlambda_query_metrics, args)
 				vcraft.borrow(args[0]).decref()
+				vcraft.borrow(args[1]).decref()
 				if r.is_null() {
 					vcraft.clear_error()
 					return
@@ -903,14 +978,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
+		owner_id := request_owner(req, auth_uid)
 		mut body := '{"days": ${days}, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0}'
 		ptr := &body
 		if vlambda_query_stats != unsafe { nil } {
-			vcraft.with_gil(fn [days, slug, ptr] () {
-				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+			vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 				r := vcraft.call(vlambda_query_stats, args)
 				vcraft.borrow(args[0]).decref()
 				vcraft.borrow(args[1]).decref()
+				vcraft.borrow(args[2]).decref()
 				if r.is_null() {
 					vcraft.clear_error()
 					return
@@ -950,14 +1027,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
+		owner_id := request_owner(req, auth_uid)
 		mut body := '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}'
 		ptr := &body
 		if vlambda_query_aggregate != unsafe { nil } {
-			vcraft.with_gil(fn [days, slug, ptr] () {
-				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+			vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 				r := vcraft.call(vlambda_query_aggregate, args)
 				vcraft.borrow(args[0]).decref()
 				vcraft.borrow(args[1]).decref()
+				vcraft.borrow(args[2]).decref()
 				if r.is_null() { vcraft.clear_error(); return }
 				if r.type_name() == 'str' {
 					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}' }
@@ -989,14 +1068,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
+		owner_id := request_owner(req, auth_uid)
 		mut body := '{"days": ${days}, "items": []}'
 		ptr := &body
 		if vlambda_query_summary != unsafe { nil } {
-			vcraft.with_gil(fn [days, slug, ptr] () {
-				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+			vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 				r := vcraft.call(vlambda_query_summary, args)
 				vcraft.borrow(args[0]).decref()
 				vcraft.borrow(args[1]).decref()
+				vcraft.borrow(args[2]).decref()
 				if r.is_null() {
 					vcraft.clear_error()
 					return
@@ -1035,14 +1116,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
+		owner_id := request_owner(req, auth_uid)
 		mut body := ''
 		ptr := &body
 		if vlambda_export_metrics != unsafe { nil } {
-			vcraft.with_gil(fn [days, slug, ptr] () {
-				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr]
+			vcraft.with_gil(fn [days, slug, owner_id, ptr] () {
+				args := [vcraft.to_py_string(days.str()).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(owner_id.str()).ptr]
 				r := vcraft.call(vlambda_export_metrics, args)
 				vcraft.borrow(args[0]).decref()
 				vcraft.borrow(args[1]).decref()
+				vcraft.borrow(args[2]).decref()
 				if r.is_null() {
 					vcraft.clear_error()
 					return
@@ -1568,7 +1651,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			vlambda_request_counter++
 			request_id := 'req-${vlambda_request_counter}'
-			result := run_project(project_dir, entrypoint, method, req.url, q, req.data, request_id, slug)
+			result := run_project(project_dir, entrypoint, method, req.url, q, req.data, request_id, slug, request_meta_json(req))
 			elapsed := time.since(start_time).microseconds()
 			vlambda_latency_sum += f64(elapsed) / 1000.0
 			vlambda_latency_count++
@@ -1577,7 +1660,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if result.contains('error') {
 				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 			}
-			mut resp := cors_response(200, result, lambda_content_type(result))
+			mut resp := build_lambda_response(result)
+			add_cors_headers(mut resp.header)
 			resp.header.add_custom('X-Request-Id', request_id) or {}
 			return resp
 		}
@@ -1599,7 +1683,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		vlambda_request_counter++
 		request_id := 'req-${vlambda_request_counter}'
-		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout, memory_mb)
+		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout, memory_mb, request_meta_json(req))
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
@@ -1611,9 +1695,72 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 			}
 		}
-		mut resp := cors_response(200, result, lambda_content_type(result))
+		mut resp := build_lambda_response(result)
+		add_cors_headers(mut resp.header)
 		resp.header.add_custom('X-Request-Id', request_id) or {}
 		return resp
+	}
+
+
+	// Route: /vlambda/<slug>/env (GET list, PUT save)
+	if req.url.starts_with('/vlambda/') && req.url.contains('/env') {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		slug := url_path[9..].all_before('/env')
+		owner := db_get_lambda_owner(slug)
+		if owner < 0 {
+			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if owner != auth_uid {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .get {
+			mut body := '{"env": []}'
+			ptr := &body
+			if vlambda_list_env != unsafe { nil } {
+				vcraft.with_gil(fn [slug, auth_uid, ptr] () {
+					args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(auth_uid.str()).ptr]
+					r := vcraft.call(vlambda_list_env, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"env": []}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if req.method == .put {
+			request_body := req.data
+			mut body := '{"error": "save failed"}'
+			ptr := &body
+			if vlambda_save_env != unsafe { nil } {
+				vcraft.with_gil(fn [slug, auth_uid, request_body, ptr] () {
+					args := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(auth_uid.str()).ptr, vcraft.to_py_string(request_body).ptr]
+					r := vcraft.call(vlambda_save_env, args)
+					for a in args { vcraft.borrow(a).decref() }
+					if r.is_null() { vcraft.clear_error(); return }
+					if r.type_name() == 'str' {
+						ss := vcraft.from_py_string(r, 'result') or { '{"error": "save failed"}' }
+						r.decref()
+						unsafe { *ptr = ss + '' }
+						return
+					}
+					r.decref()
+				})
+			}
+			status := if body.contains('"error"') { 400 } else { 200 }
+			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
 	// Route: /vlambda/<slug>/export (GET = download lambda as JSON)
@@ -2381,12 +2528,12 @@ fn lambda_content_type(result string) string {
 	return 'application/json'
 }
 
-pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int) string {
-	vlambda_result_str = '{"error": "not started"}'
+pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int, request_meta string) string {
+	vlambda_result_str = error_envelope('not started')
 	start_time := time.now()
-	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, memory_mb, start_time] () {
+	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, memory_mb, start_time, request_meta] () {
 		if vlambda_executor == unsafe { nil } {
-			vlambda_result_str = '{"error": "no executor registered"}'
+			vlambda_result_str = error_envelope('no executor registered')
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
@@ -2396,12 +2543,12 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			}
 			return
 		}
-		args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr]
+		args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr, vcraft.to_py_string(request_meta).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
 			vcraft.clear_error()
-			vlambda_result_str = '{"error": "execution failed"}'
+			vlambda_result_str = error_envelope('execution failed')
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				margs := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
@@ -2452,19 +2599,19 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 }
 
 @[vc_fn]
-pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string, request_id string, slug string) string {
-	vlambda_result_str = '{"error": "not started"}'
-	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body, request_id, slug] () {
+pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string, request_id string, slug string, request_meta string) string {
+	vlambda_result_str = error_envelope('not started')
+	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body, request_id, slug, request_meta] () {
 		if vlambda_run_project == unsafe { nil } {
-			vlambda_result_str = '{"error": "no project runner registered"}'
+			vlambda_result_str = error_envelope('no project runner registered')
 			return
 		}
-		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr]
+		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(request_meta).ptr]
 		result := vcraft.call(vlambda_run_project, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
 			vcraft.clear_error()
-			vlambda_result_str = '{"error": "execution failed"}'
+			vlambda_result_str = error_envelope('execution failed')
 			return
 		}
 		if result.type_name() == 'str' {
@@ -2740,6 +2887,12 @@ pub fn register_admin_create_user(cb voidptr) {
 
 @[vc_fn]
 pub fn register_list_packages(cb voidptr) { vlambda_list_packages = cb }
+
+@[vc_fn]
+pub fn register_list_env(cb voidptr) { vlambda_list_env = cb }
+
+@[vc_fn]
+pub fn register_save_env(cb voidptr) { vlambda_save_env = cb }
 
 @[vc_fn]
 pub fn register_install_packages(cb voidptr) { vlambda_install_packages = cb }

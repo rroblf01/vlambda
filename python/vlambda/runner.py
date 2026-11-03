@@ -18,6 +18,7 @@ if ROOT not in sys.path:
 
 from vlambda.cache import get as get_compiled
 from vlambda.request import Request, set_log_sink
+from vlambda.response import Response, serialize
 from vlambda.sandbox import make_sandbox
 
 _current_logs: list[dict] = []
@@ -35,19 +36,24 @@ def _log_sink(request_id: str, slug: str, level: str, message: str):
 set_log_sink(_log_sink)
 
 
-def _execute(code: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = ""):
+def _execute(code: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = "",
+             headers=None, remote_ip: str = "", host: str = "", scheme: str = "http", env=None):
     compiled, ns_template, handler = get_compiled(code)
     if handler is None:
-        return {"error": "no handler function defined"}
+        raise ValueError("no handler function defined")
     ns = dict(ns_template)
-    req = Request(method=method, path=path, query_string=query, headers={}, body=body, request_id=request_id, slug=slug)
+    req = Request(method=method, path=path, query_string=query, headers=headers or {}, body=body,
+                  request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env)
     ns["request"] = req
     return handler(req)
 
 
-def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = ""):
+def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, query: str, body: bytes,
+                     request_id: str = "", slug: str = "", headers=None, remote_ip: str = "",
+                     host: str = "", scheme: str = "http", env=None):
     from vlambda.project import execute_project
-    req = Request(method=method, path=path, query_string=query, headers={}, body=body, request_id=request_id, slug=slug)
+    req = Request(method=method, path=path, query_string=query, headers=headers or {}, body=body,
+                  request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env)
     return execute_project(project_dir, entrypoint, req)
 
 
@@ -88,6 +94,17 @@ def handle_payload(req: dict) -> dict:
         path = req.get("path", "/")
         query = req.get("query_string", "")
         body = base64.b64decode(req.get("body_b64", "")) if req.get("body_b64") else b""
+        try:
+            meta = json.loads(req.get("request_meta", "{}") or "{}")
+        except Exception:
+            meta = {}
+        headers = meta.get("headers", {}) if isinstance(meta, dict) else {}
+        remote_ip = meta.get("remote_ip", "") if isinstance(meta, dict) else ""
+        host = meta.get("host", "") if isinstance(meta, dict) else ""
+        scheme = meta.get("scheme", "http") if isinstance(meta, dict) else "http"
+        env = meta.get("env", {}) if isinstance(meta, dict) else {}
+        if isinstance(env, dict):
+            os.environ.update({str(k): str(v) for k, v in env.items()})
         vendor_dir = req.get("vendor_dir", "")
         if vendor_dir and os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
             sys.path.insert(0, vendor_dir)
@@ -95,27 +112,12 @@ def handle_payload(req: dict) -> dict:
             result = _execute_project(
                 req.get("project_dir", ""), req.get("entrypoint", "main.py"),
                 method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
+                headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
             )
         else:
-            result = _execute(code, method, path, query, body, req.get("request_id", ""), req.get("slug", ""))
-        if isinstance(result, str):
-            payload = result
-        elif isinstance(result, bytes):
-            payload = result.decode("utf-8", "replace")
-        elif isinstance(result, (dict, list, tuple)):
-            import json as _json
-
-            def _default(value):
-                if isinstance(value, (bytes, bytearray)):
-                    return bytes(value).decode("utf-8", "replace")
-                if isinstance(value, set):
-                    return list(value)
-                return str(value)
-
-            payload = _json.dumps(result, default=_default)
-        else:
-            payload = str(result)
-        return {"ok": True, "payload": payload, "logs": list(_current_logs)}
+            result = _execute(code, method, path, query, body, req.get("request_id", ""), req.get("slug", ""),
+                              headers=headers, remote_ip=remote_ip, host=host, scheme=scheme, env=env)
+        return {"ok": True, "response": serialize(result), "logs": list(_current_logs)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "logs": list(_current_logs)}
 

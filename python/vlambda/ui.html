@@ -239,6 +239,12 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
             <div class="flex"><button class="btn btn-primary" onclick="saveCodeLambda()">Save</button><button class="btn" onclick="runCurrent()">Run</button></div>
           </div>
           <div class="card">
+            <h3>Environment</h3>
+            <div class="form-group"><label>Variables (KEY=value per line)</label><textarea id="edit-env" rows="3" style="width:100%"></textarea></div>
+            <div class="form-group"><label>Secrets (KEY=value; ******** keeps current)</label><textarea id="edit-env-secrets" rows="3" style="width:100%"></textarea></div>
+            <button class="btn btn-sm" onclick="saveEnv()">Save environment</button>
+          </div>
+          <div class="card">
             <h3>Versions</h3>
             <div id="versions-list" class="muted">—</div>
           </div>
@@ -316,6 +322,12 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
           <div class="form-group"><label>Requirements</label><textarea id="project-reqs" rows="5" style="width:100%"></textarea></div>
           <div class="flex"><button class="btn btn-primary" onclick="saveProject()">Save</button><button class="btn" onclick="runProject()">Run</button><button class="btn" onclick="installPackages()">Install deps</button></div>
           <div id="project-packages-list" class="muted" style="margin-top:8px;">—</div>
+        </div>
+        <div class="card">
+          <h3>Environment</h3>
+          <div class="form-group"><label>Variables (KEY=value per line)</label><textarea id="project-env" rows="3" style="width:100%"></textarea></div>
+          <div class="form-group"><label>Secrets (KEY=value; ******** keeps current)</label><textarea id="project-env-secrets" rows="3" style="width:100%"></textarea></div>
+          <button class="btn btn-sm" onclick="saveEnv()">Save environment</button>
         </div>
       </div>
       <div class="card ide-card">
@@ -863,6 +875,7 @@ async function editLambda(slug, kind) {
     await loadVersions(slug);
     await loadAliases(slug);
     await loadPackages();
+    await loadEnv(slug);
     flog('info', 'editing code lambda', { slug });
   } catch (e) { reportError('editor-alert', e); }
 }
@@ -944,6 +957,45 @@ async function loadPackages() {
   } catch (e) { flog('warn', 'packages failed', e.message); }
 }
 
+function parseEnvLines(text) {
+  const out = {};
+  (text || '').split('\n').forEach(line => {
+    const i = line.indexOf('=');
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  });
+  return out;
+}
+function envLines(items, secrets) {
+  return (items || []).filter(x => !!x.secret === secrets).map(x => x.key + '=' + x.value).join('\n');
+}
+async function loadEnv(slug) {
+  try {
+    const data = await api('/vlambda/' + slug + '/env');
+    const items = data.env || [];
+    for (const [prefix, kind] of [['edit', 'code'], ['project', 'project']]) {
+      if (currentKind !== kind) continue;
+      const v = document.getElementById(prefix + '-env');
+      const s = document.getElementById(prefix + '-env-secrets');
+      if (v) v.value = envLines(items, false);
+      if (s) s.value = envLines(items, true);
+    }
+  } catch (e) { flog('warn', 'env load failed', e.message); }
+}
+async function saveEnv() {
+  const prefix = currentKind === 'project' ? 'project' : 'edit';
+  const vars = parseEnvLines(document.getElementById(prefix + '-env').value);
+  const secrets = parseEnvLines(document.getElementById(prefix + '-env-secrets').value);
+  try {
+    await api('/vlambda/' + currentSlug + '/env', {
+      method: 'PUT',
+      headers: authHeaders(true),
+      body: JSON.stringify({ vars, secrets }),
+    });
+    showAlert(currentKind === 'project' ? 'project-alert' : 'editor-alert', 'Environment saved', 'success');
+    await loadEnv(currentSlug);
+  } catch (e) { reportError(currentKind === 'project' ? 'project-alert' : 'editor-alert', e); }
+}
+
 async function installPackages() {
   if (!currentSlug) return;
   let raw = '';
@@ -987,6 +1039,7 @@ async function openProject(slug) {
     if (!projectEditor) projectEditor = VLambdaEditor.createEditor(document.getElementById('project-editor'), activeProjectFile ? projectFiles[activeProjectFile] : '');
     else VLambdaEditor.setValue(projectEditor, activeProjectFile ? projectFiles[activeProjectFile] : '');
     await loadPackages();
+    await loadEnv(slug);
     flog('info', 'opened project', { slug, files: names.length });
   } catch (e) { reportError('project-alert', e); }
 }

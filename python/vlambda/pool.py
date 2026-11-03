@@ -39,14 +39,19 @@ class Worker:
                 break
             result_queue = task["result_queue"]
             try:
+                meta = json.loads(task.get("request_meta", "{}") or "{}")
                 req_obj = Request(
                     method=task.get("method", "GET"),
                     path=task.get("path", "/"),
                     query_string=task.get("query_string", ""),
-                    headers={},
+                    headers=meta.get("headers", {}),
                     body=task.get("body", b""),
                     request_id=task.get("request_id", ""),
                     slug=task.get("slug", ""),
+                    remote_ip=meta.get("remote_ip", ""),
+                    host=meta.get("host", ""),
+                    scheme=meta.get("scheme", "http"),
+                    env=meta.get("env", {}),
                 )
                 if task.get("kind") == "project":
                     from vlambda.project import execute_project
@@ -72,7 +77,7 @@ class Worker:
 
     _SINGLE_FLIGHT = __import__("os").environ.get("VLAMBDA_SINGLE_FLIGHT", "0") == "1"
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="") -> Any:
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="") -> Any:
         if memory_mb and memory_mb > 0:
             import resource
             usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
@@ -83,7 +88,8 @@ class Worker:
             task = {
                 "kind": "code", "code": code, "method": method, "path": path,
                 "query_string": query, "body": body, "vendor_dir": vendor_dir,
-                "request_id": request_id, "slug": slug, "result_queue": result_queue,
+                "request_id": request_id, "slug": slug, "request_meta": request_meta,
+                "result_queue": result_queue,
             }
             try:
                 self._queue.put(task, timeout=5)
@@ -117,7 +123,8 @@ class Worker:
         task = {
             "kind": "code", "code": code, "method": method, "path": path,
             "query_string": query, "body": body, "vendor_dir": vendor_dir,
-            "request_id": request_id, "slug": slug, "result_queue": result_queue,
+            "request_id": request_id, "slug": slug, "request_meta": request_meta,
+            "result_queue": result_queue,
         }
         try:
             self._queue.put(task, timeout=5)
@@ -137,12 +144,13 @@ class Worker:
         event.set()
         return result
 
-    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="") -> Any:
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta="") -> Any:
         result_queue = queue.Queue(1)
         task = {
             "kind": "project", "project_dir": project_dir, "entrypoint": entrypoint,
             "method": method, "path": path, "query_string": query, "body": body,
-            "request_id": request_id, "slug": slug, "result_queue": result_queue,
+            "request_id": request_id, "slug": slug, "request_meta": request_meta,
+            "result_queue": result_queue,
         }
         try:
             self._queue.put(task, timeout=5)
@@ -165,7 +173,7 @@ class InProcessPool:
         self._lock = threading.Lock()
         self._counter = itertools.count()
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="") -> Any:
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="") -> Any:
         # Auto-scale: if queue is deep, add a worker up to the configured cap.
         with self._lock:
             if len(self._workers) < self._max_workers and self._queue_depth() > len(self._workers) * 2:
@@ -173,13 +181,13 @@ class InProcessPool:
             workers = list(self._workers)
         # Atomic round-robin selection without holding the lock during submit.
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
 
-    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug, request_meta)
 
     def _queue_depth(self) -> int:
         return sum(w._queue.qsize() for w in self._workers)
@@ -327,7 +335,7 @@ class ProcessWorker:
             env=env,
         )
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         payload = {
             "kind": "code",
             "code": code,
@@ -338,10 +346,11 @@ class ProcessWorker:
             "vendor_dir": vendor_dir or "",
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
         }
         return self._call(payload, timeout)
 
-    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         payload = {
             "kind": "project",
             "project_dir": project_dir,
@@ -352,6 +361,7 @@ class ProcessWorker:
             "body_b64": base64.b64encode(body or b"").decode("ascii"),
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
         }
         return self._call(payload, timeout)
 
@@ -385,7 +395,7 @@ class ProcessWorker:
                 return {"error": "invalid runner response"}
             _record_runner_logs(envelope.get("logs"))
             if envelope.get("ok"):
-                return envelope.get("payload")
+                return envelope.get("response")
             return {"error": envelope.get("error", "execution failed")}
 
     def stop(self):
@@ -407,17 +417,17 @@ class ProcessPool:
         self._lock = threading.Lock()
         self._max_workers = len(self._workers)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
 
-    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug, request_meta)
 
     def _queue_depth(self) -> int:
         return 0
@@ -454,7 +464,7 @@ class ForkWorker:
             env=env,
         )
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         payload = {
             "kind": "code",
@@ -466,11 +476,12 @@ class ForkWorker:
             "vendor_dir": vendor_dir or "",
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
             "timeout": timeout,
         }
         return self._call(payload, timeout)
 
-    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         payload = {
             "kind": "project",
@@ -482,6 +493,7 @@ class ForkWorker:
             "body_b64": base64.b64encode(body or b"").decode("ascii"),
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
             "timeout": timeout,
         }
         return self._call(payload, timeout)
@@ -515,7 +527,7 @@ class ForkWorker:
                 return {"error": "invalid runner response"}
             _record_runner_logs(envelope.get("logs"))
             if envelope.get("ok"):
-                return envelope.get("payload")
+                return envelope.get("response")
             return {"error": envelope.get("error", "execution failed")}
 
     def stop(self):
@@ -537,17 +549,17 @@ class ForkPool:
         self._lock = threading.Lock()
         self._max_workers = len(self._workers)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
 
-    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+        return workers[idx].submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug, request_meta)
 
     def _queue_depth(self) -> int:
         return 0
@@ -583,7 +595,7 @@ def _landlock_read_paths() -> list[str]:
 class LandlockWorker:
     """Run one invocation in a fresh Landlock + seccomp sandbox."""
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         vendor = vendor_dir or ""
         if vendor and not os.path.isdir(vendor):
             vendor = ""
@@ -597,10 +609,11 @@ class LandlockWorker:
             "vendor_dir": vendor,
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
         }
         return self._run(payload, timeout, vendor_dir=vendor)
 
-    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         payload = {
             "kind": "project",
             "project_dir": project_dir,
@@ -611,6 +624,7 @@ class LandlockWorker:
             "body_b64": base64.b64encode(body or b"").decode("ascii"),
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
         }
         return self._run(payload, timeout, project_dir=project_dir)
 
@@ -661,7 +675,7 @@ class LandlockWorker:
             return {"error": "invalid runner response"}
         _record_runner_logs(envelope.get("logs"))
         if envelope.get("ok"):
-            return envelope.get("payload")
+            return envelope.get("response")
         return {"error": envelope.get("error", "execution failed")}
 
 
@@ -670,11 +684,11 @@ class LandlockPool:
         self._sem = threading.BoundedSemaphore(max(1, size))
         self._max_workers = max(1, size)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         with self._sem:
             return LandlockWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
 
-    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._sem:
             return LandlockWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
 
@@ -690,7 +704,7 @@ class LandlockPool:
 
 class NsjailWorker:
     """Run one invocation in a fresh nsjail sandbox."""
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         vendor = vendor_dir or ""
         if vendor and not os.path.isdir(vendor):
             vendor = ""
@@ -704,10 +718,11 @@ class NsjailWorker:
             "vendor_dir": "/vendor" if vendor else "",
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
         }
         return self._run(payload, timeout, vendor_dir=vendor)
 
-    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         payload = {
             "kind": "project",
             "project_dir": "/work",
@@ -718,6 +733,7 @@ class NsjailWorker:
             "body_b64": base64.b64encode(body or b"").decode("ascii"),
             "request_id": request_id or "",
             "slug": slug or "",
+            "request_meta": request_meta or "",
         }
         return self._run(payload, timeout, project_dir=project_dir)
 
@@ -765,7 +781,7 @@ class NsjailWorker:
             return {"error": "invalid runner response"}
         _record_runner_logs(envelope.get("logs"))
         if envelope.get("ok"):
-            return envelope.get("payload")
+            return envelope.get("response")
         return {"error": envelope.get("error", "execution failed")}
 
 
@@ -774,11 +790,11 @@ class NsjailPool:
         self._sem = threading.BoundedSemaphore(max(1, size))
         self._max_workers = max(1, size)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
         with self._sem:
             return NsjailWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
 
-    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._sem:
             return NsjailWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
 

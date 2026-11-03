@@ -132,6 +132,39 @@ def record_log(request_id: str, slug: str, level: str, message: str):
     except queue.Full:
         pass
 
+def _owned_slugs(owner_id: int | None) -> list[str] | None:
+    """Return lambda slugs owned by a user, or None for admin/all."""
+    try:
+        owner = int(owner_id or 0)
+    except (TypeError, ValueError):
+        owner = 0
+    if owner <= 0:
+        return None
+    db_path = os.environ.get("VLAMBDA_DB", "")
+    if not db_path:
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1)
+        rows = conn.execute("SELECT slug FROM lambdas WHERE owner_id = ?", (owner,)).fetchall()
+        conn.close()
+        return [str(row[0]) for row in rows]
+    except Exception:
+        return []
+
+
+def _apply_owner(sql: str, params: list[Any], owner_id: int | None, column: str = "slug") -> str:
+    slugs = _owned_slugs(owner_id)
+    if slugs is None:
+        return sql
+    if not slugs:
+        return sql + " AND 1=0"
+    placeholders = ",".join("?" for _ in slugs)
+    sql += f" AND {column} IN ({placeholders})"
+    params.extend(slugs)
+    return sql
+
+
+
 
 def _flush_logs(batch: list[tuple]):
     global _logs_purge_before
@@ -268,7 +301,7 @@ def _run():
     _cleanup()
 
 
-def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+def query(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     if _conn is None:
         return {"days": days, "count": 0, "items": []}
     cutoff = time.time() - days * 86400
@@ -280,6 +313,7 @@ def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     if slug:
         sql += " AND slug = ?"
         params.append(slug)
+    sql = _apply_owner(sql, params, owner_id)
     sql += " ORDER BY ts DESC LIMIT 10000"
     with _lock:
         rows = _conn.execute(sql, params).fetchall()
@@ -300,7 +334,7 @@ def query(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     return {"days": days, "count": len(items), "items": items}
 
 
-def summary(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+def summary(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     if _conn is None:
         return {"days": days, "items": []}
     cutoff = time.time() - days * 86400
@@ -313,6 +347,7 @@ def summary(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     if slug:
         sql += " AND slug = ?"
         params.append(slug)
+    sql = _apply_owner(sql, params, owner_id)
     sql += " ORDER BY day DESC, slug"
     with _lock:
         rows = _conn.execute(sql, params).fetchall()
@@ -331,8 +366,8 @@ def summary(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     return {"days": days, "count": len(items), "items": items}
 
 
-def export_csv(days: int = 1, slug: str | None = None) -> str:
-    data = query(days, slug)
+def export_csv(days: int = 1, slug: str | None = None, owner_id: int = 0) -> str:
+    data = query(days, slug, owner_id)
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["ts", "request_id", "slug", "method", "path", "latency_ms", "error", "error_type", "cold_start"])
@@ -353,7 +388,7 @@ def export_csv(days: int = 1, slug: str | None = None) -> str:
     return out.getvalue()
 
 
-def aggregate(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+def aggregate(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     """Aggregate persisted metrics per lambda, including daily rollups."""
     if _conn is None:
         return {"days": days, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}
@@ -377,6 +412,7 @@ def aggregate(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         if slug:
             raw_sql += " AND slug = ?"
             params.append(slug)
+        raw_sql = _apply_owner(raw_sql, params, owner_id)
         raw_sql += " GROUP BY slug"
         for key, count, errors, avg_latency, cold in _conn.execute(raw_sql, params).fetchall():
             add(key, float(count), float(errors or 0), float(avg_latency or 0) * float(count), float(cold or 0))
@@ -389,6 +425,7 @@ def aggregate(days: int = 1, slug: str | None = None) -> dict[str, Any]:
         if slug:
             daily_sql += " AND slug = ?"
             dparams.append(slug)
+        daily_sql = _apply_owner(daily_sql, dparams, owner_id)
         daily_sql += " GROUP BY slug"
         for key, requests, errors, latency_sum, cold in _conn.execute(daily_sql, dparams).fetchall():
             add(key, float(requests or 0), float(errors or 0), float(latency_sum or 0), float(cold or 0))
@@ -413,7 +450,7 @@ def aggregate(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     }
 
 
-def query_logs(days: int = 1, slug: str | None = None, limit: int = 1000) -> dict[str, Any]:
+def query_logs(days: int = 1, slug: str | None = None, limit: int = 1000, owner_id: int = 0) -> dict[str, Any]:
     if _conn is None:
         return {"days": days, "count": 0, "items": []}
     cutoff = time.time() - days * 86400
@@ -422,6 +459,7 @@ def query_logs(days: int = 1, slug: str | None = None, limit: int = 1000) -> dic
     if slug:
         sql += " AND slug = ?"
         params.append(slug)
+    sql = _apply_owner(sql, params, owner_id)
     sql += " ORDER BY ts DESC LIMIT ?"
     params.append(max(1, min(limit, 10000)))
     with _lock:
@@ -436,7 +474,7 @@ def query_logs(days: int = 1, slug: str | None = None, limit: int = 1000) -> dic
     }
 
 
-def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
+def stats(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     if _conn is None:
         return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0, "cold_starts": 0}
     cutoff = time.time() - days * 86400
@@ -445,6 +483,7 @@ def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     if slug:
         sql += " AND slug = ?"
         params.append(slug)
+    sql = _apply_owner(sql, params, owner_id)
     with _lock:
         rows = _conn.execute(sql, params).fetchall()
     latencies = sorted(r[0] for r in rows)
@@ -470,7 +509,7 @@ def stats(days: int = 1, slug: str | None = None) -> dict[str, Any]:
     }
 
 
-def delete_metrics(days: int = 0, slug: str | None = None) -> dict[str, Any]:
+def delete_metrics(days: int = 0, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     """Delete metrics older than ``days`` (0 = all), optionally for one slug."""
     global _metrics_purge_before
     if _conn is None:
@@ -496,6 +535,8 @@ def delete_metrics(days: int = 0, slug: str | None = None) -> dict[str, Any]:
             params.append(slug)
             daily_sql += " AND slug = ?"
             daily_params.append(slug)
+        sql = _apply_owner(sql, params, owner_id)
+        daily_sql = _apply_owner(daily_sql, daily_params, owner_id)
         metrics_deleted = max(0, _conn.execute(sql, params).rowcount)
         daily_deleted = max(0, _conn.execute(daily_sql, daily_params).rowcount)
         _conn.commit()
@@ -508,7 +549,7 @@ def delete_metrics(days: int = 0, slug: str | None = None) -> dict[str, Any]:
     }
 
 
-def delete_logs(days: int = 0, slug: str | None = None) -> dict[str, Any]:
+def delete_logs(days: int = 0, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     """Delete lambda logs older than ``days`` (0 = all), optionally for one slug."""
     global _logs_purge_before
     if _conn is None:
@@ -527,6 +568,7 @@ def delete_logs(days: int = 0, slug: str | None = None) -> dict[str, Any]:
         if slug:
             sql += " AND slug = ?"
             params.append(slug)
+        sql = _apply_owner(sql, params, owner_id)
         deleted = max(0, _conn.execute(sql, params).rowcount)
         _conn.commit()
     return {"deleted": deleted, "logs": deleted, "days": days, "slug": slug or ""}

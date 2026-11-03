@@ -1,72 +1,134 @@
-"""Async task tracking for vlambda."""
+"""Persistent async task tracking and dead-letter queue."""
 
 from __future__ import annotations
 
+import json
+import os
+import sqlite3
 import threading
-import uuid
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-_tasks: dict[str, dict] = {}
-_lock = threading.Lock()
 _MAX_TASKS = 10000
+_DLQ_MAX = 1000
 _EXECUTOR = None
 _EXECUTOR_LOCK = threading.Lock()
-_DLQ: list[dict] = []
-_DLQ_LOCK = threading.Lock()
-_DLQ_MAX = 1000
-import os
+
+
+def _db_path() -> str:
+    return os.environ.get("VLAMBDA_DB", "./vlambda.db")
+
+
+def _connect():
+    conn = sqlite3.connect(_db_path(), timeout=10)
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
+def _init():
+    try:
+        conn = _connect()
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tasks ("
+            "task_id TEXT PRIMARY KEY,"
+            "status TEXT NOT NULL,"
+            "result TEXT,"
+            "error TEXT,"
+            "created REAL NOT NULL,"
+            "completed REAL"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dlq ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "task_id TEXT NOT NULL,"
+            "error TEXT NOT NULL,"
+            "ts REAL NOT NULL"
+            ")"
+        )
+        conn.execute("UPDATE tasks SET status='failed', error='interrupted', completed=? WHERE status='pending'",
+                     (time.time(),))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+_init()
 
 
 def create_task(code: str, method: str, path: str, query: str, body: bytes, pool) -> str:
     task_id = str(uuid.uuid4())
     cleanup_old(3600)
-    with _lock:
-        if len(_tasks) >= _MAX_TASKS:
-            # Evict oldest completed/failed
-            oldest = None
-            for tid, t in _tasks.items():
-                if t["status"] in ("completed", "failed"):
-                    if oldest is None or t["created"] < _tasks[oldest]["created"]:
-                        oldest = tid
-            if oldest:
-                del _tasks[oldest]
-        _tasks[task_id] = {
-            "status": "pending",
-            "result": None,
-            "error": None,
-            "created": time.time(),
-            "completed": None,
-        }
-    _executor = _get_executor()
-
-    def _run():
-        retries = int(os.environ.get("VLAMBDA_TASK_RETRIES", "2"))
-        delay = float(os.environ.get("VLAMBDA_TASK_RETRY_DELAY", "0.5"))
-        last_error = None
-        for attempt in range(retries + 1):
-            try:
-                result = pool.execute(code, method, path, query, body)
-                with _lock:
-                    _tasks[task_id]["status"] = "completed"
-                    _tasks[task_id]["result"] = result
-                    _tasks[task_id]["completed"] = time.time()
-                return
-            except Exception as e:
-                last_error = e
-                if attempt < retries:
-                    time.sleep(delay * (attempt + 1))
-        with _lock:
-            _tasks[task_id]["status"] = "failed"
-            _tasks[task_id]["error"] = str(last_error)
-            _tasks[task_id]["completed"] = time.time()
-        with _DLQ_LOCK:
-            if len(_DLQ) < _DLQ_MAX:
-                _DLQ.append({"task_id": task_id, "error": str(last_error), "ts": time.time()})
-
-    _executor.submit(_run)
+    try:
+        conn = _connect()
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        if count >= _MAX_TASKS:
+            conn.execute(
+                "DELETE FROM tasks WHERE task_id IN ("
+                "SELECT task_id FROM tasks WHERE status IN ('completed','failed') ORDER BY created ASC LIMIT ?)",
+                (max(1, count - _MAX_TASKS + 1),),
+            )
+        conn.execute(
+            "INSERT INTO tasks (task_id, status, result, error, created, completed) VALUES (?, 'pending', NULL, NULL, ?, NULL)",
+            (task_id, time.time()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        return task_id
+    _get_executor().submit(_run, task_id, code, method, path, query, body, pool)
     return task_id
+
+
+def _run(task_id: str, code: str, method: str, path: str, query: str, body: bytes, pool):
+    retries = int(os.environ.get("VLAMBDA_TASK_RETRIES", "2"))
+    delay = float(os.environ.get("VLAMBDA_TASK_RETRY_DELAY", "0.5"))
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            result = pool.execute(code, method, path, query, body)
+            from vlambda.response import serialize
+            if not (isinstance(result, dict) and "status" in result):
+                result = serialize(result)
+            payload = json.dumps(result)
+            _update(task_id, "completed", result=payload)
+            return
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                time.sleep(delay * (attempt + 1))
+    _update(task_id, "failed", error=str(last_error))
+    _add_dlq(task_id, str(last_error))
+
+
+def _update(task_id: str, status: str, result: str | None = None, error: str | None = None):
+    try:
+        conn = _connect()
+        conn.execute(
+            "UPDATE tasks SET status=?, result=COALESCE(?, result), error=COALESCE(?, error), completed=? WHERE task_id=?",
+            (status, result, error, time.time(), task_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _add_dlq(task_id: str, error: str):
+    try:
+        conn = _connect()
+        count = conn.execute("SELECT COUNT(*) FROM dlq").fetchone()[0]
+        if count >= _DLQ_MAX:
+            conn.execute("DELETE FROM dlq WHERE id IN (SELECT id FROM dlq ORDER BY id ASC LIMIT ?)",
+                         (max(1, count - _DLQ_MAX + 1),))
+        conn.execute("INSERT INTO dlq (task_id, error, ts) VALUES (?, ?, ?)", (task_id, error, time.time()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def _get_executor():
@@ -80,23 +142,40 @@ def _get_executor():
 
 
 def get_task(task_id: str) -> dict | None:
-    with _lock:
-        t = _tasks.get(task_id)
-        if t is None:
+    try:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT task_id, status, result, error, created, completed FROM tasks WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        conn.close()
+        if row is None:
             return None
-        return dict(t)
+        return {
+            "task_id": row[0], "status": row[1], "result": row[2],
+            "error": row[3], "created": row[4], "completed": row[5],
+        }
+    except Exception:
+        return None
 
 
 def get_dlq() -> list[dict]:
-    with _DLQ_LOCK:
-        return list(_DLQ)
-
+    try:
+        conn = _connect()
+        rows = conn.execute("SELECT task_id, error, ts FROM dlq ORDER BY id DESC LIMIT 100").fetchall()
+        conn.close()
+        return [{"task_id": r[0], "error": r[1], "ts": r[2]} for r in rows]
+    except Exception:
+        return []
 
 
 def cleanup_old(max_age: int = 3600):
-    """Remove tasks older than max_age seconds."""
-    now = time.time()
-    with _lock:
-        to_remove = [tid for tid, t in _tasks.items() if now - t["created"] > max_age]
-        for tid in to_remove:
-            del _tasks[tid]
+    cutoff = time.time() - max_age
+    try:
+        conn = _connect()
+        conn.execute("DELETE FROM tasks WHERE created < ?", (cutoff,))
+        conn.execute("DELETE FROM dlq WHERE ts < ?", (cutoff,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass

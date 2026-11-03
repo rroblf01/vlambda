@@ -190,6 +190,16 @@ def test_gc_orphans_respects_grace(tmp_path, monkeypatch):
     assert not old.exists()
 
 
+def test_env_encryption_roundtrip(monkeypatch):
+    from vlambda.env import encrypt, decrypt
+    monkeypatch.setenv("VLAMBDA_SECRET", "test-master")
+    token = encrypt("super-secret-value")
+    assert "super-secret-value" not in token
+    assert decrypt(token) == "super-secret-value"
+    with pytest.raises(Exception):
+        decrypt(token[:-1] + ("A" if token[-1] != "A" else "B"))
+
+
 def test_auth_token_roundtrip():
     from vlambda.auth import create_token, verify_token
     token = create_token(42, "alice", "epoch-1")

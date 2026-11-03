@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 : "${VLAMBDA_SECRET:?VLAMBDA_SECRET is required}"
 : "${VLAMBDA_ADMIN_TOKEN:?VLAMBDA_ADMIN_TOKEN is required}"

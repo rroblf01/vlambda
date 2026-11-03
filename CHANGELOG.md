@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-03
+
+### Changed
+- Docker images now run vlambda directly on port 8080; gofly and nsjail were removed because Dokploy terminates TLS and proxies requests. Lambda isolation still uses separate runner processes inside the container.
+
+### Security
+- Lambda runner processes no longer inherit `VLAMBDA_SECRET` or `VLAMBDA_ADMIN_TOKEN`.
+- Blocked additional escape-prone modules, including `posix`, `_socket`, `resource`, `fcntl` and `sqlite3`.
+- Container processes drop all capabilities and create data files with `umask 077`.
+
 ## [0.2.0] - 2026-11-03
 
 ### Added
@@ -15,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Export, import and duplicate endpoints for lambdas and projects (`/vlambda/<slug>/export`, `/vlambda/import`, `/vlambda/<slug>/duplicate`).
 - UI actions for export/import/duplicate and an API tokens manager in the System view.
 - POC templates for JSON API + CORS, webhooks and form receivers, plus `examples/` with runnable projects.
-- Docker deployment with a uv-managed free-threaded Python 3.14 venv and HTTP-only operation behind Dokploy.
+- Docker deployment with a uv-managed free-threaded Python 3.14 venv, gofly, nsjail and HTTP-only operation behind Dokploy.
 - `vlambda reset` CLI and `POST /admin/reset` for weekly demo cleanup.
 - Install PyPI packages per lambda/project from the web UI.
 - Persistent lambda logs via `request.log()` and a "Save logs" template.
@@ -47,7 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project cache prewarming and async task thread pool.
 
 ### Changed
-- Docker images now run vlambda directly on port 8080; gofly and nsjail were removed because Dokploy terminates TLS and proxies requests. Lambda isolation still uses separate runner processes inside the container.
 - The lambda and project forms keep their submit buttons disabled until the required fields are filled, and mark the name as required.
 - Docker deployment is HTTP-only on port 8080; Dokploy terminates TLS.
 - Project layout moved from `vlambda/` to the repository root.
@@ -156,6 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
-[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/rroblf01/vlambda/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/rroblf01/vlambda/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rroblf01/vlambda/releases/tag/v0.1.0

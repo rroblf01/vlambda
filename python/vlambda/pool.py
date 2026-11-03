@@ -180,6 +180,17 @@ def _runner_command():
     ]
 
 
+_SENSITIVE_ENV = ("VLAMBDA_SECRET", "VLAMBDA_ADMIN_TOKEN")
+
+
+def _runner_env() -> dict[str, str]:
+    """Environment for lambda runners; secrets must not leak into user code."""
+    env = dict(os.environ)
+    for key in _SENSITIVE_ENV:
+        env.pop(key, None)
+    return env
+
+
 class ProcessWorker:
     def __init__(self):
         self._lock = threading.Lock()
@@ -188,7 +199,7 @@ class ProcessWorker:
 
     def _start(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env = dict(os.environ)
+        env = _runner_env()
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
         self._proc = subprocess.Popen(
             _runner_command(),

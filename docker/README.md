@@ -14,7 +14,7 @@ platform in front of the container.
 PyPI image:
 
 ```bash
-docker build --build-arg VLAMBDA_VERSION=0.2.0 -t vlambda:latest .
+docker build --build-arg VLAMBDA_VERSION=0.2.1 -t vlambda:latest .
 ```
 
 Local development image:
@@ -81,3 +81,12 @@ is not reachable, it falls back to deleting the data directly.
 - Max lambdas per user: `VLAMBDA_MAX_LAMBDAS` (default 20).
 - Lambdas run in separate runner processes; the container remains the outer
   security and resource boundary.
+
+## Security
+
+This image is intended for trusted code. The Python sandbox blocks dangerous
+modules and runner processes no longer inherit `VLAMBDA_SECRET` or
+`VLAMBDA_ADMIN_TOKEN`, but lambdas still share the container filesystem and
+network. Do not expose registration or code execution to untrusted users
+without an additional OS-level sandbox (nsjail, gVisor, Firecracker or one
+container per tenant).

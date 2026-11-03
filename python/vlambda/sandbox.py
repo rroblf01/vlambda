@@ -13,9 +13,12 @@ SAFE_BUILTINS = {
 }
 
 BLOCKED_MODULES = {
-    "os", "subprocess", "sys", "importlib", "ctypes", "socket",
-    "urllib", "http", "shutil", "pathlib", "io", "pickle", "marshal",
-    "code", "codeop", "builtins", "importlib", "runpy",
+    "os", "posix", "nt", "subprocess", "_posixsubprocess", "sys", "importlib", "ctypes", "_ctypes",
+    "socket", "_socket", "ssl", "_ssl", "urllib", "http", "shutil", "pathlib", "io", "pickle", "marshal",
+    "code", "codeop", "builtins", "runpy", "gc", "resource", "fcntl", "mmap",
+    "signal", "threading", "multiprocessing", "concurrent", "asyncio",
+    "pwd", "grp", "spwd", "pty", "termios", "tempfile", "glob",
+    "sqlite3", "dbm", "shelve", "sysconfig", "site", "platform",
 }
 
 

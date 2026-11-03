@@ -20,10 +20,9 @@ def test_sandbox_safe_builtin():
 
 
 def test_sandbox_blocked_module():
-    with pytest.raises(ImportError):
-        blocked_import("os")
-    with pytest.raises(ImportError):
-        blocked_import("subprocess")
+    for module in ("os", "subprocess", "posix", "_socket", "ctypes", "sqlite3", "threading"):
+        with pytest.raises(ImportError):
+            blocked_import(module)
 
 
 def test_sandbox_compile_error():
@@ -85,6 +84,15 @@ def test_pool_basic():
     res = pool.execute(code, "GET", "/abc", "", b"")
     assert res == "/ABC"
     pool.stop()
+
+
+def test_runner_env_strips_secrets(monkeypatch):
+    from vlambda.pool import _runner_env
+    monkeypatch.setenv("VLAMBDA_SECRET", "super-secret")
+    monkeypatch.setenv("VLAMBDA_ADMIN_TOKEN", "admin-secret")
+    env = _runner_env()
+    assert "VLAMBDA_SECRET" not in env
+    assert "VLAMBDA_ADMIN_TOKEN" not in env
 
 
 def test_metrics_persistence(tmp_path):

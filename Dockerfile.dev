@@ -32,6 +32,8 @@ COPY --from=python-env /opt/venv /opt/venv
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENV PATH=/opt/venv/bin:$PATH \
     LD_LIBRARY_PATH=/opt/python/lib \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
     VLAMBDA_PORT=8080 \
     VLAMBDA_DB=/data/db/vlambda.db \
     VLAMBDA_METRICS_DB=/data/metrics/metrics.db \

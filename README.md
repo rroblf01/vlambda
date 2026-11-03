@@ -228,9 +228,17 @@ The `request` object has: `method`, `path`, `query_string`, `headers`, `body`.
 
 Safe builtins: `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `range`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`, `print`, etc.
 
-Blocked modules: `os`, `subprocess`, `sys`, `importlib`, `ctypes`, `socket`, `urllib`, `http`, `shutil`, `pathlib`, `io`, `pickle`, `marshal`, etc.
+Blocked modules: `os`, `posix`, `subprocess`, `sys`, `importlib`, `ctypes`, `socket`, `_socket`, `urllib`, `http`, `shutil`, `pathlib`, `io`, `pickle`, `marshal`, `resource`, `fcntl`, `mmap`, `sqlite3`, etc.
 
 Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `functools`, `hashlib`, `base64`, `string`, `random`, `statistics`, etc.
+
+### Security
+
+The Python sandbox is defense-in-depth, **not a hard security boundary**. It
+restricts builtins and imports and strips secrets from runner processes, but
+lambdas still share the container, filesystem and network. Use it only with
+trusted code, or add OS-level isolation (nsjail, gVisor, Firecracker, or one
+container per tenant) before accepting code from external users.
 
 ## Web UI
 

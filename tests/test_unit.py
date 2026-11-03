@@ -95,6 +95,13 @@ def test_runner_env_strips_secrets(monkeypatch):
     assert not any(key.startswith("VLAMBDA_") for key in env)
 
 
+def test_landlock_read_paths():
+    from vlambda.pool import _landlock_read_paths
+    paths = _landlock_read_paths()
+    assert "/" not in paths
+    assert all(not path.startswith("/data") for path in paths)
+
+
 def test_nsjail_config():
     from vlambda.pool import _nsjail_config
     cfg = _nsjail_config("/data/projects/x", "/data/packages/y")

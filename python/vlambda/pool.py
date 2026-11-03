@@ -406,9 +406,135 @@ class ProcessPool:
             worker.stop()
 
 
+def _landlock_read_paths() -> list[str]:
+    """Paths the runner needs for Python and its own code."""
+    candidates = ["/opt", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"]
+    candidates.extend([sys.prefix, sys.base_prefix])
+    candidates.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    candidates.extend(sys.path)
+    paths: list[str] = []
+    for path in candidates:
+        if not path or path in (".", "/") or not os.path.isdir(path):
+            continue
+        normalized = os.path.abspath(path)
+        if normalized == "/":
+            continue
+        if normalized == "/data" or normalized.startswith("/data/"):
+            continue
+        if normalized not in paths:
+            paths.append(normalized)
+    return paths
+
+
+class LandlockWorker:
+    """Run one invocation in a fresh Landlock + seccomp sandbox."""
+
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        vendor = vendor_dir or ""
+        if vendor and not os.path.isdir(vendor):
+            vendor = ""
+        payload = {
+            "kind": "code",
+            "code": code,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "vendor_dir": vendor,
+            "request_id": request_id or "",
+            "slug": slug or "",
+        }
+        return self._run(payload, timeout, vendor_dir=vendor)
+
+    def submit_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        payload = {
+            "kind": "project",
+            "project_dir": project_dir,
+            "entrypoint": entrypoint,
+            "method": method,
+            "path": path,
+            "query_string": query,
+            "body_b64": base64.b64encode(body or b"").decode("ascii"),
+            "request_id": request_id or "",
+            "slug": slug or "",
+        }
+        return self._run(payload, timeout, project_dir=project_dir)
+
+    def _run(self, payload: dict, timeout: int = 0, project_dir: str = "", vendor_dir: str = ""):
+        timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+        tmp_dir = tempfile.mkdtemp(prefix="vlambda-run-", dir="/tmp")
+        try:
+            read_paths = _landlock_read_paths()
+            if project_dir:
+                read_paths.append(project_dir)
+            if vendor_dir:
+                read_paths.append(vendor_dir)
+            cmd = [sys.executable, "-m", "vlambda.runner", "--sandbox", "landlock"]
+            for path in dict.fromkeys(read_paths):
+                cmd.extend(["--allow-read", path])
+            cmd.extend(["--allow-rw", tmp_dir, "--cpu", str(max(1, int(timeout)))])
+            env = _runner_env()
+            env["HOME"] = tmp_dir
+            env["TMPDIR"] = tmp_dir
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=tmp_dir,
+                env=env,
+            )
+            try:
+                out, err = proc.communicate(json.dumps(payload) + "\n", timeout=timeout + 2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return {"error": "invocation timeout"}
+        except Exception as e:
+            print(f"landlock setup failed: {e}", file=sys.stderr, flush=True)
+            return {"error": "sandbox failed"}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        lines = [line for line in out.splitlines() if line.strip()]
+        if not lines:
+            if err.strip():
+                print(f"landlock error: {err.strip()[-2000:]}", file=sys.stderr, flush=True)
+            return {"error": "sandbox exited"}
+        try:
+            envelope = json.loads(lines[-1])
+        except json.JSONDecodeError:
+            return {"error": "invalid runner response"}
+        if envelope.get("ok"):
+            return envelope.get("payload")
+        return {"error": envelope.get("error", "execution failed")}
+
+
+class LandlockPool:
+    def __init__(self, size: int):
+        self._sem = threading.BoundedSemaphore(max(1, size))
+        self._max_workers = max(1, size)
+
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
+        with self._sem:
+            return LandlockWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
+
+    def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug=""):
+        with self._sem:
+            return LandlockWorker().submit_project(project_dir, entrypoint, method, path, query, body, timeout, request_id, slug)
+
+    def _queue_depth(self) -> int:
+        return 0
+
+    def stats(self):
+        return {"workers": self._max_workers, "max_workers": self._max_workers, "queue_depth": 0, "mode": "landlock"}
+
+    def stop(self):
+        pass
+
+
 class NsjailWorker:
     """Run one invocation in a fresh nsjail sandbox."""
-
     def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug=""):
         vendor = vendor_dir or ""
         if vendor and not os.path.isdir(vendor):
@@ -510,7 +636,10 @@ class NsjailPool:
         pass
 
 
-if os.environ.get("VLAMBDA_NSJAIL", "0") == "1":
+_sandbox_mode = os.environ.get("VLAMBDA_SANDBOX", "").lower()
+if _sandbox_mode == "landlock":
+    Pool = LandlockPool
+elif _sandbox_mode == "nsjail" or os.environ.get("VLAMBDA_NSJAIL", "0") == "1":
     Pool = NsjailPool
 elif os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
     Pool = ProcessPool

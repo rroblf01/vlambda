@@ -17,12 +17,12 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 
 ## Features
 
-- **No cold starts** — lambdas are compiled once and cached in memory
+- **No cold starts in persistent mode** — Docker uses a fresh Landlock process per invocation, which adds a small startup cost
 - **Fast** — ~3,000 req/s (concurrent, free-threaded Python), ~0.3ms/req
 - **Auth** — JWT-based authentication with per-user ownership
 - **Web UI** — Dashboard for managing lambdas, code editor, metrics
 - **Async invocation** — Fire-and-forget with task tracking
-- **Sandbox** — nsjail namespaces in Docker, plus restricted Python builtins and blocked modules
+- **Sandbox** — Landlock + seccomp in Docker, plus restricted Python builtins and blocked modules
 - **Metrics** — Prometheus-compatible + Chart.js dashboard
 - **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
 - **Naming** — Human-readable names for lambdas
@@ -92,13 +92,12 @@ token with `DELETE /tokens/<id>`. Tokens do not expire.
 
 The repository includes a production image (`Dockerfile`, installs from PyPI) and
 a development image (`Dockerfile.dev`, builds the local wheel). Both use a
-free-threaded Python 3.14 venv, run each invocation in nsjail and expose plain
-HTTP on port `8080`; Dokploy (or another proxy) handles TLS and the public
-domain.
+free-threaded Python 3.14 venv, run each invocation in a Landlock + seccomp
+sandbox and expose plain HTTP on port `8080`; Dokploy (or another proxy) handles
+TLS and the public domain.
 
-nsjail needs unprivileged user namespaces, so the container must run with
-`--security-opt seccomp=unconfined` (nsjail applies its own seccomp policy to
-the sandbox) or an equivalent custom profile. The compose files already set it.
+The sandbox needs no extra Docker flags, capabilities or host sysctl changes.
+It requires a Linux kernel with Landlock (5.13+; Ubuntu 22.04+, Debian 12+).
 
 ```bash
 export VLAMBDA_SECRET="$(openssl rand -hex 32)"
@@ -242,11 +241,12 @@ Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `fun
 
 ### Security
 
-User code runs inside nsjail with a separate user, PID, mount and network
-namespace. The sandbox sees only `/opt` and the current project/vendor (read-only),
-has no access to `/data`, cannot read the server's `/proc`, and has no network.
-Resource limits and a seccomp deny-list are also applied. The server process and
-the database stay outside the sandbox.
+User code runs in a fresh runner process confined with Landlock and seccomp.
+Landlock limits the filesystem to `/opt`, `/usr`, `/lib`, `/etc`, the current
+project/vendor and a private temporary directory; `/data`, `/proc`, `/sys` and
+the rest of the server cannot be read or listed. seccomp blocks network, cross-process
+signals, `ptrace`, `mount`, namespace changes and similar syscalls. Resource
+limits are applied too, and each invocation gets a fresh process.
 
 The Docker image keeps public registration open by default for toy deployments.
 Set `VLAMBDA_REGISTRATION=0` to close it and create users with
@@ -287,7 +287,7 @@ For a disposable demo, run it from cron every day:
 
 | Metric | Value |
 |--------|-------|
-| Cold start | 0ms (persistent process) |
+| Cold start | 0ms in persistent mode; fresh sandbox process in Docker |
 | Warm invocation | ~0.3ms |
 | Throughput (concurrent, free-threaded) | ~3,000 req/s |
 | Throughput (response cache hits) | ~100x faster |

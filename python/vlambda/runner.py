@@ -37,7 +37,43 @@ def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, 
     return execute_project(project_dir, entrypoint, req)
 
 
+def _sandbox_args(argv: list[str]) -> tuple[bool, list[str], list[str], int]:
+    enabled = False
+    read_paths: list[str] = []
+    rw_paths: list[str] = []
+    cpu_sec = 5
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--sandbox" and index + 1 < len(argv):
+            enabled = argv[index + 1] == "landlock"
+            index += 2
+        elif arg == "--allow-read" and index + 1 < len(argv):
+            read_paths.append(argv[index + 1])
+            index += 2
+        elif arg == "--allow-rw" and index + 1 < len(argv):
+            rw_paths.append(argv[index + 1])
+            index += 2
+        elif arg == "--cpu" and index + 1 < len(argv):
+            try:
+                cpu_sec = max(1, int(argv[index + 1]))
+            except ValueError:
+                pass
+            index += 2
+        else:
+            index += 1
+    return enabled, read_paths, rw_paths, cpu_sec
+
+
 def main() -> None:
+    sandboxed, read_paths, rw_paths, cpu_sec = _sandbox_args(sys.argv[1:])
+    if sandboxed:
+        try:
+            from vlambda.sandbox_os import apply_sandbox
+            apply_sandbox(read_paths, rw_paths, cpu_sec)
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": f"sandbox: {type(e).__name__}: {e}"}), flush=True)
+            return
     # Keep stdout clean: only protocol JSON goes there.
     for line in sys.stdin:
         line = line.strip()

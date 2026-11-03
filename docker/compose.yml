@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: Dockerfile
       args:
-        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-0.2.1}
+        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-0.2.2}
     image: ghcr.io/rroblf01/vlambda:latest
     restart: unless-stopped
     ports:
@@ -16,8 +16,7 @@ services:
       VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:?set VLAMBDA_ADMIN_TOKEN}
       VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
       VLAMBDA_REGISTRATION: ${VLAMBDA_REGISTRATION:-1}
-      VLAMBDA_ISOLATE: ${VLAMBDA_ISOLATE:-1}
-      VLAMBDA_NSJAIL: ${VLAMBDA_NSJAIL:-1}
+      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-landlock}
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 256
@@ -26,9 +25,6 @@ services:
       - /tmp:size=64m
     security_opt:
       - no-new-privileges:true
-      # nsjail needs unprivileged user namespaces; its own seccomp policy
-      # filters the sandboxed process.
-      - seccomp=unconfined
     cap_drop:
       - ALL
 

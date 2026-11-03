@@ -14,8 +14,7 @@ services:
       VLAMBDA_ADMIN_TOKEN: ${VLAMBDA_ADMIN_TOKEN:-dev-admin}
       VLAMBDA_MAX_LAMBDAS: ${VLAMBDA_MAX_LAMBDAS:-20}
       VLAMBDA_REGISTRATION: ${VLAMBDA_REGISTRATION:-1}
-      VLAMBDA_ISOLATE: ${VLAMBDA_ISOLATE:-1}
-      VLAMBDA_NSJAIL: ${VLAMBDA_NSJAIL:-1}
+      VLAMBDA_SANDBOX: ${VLAMBDA_SANDBOX:-landlock}
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 256
@@ -24,9 +23,6 @@ services:
       - /tmp:size=64m
     security_opt:
       - no-new-privileges:true
-      # nsjail needs unprivileged user namespaces; its own seccomp policy
-      # filters the sandboxed process.
-      - seccomp=unconfined
     cap_drop:
       - ALL
 

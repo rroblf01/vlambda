@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-11-03
+
+### Added
+- `VLAMBDA_SANDBOX=landlock` runs each invocation in an unprivileged Landlock + seccomp sandbox without Docker security flags or host sysctl changes.
+
+### Changed
+- Docker images use the Landlock sandbox by default; nsjail, `seccomp=unconfined`, `VLAMBDA_NSJAIL` and `VLAMBDA_ISOLATE` are no longer required for the deployment.
+- The runner only sees `/opt`, `/usr`, `/lib`, `/etc`, the current project/vendor and one writable temporary directory.
+
+### Security
+- Landlock blocks access to `/data`, `/proc`, `/sys`, `/home` and other server paths.
+- seccomp blocks network, cross-process signals, `ptrace`, `mount`, namespace changes, `bpf`, `io_uring` and similar syscalls.
+- Each invocation gets a fresh runner process and temporary directory; no state is shared between requests.
+
 ## [0.2.1] - 2026-11-03
 
 ### Added
@@ -176,7 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
-[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/rroblf01/vlambda/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/rroblf01/vlambda/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/rroblf01/vlambda/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rroblf01/vlambda/releases/tag/v0.1.0

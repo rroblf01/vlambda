@@ -351,6 +351,64 @@ def test_nsjail_sandbox():
         stop_server()
 
 
+def test_landlock_sandbox():
+    try:
+        from vlambda.sandbox_os import sandbox_supported
+        import ctypes.util
+        if not sandbox_supported() or not ctypes.util.find_library("seccomp"):
+            return
+    except Exception:
+        return
+    stop_server()
+    start_server({
+        "VLAMBDA_SANDBOX": "landlock",
+        "VLAMBDA_SECRET": "test-secret",
+        "VLAMBDA_COROUTINES": "2",
+        "VLAMBDA_TIMEOUT": "5",
+    })
+    try:
+        token, slug = _upload_project("landlock", {
+            "main.py": (
+                "import os, socket, threading\n"
+                "def handler(request):\n"
+                "    out = {}\n"
+                "    def check(name, fn):\n"
+                "        try:\n"
+                "            fn(); out[name] = 'ok'\n"
+                "        except Exception as e:\n"
+                "            out[name] = type(e).__name__\n"
+                "    check('data', lambda: os.listdir('/data'))\n"
+                "    check('db', lambda: open('/data/db/vlambda.db', 'rb').read(1))\n"
+                "    check('proc', lambda: open('/proc/1/environ', 'rb').read())\n"
+                "    check('socket', lambda: socket.socket())\n"
+                "    check('kill', lambda: os.kill(1, 0))\n"
+                "    check('fork', lambda: os.fork())\n"
+                "    check('subprocess', lambda: __import__('subprocess').run(['/bin/true']))\n"
+                "    check('tmp_other', lambda: open('/tmp/not-mine', 'w'))\n"
+                "    values = []\n"
+                "    thread = threading.Thread(target=lambda: values.append(1))\n"
+                "    thread.start(); thread.join()\n"
+                "    out['thread'] = values\n"
+                "    out['env'] = [k for k in os.environ if k.startswith('VLAMBDA_')]\n"
+                "    return out\n"
+            ),
+        })
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200, body
+        assert body.get("data") in ("PermissionError", "FileNotFoundError"), body
+        assert body.get("db") in ("PermissionError", "FileNotFoundError"), body
+        assert body.get("proc") == "PermissionError", body
+        assert body.get("socket") == "PermissionError", body
+        assert body.get("kill") == "PermissionError", body
+        assert body.get("fork") == "PermissionError", body
+        assert body.get("subprocess") == "PermissionError", body
+        assert body.get("tmp_other") == "PermissionError", body
+        assert body.get("thread") == [1], body
+        assert body.get("env") == [], body
+    finally:
+        stop_server()
+
+
 def test_async_task():
     token, slug = test_create_invoke()
     status, body = req("POST", f"/async/{slug}")
@@ -682,6 +740,7 @@ if __name__ == "__main__":
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,
              test_nsjail_sandbox,
+             test_landlock_sandbox,
              test_async_task, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,

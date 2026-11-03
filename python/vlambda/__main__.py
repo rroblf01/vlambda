@@ -143,6 +143,8 @@ def main() -> None:
                     vendor_dir = candidate
             except Exception:
                 pass
+        if not timeout:
+            timeout = args.invoke_timeout
         result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug)
         if isinstance(result, str):
             payload = result
@@ -382,7 +384,7 @@ def main() -> None:
 
     def _run_project(project_dir, entrypoint, method, path, query, body):
         import json
-        timeout = int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
+        timeout = args.invoke_timeout
         try:
             result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout)
             if isinstance(result, str):
@@ -481,8 +483,8 @@ def main() -> None:
     if args.max_memory_mb > 0:
         import threading, time, resource
         # A hard RLIMIT_AS for the whole process starves V/Python threads and
-        # mmap. Use cgroups or the per-worker nsjail limits instead. It can be
-        # enabled explicitly for constrained environments.
+        # mmap. Use the Docker cgroup or the per-invocation sandbox limits
+        # instead. It can be enabled explicitly for constrained environments.
         if os.environ.get("VLAMBDA_HARD_MEMORY_LIMIT", "0") == "1":
             limit_bytes = args.max_memory_mb * 1024 * 1024
             try:

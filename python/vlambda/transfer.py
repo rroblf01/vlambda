@@ -110,9 +110,9 @@ def import_lambda(body_json: str, owner_id: str) -> str:
     except (TypeError, ValueError):
         return json.dumps({"error": "invalid owner"})
     try:
-        max_lambdas = int(os.environ.get("VLAMBDA_MAX_LAMBDAS", "50"))
+        max_lambdas = int(os.environ.get("VLAMBDA_MAX_LAMBDAS", "20"))
     except ValueError:
-        max_lambdas = 50
+        max_lambdas = 20
     if vlambda_native.db_count_lambdas(user_id) >= max_lambdas:
         return json.dumps({"error": "lambda quota exceeded"})
     try:

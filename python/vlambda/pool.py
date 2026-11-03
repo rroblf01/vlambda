@@ -280,7 +280,30 @@ def _runner_env() -> dict[str, str]:
     env["HOME"] = "/tmp"
     env["TMPDIR"] = "/tmp"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["VLRUN_NO_NATIVE"] = "1"
     return env
+
+
+def _record_runner_logs(logs) -> None:
+    """Persist logs produced in a short-lived runner process."""
+    if not isinstance(logs, list) or not logs:
+        return
+    try:
+        from vlambda.metrics import record_log
+    except Exception:
+        return
+    for item in logs:
+        if not isinstance(item, dict):
+            continue
+        try:
+            record_log(
+                str(item.get("request_id", "")),
+                str(item.get("slug", "")),
+                str(item.get("level", "info")),
+                str(item.get("message", "")),
+            )
+        except Exception:
+            pass
 
 
 class ProcessWorker:
@@ -360,6 +383,7 @@ class ProcessWorker:
             except json.JSONDecodeError:
                 self._proc = None
                 return {"error": "invalid runner response"}
+            _record_runner_logs(envelope.get("logs"))
             if envelope.get("ok"):
                 return envelope.get("payload")
             return {"error": envelope.get("error", "execution failed")}
@@ -505,6 +529,7 @@ class LandlockWorker:
             envelope = json.loads(lines[-1])
         except json.JSONDecodeError:
             return {"error": "invalid runner response"}
+        _record_runner_logs(envelope.get("logs"))
         if envelope.get("ok"):
             return envelope.get("payload")
         return {"error": envelope.get("error", "execution failed")}
@@ -608,6 +633,7 @@ class NsjailWorker:
             envelope = json.loads(lines[-1])
         except json.JSONDecodeError:
             return {"error": "invalid runner response"}
+        _record_runner_logs(envelope.get("logs"))
         if envelope.get("ok"):
             return envelope.get("payload")
         return {"error": envelope.get("error", "execution failed")}

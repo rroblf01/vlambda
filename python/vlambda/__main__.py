@@ -113,7 +113,9 @@ def main() -> None:
         body = body or b""
         # Response cache for GET requests, storing the final serialized payload.
         cache_key = None
-        if method == "GET":
+        # A lambda that writes logs has side effects; never serve it from the
+        # GET response cache or its log lines would silently disappear.
+        if method == "GET" and "request.log" not in code:
             cache_key = f"{code}:{path}:{query}"
             from vlambda.cache import get_response
             cached = get_response(cache_key)
@@ -399,11 +401,11 @@ def main() -> None:
 
     from vlambda.project import create_project as _create_project, execute_project as _execute_project, delete_project as _delete_project_impl, schedule_delete as _schedule_delete_impl
 
-    def _run_project(project_dir, entrypoint, method, path, query, body):
+    def _run_project(project_dir, entrypoint, method, path, query, body, request_id, slug):
         import json
         timeout = args.invoke_timeout
         try:
-            result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout)
+            result = pool.execute_project(project_dir, entrypoint, method, path, query, body, timeout=timeout, request_id=request_id, slug=slug)
             if isinstance(result, str):
                 return result
             if isinstance(result, (dict, list)):

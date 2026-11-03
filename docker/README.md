@@ -15,7 +15,7 @@ container.
 PyPI image:
 
 ```bash
-docker build --build-arg VLAMBDA_VERSION=0.2.3 -t vlambda:latest .
+docker build --build-arg VLAMBDA_VERSION=0.2.4 -t vlambda:latest .
 ```
 
 Local development image:

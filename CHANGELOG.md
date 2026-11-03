@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-11-03
+
+### Fixed
+- Logs emitted with `request.log()` by code and project lambdas now travel back from the Landlock runner and are persisted by the server.
+- Project invocations now carry `request_id` and `slug`, so their logs are attributed to the right lambda and invocation.
+- Code lambdas that call `request.log()` bypass the GET response cache, so their logs are emitted on every invocation.
+
+### Changed
+- The image precompiles Python bytecode and sandbox runners load only the modules they need, cutting the per-invocation startup cost roughly in half. Latency metrics include this fresh-process startup, so they remain higher than the persistent in-process mode.
+
 ## [0.2.3] - 2026-11-03
 
 ### Fixed
@@ -199,7 +209,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
-[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/rroblf01/vlambda/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/rroblf01/vlambda/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/rroblf01/vlambda/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/rroblf01/vlambda/compare/v0.2.0...v0.2.1

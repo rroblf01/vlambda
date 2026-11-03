@@ -17,8 +17,22 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from vlambda.cache import get as get_compiled
-from vlambda.request import Request
+from vlambda.request import Request, set_log_sink
 from vlambda.sandbox import make_sandbox
+
+_current_logs: list[dict] = []
+
+
+def _log_sink(request_id: str, slug: str, level: str, message: str):
+    _current_logs.append({
+        "request_id": request_id,
+        "slug": slug,
+        "level": level,
+        "message": str(message),
+    })
+
+
+set_log_sink(_log_sink)
 
 
 def _execute(code: str, method: str, path: str, query: str, body: bytes, request_id: str = "", slug: str = ""):
@@ -79,6 +93,7 @@ def main() -> None:
         line = line.strip()
         if not line:
             continue
+        _current_logs.clear()
         try:
             req = json.loads(line)
             code = req.get("code", "")
@@ -113,9 +128,9 @@ def main() -> None:
                 payload = _json.dumps(result, default=_default)
             else:
                 payload = str(result)
-            print(json.dumps({"ok": True, "payload": payload}), flush=True)
+            print(json.dumps({"ok": True, "payload": payload, "logs": _current_logs}), flush=True)
         except Exception as e:
-            print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}), flush=True)
+            print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "logs": _current_logs}), flush=True)
 
 
 if __name__ == "__main__":

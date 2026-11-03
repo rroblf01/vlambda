@@ -32,21 +32,9 @@ def blocked_import(name, *args, **kwargs):
 
 
 # Pre-imported modules (loaded once, shared across sandboxes)
+# Modules are imported on demand by blocked_import. Preloading them at module
+# import makes every fresh sandbox process pay for modules the lambda may not use.
 _PREIMPORTED = {}
-def _preload():
-    import json, math, re, datetime, collections, itertools, functools
-    import hashlib, base64, string, textwrap, operator
-    import decimal, fractions, random, statistics
-    _PREIMPORTED.update({
-        "json": json, "math": math, "re": re,
-        "datetime": datetime, "collections": collections,
-        "itertools": itertools, "functools": functools,
-        "hashlib": hashlib, "base64": base64, "string": string,
-        "textwrap": textwrap, "operator": operator,
-        "decimal": decimal, "fractions": fractions,
-        "random": random, "statistics": statistics,
-    })
-_preload()
 
 
 

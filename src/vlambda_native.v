@@ -1566,7 +1566,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if qi2 := req.url.index('?') {
 				q = req.url[qi2+1..]
 			}
-			result := run_project(project_dir, entrypoint, method, req.url, q, req.data)
+			vlambda_request_counter++
+			request_id := 'req-${vlambda_request_counter}'
+			result := run_project(project_dir, entrypoint, method, req.url, q, req.data, request_id, slug)
 			elapsed := time.since(start_time).microseconds()
 			vlambda_latency_sum += f64(elapsed) / 1000.0
 			vlambda_latency_count++
@@ -1575,7 +1577,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if result.contains('error') {
 				vlambda_lambda_errors[slug] = (vlambda_lambda_errors[slug] or { u64(0) }) + 1
 			}
-			return cors_response(200, result, lambda_content_type(result))
+			mut resp := cors_response(200, result, lambda_content_type(result))
+			resp.header.add_custom('X-Request-Id', request_id) or {}
+			return resp
 		}
 		// Split code and method
 		parts := code_method.split('|')
@@ -2448,14 +2452,14 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 }
 
 @[vc_fn]
-pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string) string {
+pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string, request_id string, slug string) string {
 	vlambda_result_str = '{"error": "not started"}'
-	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body] () {
+	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body, request_id, slug] () {
 		if vlambda_run_project == unsafe { nil } {
 			vlambda_result_str = '{"error": "no project runner registered"}'
 			return
 		}
-		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr]
+		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr]
 		result := vcraft.call(vlambda_run_project, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {

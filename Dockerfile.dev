@@ -20,7 +20,8 @@ RUN uv python install 3.14t \
     && uv venv /opt/venv --python 3.14t \
     && uv pip install --python /opt/venv/bin/python --no-cache /tmp/wheels/*.whl \
     && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + \
-    && find /opt/venv -name '*.pyc' -delete
+    && find /opt/venv -name '*.pyc' -delete \
+    && /opt/venv/bin/python -m compileall -q /opt/venv/lib
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \

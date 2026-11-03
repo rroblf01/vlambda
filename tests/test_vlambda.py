@@ -385,6 +385,7 @@ def test_landlock_sandbox():
                 "    check('fork', lambda: os.fork())\n"
                 "    check('subprocess', lambda: __import__('subprocess').run(['/bin/true']))\n"
                 "    check('tmp_other', lambda: open('/tmp/not-mine', 'w'))\n"
+                "    request.log('landlock log line')\n"
                 "    values = []\n"
                 "    thread = threading.Thread(target=lambda: values.append(1))\n"
                 "    thread.start(); thread.join()\n"
@@ -405,6 +406,15 @@ def test_landlock_sandbox():
         assert body.get("tmp_other") == "PermissionError", body
         assert body.get("thread") == [1], body
         assert body.get("env") == [], body
+        deadline = time.time() + 4
+        logs = {}
+        while time.time() < deadline:
+            status, logs = req("GET", f"/logs/history?days=1&slug={slug}", token=token)
+            assert status == 200
+            if any(item.get("message") == "landlock log line" for item in logs.get("items", [])):
+                break
+            time.sleep(0.3)
+        assert any(item.get("message") == "landlock log line" for item in logs.get("items", [])), logs
     finally:
         stop_server()
 

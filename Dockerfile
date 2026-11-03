@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Production image: installs vlambda from PyPI and listens on port 8080.
 # TLS and the public reverse proxy are handled by Dokploy.
-ARG VLAMBDA_VERSION=0.2.3
+ARG VLAMBDA_VERSION=0.2.4
 ARG PYTHON_VERSION=3.14t
 
 FROM debian:bookworm-slim AS python-env
@@ -18,7 +18,8 @@ RUN uv python install ${PYTHON_VERSION} \
     && uv pip install --python /opt/venv/bin/python --no-cache \
         "vlambda==${VLAMBDA_VERSION}" \
     && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + \
-    && find /opt/venv -name '*.pyc' -delete
+    && find /opt/venv -name '*.pyc' -delete \
+    && /opt/venv/bin/python -m compileall -q /opt/venv/lib
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \

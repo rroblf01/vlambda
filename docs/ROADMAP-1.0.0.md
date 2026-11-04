@@ -27,13 +27,14 @@ Theme: stability, safety and operations for a single-host deployment
   - API, CLI, compatibility and upgrade references.
   - `vlambda --version` and version in `/health` and `/ready`.
   - Contributing guide.
-- [ ] Phase 4: quality and release candidate.
-  - Coverage threshold and missing unit tests.
-  - Chaos: DB lock, broker down, lease loss, disk full.
-  - Soak test with memory-leak checks.
-  - Fuzzing for HTTP/JSON and the broker protocol.
-  - aarch64 test run, not only wheel build.
-  - Performance regression gate around `bench.py`.
+- [~] Phase 4: quality and release candidate.
+  - [x] Coverage threshold (55%) and unit CI job.
+  - [x] aarch64 integration job, not only wheel build.
+  - [x] Failure-isolation and HTTP/JSON fuzz smoke tests.
+  - [x] Soak and throughput tooling (`scripts/soak.py`, `VLAMBDA_MIN_RPS`).
+  - [ ] Full 24 h soak on a staging host.
+  - [ ] Extended chaos: DB lock, broker down, lease loss, disk full.
+  - [ ] Broker protocol fuzzing.
 - [ ] Phase 5: 1.0.0 release.
   - Freeze API and schema.
   - Rehearse upgrade/backup/restore on a clean host.

@@ -65,7 +65,6 @@ __global (
 	vlambda_import_lambda = voidptr(0)
 	vlambda_duplicate_lambda = voidptr(0)
 	vlambda_admin_create_user = voidptr(0)
-	vlambda_result_str = error_envelope('not started')
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
 	vlambda_rate_limit = 100          // req/s per IP
@@ -2992,14 +2991,18 @@ fn lambda_content_type(result string) string {
 }
 
 pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int, request_meta string) string {
-	vlambda_result_str = error_envelope('not started')
+	// The result must live on this invocation's stack: V handles requests on
+	// several threads, so a package-global result string races under load.
+	mut result_str := error_envelope('not started')
+	ptr := &result_str
 	start_time := time.now()
-	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, memory_mb, start_time, request_meta] () {
+	vcraft.with_gil(fn [request_id, slug, code, method, path, query, body, timeout, memory_mb, start_time, request_meta, ptr] () {
 		if vlambda_executor == unsafe { nil } {
-			vlambda_result_str = error_envelope('no executor registered')
+			err := error_envelope('no executor registered')
+			unsafe { *ptr = err }
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
-				args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
+				args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(err).ptr]
 				r := vcraft.call(vlambda_record_metric, args)
 				for a in args { vcraft.borrow(a).decref() }
 				if !r.is_null() { r.decref() }
@@ -3011,10 +3014,11 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
 			vcraft.clear_error()
-			vlambda_result_str = error_envelope('execution failed')
+			err := error_envelope('execution failed')
+			unsafe { *ptr = err }
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
-				margs := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(vlambda_result_str).ptr]
+				margs := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(err).ptr]
 				r := vcraft.call(vlambda_record_metric, margs)
 				for a in margs { vcraft.borrow(a).decref() }
 				if !r.is_null() { r.decref() }
@@ -3024,7 +3028,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 		if result.type_name() == 'str' {
 			ss := py_string_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
-			vlambda_result_str = ss + ''
+			unsafe { *ptr = ss }
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				margs := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
@@ -3037,7 +3041,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 		if result.type_name() == 'bytes' {
 			ss := py_bytes_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
-			vlambda_result_str = ss + ''
+			unsafe { *ptr = ss }
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 				elapsed := time.since(start_time).microseconds()
 				margs := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
@@ -3049,7 +3053,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 		}
 		ss := result.str()
 		result.decref()
-		vlambda_result_str = ss + ''
+		unsafe { *ptr = ss }
 		if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
 			elapsed := time.since(start_time).microseconds()
 			margs := [vcraft.to_py_string(slug).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string('${f64(elapsed) / 1000.0}').ptr, vcraft.to_py_string(if ss.contains('error') { ss } else { '' }).ptr]
@@ -3058,15 +3062,16 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			if !r.is_null() { r.decref() }
 		}
 	})
-	return vlambda_result_str
+	return result_str
 }
 
 @[vc_fn]
 pub fn run_project(project_dir string, entrypoint string, method string, path string, query string, body string, request_id string, slug string, request_meta string) string {
-	vlambda_result_str = error_envelope('not started')
-	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body, request_id, slug, request_meta] () {
+	mut result_str := error_envelope('not started')
+	ptr := &result_str
+	vcraft.with_gil(fn [project_dir, entrypoint, method, path, query, body, request_id, slug, request_meta, ptr] () {
 		if vlambda_run_project == unsafe { nil } {
-			vlambda_result_str = error_envelope('no project runner registered')
+			unsafe { *ptr = error_envelope('no project runner registered') }
 			return
 		}
 		args := [vcraft.to_py_string(project_dir).ptr, vcraft.to_py_string(entrypoint).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(request_meta).ptr]
@@ -3074,26 +3079,26 @@ pub fn run_project(project_dir string, entrypoint string, method string, path st
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
 			vcraft.clear_error()
-			vlambda_result_str = error_envelope('execution failed')
+			unsafe { *ptr = error_envelope('execution failed') }
 			return
 		}
 		if result.type_name() == 'str' {
 			ss := py_string_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
-			vlambda_result_str = ss + ''
+			unsafe { *ptr = ss }
 			return
 		}
 		if result.type_name() == 'bytes' {
 			ss := py_bytes_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
-			vlambda_result_str = ss + ''
+			unsafe { *ptr = ss }
 			return
 		}
 		ss := result.str()
 		result.decref()
-		vlambda_result_str = ss + ''
+		unsafe { *ptr = ss }
 	})
-	return vlambda_result_str
+	return result_str
 }
 
 @[vc_fn]

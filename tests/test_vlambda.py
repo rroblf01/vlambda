@@ -1114,6 +1114,8 @@ def test_metrics_history():
 
 def test_concurrency():
     import threading
+    stop_server()
+    start_server({"VLAMBDA_RATE_LIMIT": "100000"})
     token, slug = test_create_invoke()
     results = []
     lock = threading.Lock()
@@ -1135,7 +1137,8 @@ def test_concurrency():
         th.join(timeout=30)
     assert all(not th.is_alive() for th in threads)
     assert len(results) == 100
-    assert all(r[0] != "ERR" for r in results)
+    assert all(r[0] == 200 for r in results), [r for r in results if r[0] != 200][:3]
+    assert all(r[1] == {"msg": "hi"} for r in results), [r for r in results if r[1] != {"msg": "hi"}][:3]
 
 def test_alias_version():
     time.sleep(2.0)

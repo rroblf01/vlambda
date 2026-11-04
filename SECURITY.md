@@ -42,6 +42,16 @@ Out of scope for the hosted demo:
 - missing hardening on a deployment that runs without `VLAMBDA_SANDBOX`;
 - multi-host active/active, which 1.0 explicitly does not support.
 
+## Secret storage
+
+Lambda secrets are encrypted at rest with a per-value random nonce, an
+HMAC-SHA256 keystream and an HMAC-SHA256 tag, and each ciphertext carries a
+short key identifier for rotation. This protects against casual database reads;
+it is not a KMS and does not protect a host that is already compromised. Keep
+`VLAMBDA_ENCRYPTION_KEY` outside the database and backups, and rotate it with
+`vlambda secrets rotate` if it may have leaked. A dependency-free standard AEAD
+is a candidate for a later 1.x release.
+
 ## Deployment assumptions
 
 vlambda 1.0 targets a single host, Linux x86_64/aarch64, with SQLite on a local

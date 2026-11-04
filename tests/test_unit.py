@@ -1289,3 +1289,17 @@ def test_version_matches_build_files():
     vcraft = re.search(r'^version = "([^"]+)"', (root / "vcraft.toml").read_text(), re.M)
     assert pyproject and vcraft
     assert pyproject.group(1) == vcraft.group(1) == __version__
+
+
+def test_secret_tamper_detection():
+    import base64
+    from vlambda import env
+
+    key = env._key_from("tamper-key")
+    token = env.encrypt("value", key=key)
+    version, kid, payload = token.split(":")
+    raw = bytearray(base64.urlsafe_b64decode(payload))
+    raw[-1] ^= 1
+    tampered = f"{version}:{kid}:" + base64.urlsafe_b64encode(bytes(raw)).decode()
+    with pytest.raises(ValueError):
+        env.decrypt(tampered, key=key)

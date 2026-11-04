@@ -21,3 +21,18 @@ jobs:
           format: cyclonedx-json
           output-file: vlambda-sbom.cdx.json
           artifact-name: vlambda-sbom.cdx.json
+
+      - name: scan filesystem
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy.sarif
+          exit-code: "0"
+
+      - name: upload vulnerability report
+        uses: actions/upload-artifact@v6
+        with:
+          name: trivy-sarif
+          path: trivy.sarif

@@ -1,3 +1,8 @@
 include python/vlambda/ui.html
 include python/vlambda/favicon.ico
+include README.md
+include CHANGELOG.md
+include SECURITY.md
+include CONTRIBUTING.md
 recursive-include python/vlambda/static *
+recursive-include docs *.md

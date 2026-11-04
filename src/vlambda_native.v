@@ -31,6 +31,7 @@ fn py_bytes_copy(obj vcraft.PyObj, name string, fallback string) string {
 __global (
 	vlambda_db_path = './vlambda.db'
 	vlambda_db_error = ''
+	vlambda_version = 'unknown'
 	vlambda_executor = voidptr(0)
 	vlambda_auth_verifier = voidptr(0)
 	vlambda_auth_register = voidptr(0)
@@ -806,7 +807,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	if req.url == '/health' {
 		return http.Response{
 			status_code: 200
-			body: '{"status": "ok"}'
+			body: '{"status": "ok", "version": "${vlambda_version}"}'
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
@@ -822,7 +823,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		return http.Response{
 			status_code: 200
-			body: '{"status": "ready"}'
+			body: '{"status": "ready", "version": "${vlambda_version}"}'
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
 	}
@@ -2597,6 +2598,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 }
 
 // ---- vcraft extension functions (Python bridge) ----
+
+@[vc_fn]
+pub fn set_version(version string) {
+	vlambda_version = version
+}
 
 @[vc_fn]
 pub fn db_init(db_path string) bool {

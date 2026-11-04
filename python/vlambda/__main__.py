@@ -10,6 +10,11 @@ import sys
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V", "version"):
+        from vlambda.version import __version__
+
+        print(f"vlambda {__version__}")
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from vlambda.reset import main as reset_main
         raise SystemExit(reset_main(sys.argv[2:]))
@@ -64,7 +69,10 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password, new_auth_epoch
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, db_init_error, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, register_kv, register_egress, register_schedules, register_meta, register_openapi, register_shutdown, set_overloaded
+    from vlambda_native import start_server, db_init, db_init_error, set_version, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, register_kv, register_egress, register_schedules, register_meta, register_openapi, register_shutdown, set_overloaded
+
+    from vlambda.version import __version__
+    set_version(__version__)
 
     if not db_init(args.sqlite_path):
         detail = db_init_error()

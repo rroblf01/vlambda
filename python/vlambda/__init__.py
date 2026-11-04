@@ -2,6 +2,7 @@
 
 import os
 
+from vlambda.version import __version__  # noqa: F401
 from vlambda.sqlite_compat import configure as _configure_sqlite
 
 _configure_sqlite()

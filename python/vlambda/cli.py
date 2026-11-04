@@ -271,7 +271,10 @@ def main(argv=None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--url", default=argparse.SUPPRESS)
     common.add_argument("--token", default=argparse.SUPPRESS)
+    from vlambda.version import __version__
+
     parser = argparse.ArgumentParser(prog="vlambda", description="vlambda CLI")
+    parser.add_argument("--version", action="version", version=f"vlambda {__version__}")
     parser.add_argument("--url", default=_default_url())
     parser.add_argument("--token", default=_default_token())
     sub = parser.add_subparsers(dest="command", required=True)

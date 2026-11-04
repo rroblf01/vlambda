@@ -46,8 +46,8 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 0.4.0 is released. The next release is 1.0: single-host deployments on Linux,
 data lifecycle (backup/restore and schema versions), security hardening,
 operational tooling and complete documentation. Multi-host active/active is out
-of scope. The 0.4.0 design notes remain in
-[docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md).
+of scope. See [docs/ROADMAP-1.0.0.md](docs/ROADMAP-1.0.0.md); the 0.4.0 design
+notes remain in [docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md).
 
 ## Installation
 
@@ -74,7 +74,17 @@ Or with environment variables:
 VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambda
 ```
 
-Then open http://localhost:8080/ in your browser.
+Then open http://localhost:8080/ in your browser. `python -m vlambda --version`
+prints the running package version; `/health` and `/ready` return it in JSON.
+
+## Documentation
+
+- [API reference](docs/API.md)
+- [CLI reference](docs/CLI.md)
+- [Compatibility and versioning](docs/COMPATIBILITY.md)
+- [Upgrading](docs/UPGRADING.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Build a POC in five minutes
 
@@ -234,8 +244,8 @@ Project exports include text files. Binary files are listed in
 - `GET /openapi.json` — Owner-scoped OpenAPI 3.1 document
 
 ### Monitoring (requires auth)
-- `GET /health` — Health check
-- `GET /ready` — Readiness
+- `GET /health` — Health check with the running version
+- `GET /ready` — Readiness with the running version
 - `GET /metrics` — Prometheus metrics
 - `GET /metrics/json` — Live JSON metrics
 - `GET /metrics/history?days=N&slug=` — Raw persisted metrics
@@ -567,9 +577,9 @@ an existing deployment to 1.0, stop the server and wipe the database files:
 python -m vlambda reset --yes --wipe
 ```
 
-This removes the main and metrics databases plus project, package and cache
-data. Copy the data volume first if you need to keep anything; the old schema is
-not migrated automatically.
+Install 1.0 first so this command exists. It removes the main and metrics
+databases plus project, package and cache data. Copy the data volume first if
+you need to keep anything; the old schema is not migrated automatically.
 
 For a disposable demo, run it from cron every day:
 

@@ -113,6 +113,7 @@ def req(method, path, data=None, token=None, extra_headers=None):
 def test_health():
     status, body = req("GET", "/health")
     assert status == 200 and body["status"] == "ok"
+    assert body.get("version"), body
 
 def test_favicon_only_for_ui():
     status, _ = req("GET", "/favicon.ico", extra_headers={"Referer": f"http://localhost:{PORT}/"})

@@ -1277,3 +1277,15 @@ def test_selfcheck_writable(tmp_path):
     blocker.write_text("x", encoding="utf-8")
     with pytest.raises(SelfCheckError):
         check_writable(str(blocker), "blocker")
+
+
+def test_version_matches_build_files():
+    import re
+    from pathlib import Path
+    from vlambda.version import __version__
+
+    root = Path(__file__).resolve().parents[1]
+    pyproject = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(), re.M)
+    vcraft = re.search(r'^version = "([^"]+)"', (root / "vcraft.toml").read_text(), re.M)
+    assert pyproject and vcraft
+    assert pyproject.group(1) == vcraft.group(1) == __version__

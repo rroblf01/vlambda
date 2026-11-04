@@ -51,12 +51,9 @@ def _default_packages() -> str:
 
 
 def _package_version() -> str:
-    try:
-        from importlib.metadata import version
+    from vlambda.version import __version__
 
-        return version("vlambda")
-    except Exception:
-        return "unknown"
+    return __version__
 
 
 def _key_fingerprint() -> str:

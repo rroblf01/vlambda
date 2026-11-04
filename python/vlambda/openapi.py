@@ -15,12 +15,9 @@ def _db_path() -> str:
 
 
 def _version() -> str:
-    try:
-        from importlib.metadata import version
+    from vlambda.version import __version__
 
-        return version("vlambda")
-    except Exception:
-        return "0.4.0"
+    return __version__
 
 
 def _owned(slug: str, owner_id: int) -> bool:

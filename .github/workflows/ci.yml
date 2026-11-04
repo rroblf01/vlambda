@@ -135,8 +135,10 @@ jobs:
                   except Exception:
                       return error.code, raw
 
-          q("POST", "/register", "ci:pass")
-          _, body = q("POST", "/login", "ci:pass")
+          status, body = q("POST", "/register", "ci:ci-passphrase-123")
+          assert status == 201, (status, body)
+          status, body = q("POST", "/login", "ci:ci-passphrase-123")
+          assert status == 200 and "token" in body, (status, body)
           token = body["token"]
           status, body = q("POST", "/vlambda?name=ci", "def handler(r): return {'ok': True}", token)
           assert status == 201, (status, body)

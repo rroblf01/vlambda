@@ -1,7 +1,7 @@
 """Async handler example.
 
-vlambda awaits the coroutine returned by an async handler, so `await` works
-with any async library that does not need the blocked `asyncio` module.
+vlambda awaits the coroutine returned by an async handler, so helpers written
+with `async def` can be reused directly.
 """
 
 

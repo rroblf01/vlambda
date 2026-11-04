@@ -299,8 +299,8 @@ async def handler(request):
     return {"values": [await double(n) for n in (1, 2, 3)]}
 ```
 
-Await local coroutines or third-party async clients. The `asyncio` module stays
-blocked because it exposes sockets indirectly.
+Await local coroutines or helpers you define with `async def`. The `asyncio`
+module stays blocked because it exposes sockets indirectly.
 
 Safe builtins: `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `range`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`, `print`, etc.
 

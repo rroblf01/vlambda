@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import zipfile
 import io
@@ -1063,3 +1064,98 @@ def test_async_project_handler(tmp_path):
         encoding="utf-8",
     )
     assert execute_project(str(tmp_path), "main.py", None) == {"value": 21}
+
+
+def _make_db(path, version=1):
+    import sqlite3
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+    conn.execute("INSERT INTO users (username) VALUES ('alice')")
+    conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
+    conn.close()
+
+
+def test_backup_restore_roundtrip(tmp_path):
+    from vlambda.backup import create_backup, restore_backup
+
+    db = tmp_path / "vlambda.db"
+    metrics = tmp_path / "metrics.db"
+    projects = tmp_path / "projects"
+    packages = tmp_path / "packages"
+    _make_db(db)
+    _make_db(metrics)
+    projects.mkdir()
+    (projects / "main.py").write_text("print('hi')\n", encoding="utf-8")
+    archive = tmp_path / "backup.tar.gz"
+
+    manifest = create_backup(
+        str(archive), db_path=str(db), metrics_db=str(metrics),
+        projects_dir=str(projects), packages_dir=str(packages),
+    )
+    assert manifest["schema_version"] == 1
+    assert manifest["metrics_schema_version"] == 1
+    assert "projects" in manifest["contents"]
+    assert os.path.getsize(archive) > 0
+
+    db.unlink()
+    metrics.unlink()
+    shutil.rmtree(projects)
+    result = restore_backup(
+        str(archive), db_path=str(db), metrics_db=str(metrics),
+        projects_dir=str(projects), packages_dir=str(packages),
+    )
+    assert result["restored"] is True
+    assert result["schema_version"] == 1
+    assert (projects / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
+    import sqlite3
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT username FROM users").fetchone()[0] == "alice"
+    conn.close()
+
+
+def test_backup_rejects_newer_schema(tmp_path):
+    from vlambda.backup import create_backup
+    from vlambda.schema import SchemaError
+
+    db = tmp_path / "vlambda.db"
+    _make_db(db, version=2)
+    with pytest.raises(SchemaError):
+        create_backup(str(tmp_path / "backup.tar.gz"), db_path=str(db))
+
+
+def test_restore_refuses_overwrite_without_force(tmp_path):
+    from vlambda.backup import BackupError, create_backup, restore_backup
+
+    db = tmp_path / "vlambda.db"
+    _make_db(db)
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"),
+                  projects_dir=str(tmp_path / "missing-projects"),
+                  packages_dir=str(tmp_path / "missing-packages"))
+    with pytest.raises(BackupError):
+        restore_backup(str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"),
+                       projects_dir=str(tmp_path / "missing-projects"),
+                       packages_dir=str(tmp_path / "missing-packages"))
+
+
+def test_restore_checks_encryption_key(tmp_path, monkeypatch):
+    from vlambda.backup import BackupError, create_backup, restore_backup
+
+    db = tmp_path / "vlambda.db"
+    _make_db(db)
+    archive = tmp_path / "backup.tar.gz"
+    monkeypatch.setenv("VLAMBDA_SECRET", "first")
+    create_backup(str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"),
+                  projects_dir=str(tmp_path / "missing-projects"),
+                  packages_dir=str(tmp_path / "missing-packages"))
+    db.unlink()
+    monkeypatch.setenv("VLAMBDA_SECRET", "second")
+    with pytest.raises(BackupError):
+        restore_backup(str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"),
+                       projects_dir=str(tmp_path / "missing-projects"),
+                       packages_dir=str(tmp_path / "missing-packages"))
+    restore_backup(str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"),
+                   projects_dir=str(tmp_path / "missing-projects"),
+                   packages_dir=str(tmp_path / "missing-packages"),
+                   allow_key_mismatch=True)

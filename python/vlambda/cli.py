@@ -199,6 +199,41 @@ def cmd_schedule(args):
     _print_response(status, {}, rb)
 
 
+def cmd_backup(args):
+    from vlambda.backup import create_backup
+
+    try:
+        manifest = create_backup(
+            args.out,
+            db_path=args.db or None,
+            metrics_db=args.metrics_db or None,
+            projects_dir=args.projects_dir or None,
+            packages_dir=args.packages_dir or None,
+            include_packages=args.with_packages,
+        )
+    except Exception as exc:
+        raise SystemExit(f"vlambda: {exc}") from exc
+    print(json.dumps({"archive": os.path.abspath(args.out), **manifest}, indent=2))
+
+
+def cmd_restore(args):
+    from vlambda.backup import restore_backup
+
+    try:
+        result = restore_backup(
+            args.archive,
+            db_path=args.db or None,
+            metrics_db=args.metrics_db or None,
+            projects_dir=args.projects_dir or None,
+            packages_dir=args.packages_dir or None,
+            force=args.force,
+            allow_key_mismatch=args.allow_key_mismatch,
+        )
+    except Exception as exc:
+        raise SystemExit(f"vlambda: {exc}") from exc
+    print(json.dumps(result, indent=2))
+
+
 def cmd_openapi(args):
     status, _, body = _request(args.url.rstrip("/") + "/openapi.json", args.token)
     if status >= 400:
@@ -291,8 +326,28 @@ def main(argv=None) -> int:
     openapi.add_argument("--out", default="")
     openapi.set_defaults(func=cmd_openapi)
 
+    backup = sub.add_parser("backup", help="create an offline backup archive")
+    backup.add_argument("--out", required=True)
+    backup.add_argument("--db", default="")
+    backup.add_argument("--metrics-db", default="")
+    backup.add_argument("--projects-dir", default="")
+    backup.add_argument("--packages-dir", default="")
+    backup.add_argument("--with-packages", action="store_true")
+    backup.set_defaults(func=cmd_backup, offline=True)
+
+    restore = sub.add_parser("restore", help="restore an offline backup archive")
+    restore.add_argument("--from", dest="archive", required=True)
+    restore.add_argument("--db", default="")
+    restore.add_argument("--metrics-db", default="")
+    restore.add_argument("--projects-dir", default="")
+    restore.add_argument("--packages-dir", default="")
+    restore.add_argument("--force", action="store_true", help="replace existing data")
+    restore.add_argument("--allow-key-mismatch", action="store_true",
+                         help="restore even if the backup used another encryption key")
+    restore.set_defaults(func=cmd_restore, offline=True)
+
     args = parser.parse_args(argv)
-    if not args.token:
+    if not getattr(args, "offline", False) and not args.token:
         print("vlambda: --token or VLAMBDA_TOKEN is required", file=sys.stderr)
         return 2
     args.func(args)

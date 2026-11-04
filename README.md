@@ -25,7 +25,7 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **KV store** — per-lambda typed key/value state with TTL and atomic increments
 - **Controlled egress** — allow-listed HTTPS calls from the sandbox via `request.fetch`
 - **Schedules** — persistent five-field cron jobs with timezones, run history and a single leader
-- **OpenAPI** — owner-scoped spec, metadata editor, `/docs` viewer and CLI export
+- **OpenAPI** — owner-scoped spec, metadata editor and CLI export
 - **Sandbox** — Landlock + seccomp in Docker, plus restricted Python builtins and blocked modules
 - **Metrics** — Prometheus-compatible + Chart.js dashboard
 - **Per-lambda method** — GET, POST, PUT, PATCH, DELETE
@@ -43,10 +43,11 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 
 ## Roadmap
 
-0.4.0 is in planning: per-lambda KV, allow-listed egress, cron schedules,
-OpenAPI, single-host HA and an optional gVisor runtime. See
-[docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md) for architecture, API contracts,
-phases and release criteria.
+0.4.0 is released. The next release is 1.0: single-host deployments on Linux,
+data lifecycle (backup/restore and schema versions), security hardening,
+operational tooling and complete documentation. Multi-host active/active is out
+of scope. The 0.4.0 design notes remain in
+[docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md).
 
 ## Installation
 
@@ -225,7 +226,6 @@ Project exports include text files. Binary files are listed in
 ### Metadata and OpenAPI
 - `GET/PUT /vlambda/<slug>/meta` — Summary, tags and description
 - `GET /openapi.json` — Owner-scoped OpenAPI 3.1 document
-- `GET /docs` — Bundled OpenAPI viewer
 
 ### Monitoring (requires auth)
 - `GET /health` — Health check
@@ -478,8 +478,8 @@ Relevant settings:
 Every lambda can carry `summary`, `tags` and `description` metadata, editable
 from the code/project editor or `PUT /vlambda/<slug>/meta`. The generated spec is
 available at `/openapi.json` (authenticated and owner-scoped by default; set
-`VLAMBDA_OPENAPI_PUBLIC=1` for a public spec) and a lightweight viewer is served
-at `/docs` without external assets.
+`VLAMBDA_OPENAPI_PUBLIC=1` for a public spec). Import it into Postman, Insomnia,
+Scalar, Swagger UI or any OpenAPI 3.1 client.
 
 ```bash
 python -m vlambda openapi --out openapi.json
@@ -505,6 +505,8 @@ python -m vlambda egress <slug> --set api.example.com
 python -m vlambda schedule list <slug>
 python -m vlambda openapi --out openapi.json
 python -m vlambda task <task-id>
+python -m vlambda backup --out backup.tar.gz
+python -m vlambda restore --from backup.tar.gz --force
 ```
 
 ## Web UI
@@ -536,6 +538,31 @@ For a disposable demo, run it from cron every day:
 ```cron
 0 3 * * * docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> /opt/venv/bin/python -m vlambda reset --yes --url http://127.0.0.1:8080
 ```
+
+## Backup and restore
+
+Backups are self-contained archives of the main SQLite database, the
+metrics/logs database and the project tree. The main database is copied with
+SQLite's online backup API, so a backup is safe while the server is running.
+Restoring is offline: stop the server first.
+
+```bash
+# Safe while the server is running
+python -m vlambda backup --out /data/backups/vlambda-$(date +%F).tar.gz
+
+# Stop the server before restoring
+python -m vlambda restore --from /data/backups/vlambda-2026-11-04.tar.gz --force
+```
+
+Add `--with-packages` to include the per-lambda/project package vendor
+directories. Restores verify `PRAGMA integrity_check`, the schema version and the
+encryption-key fingerprint. Use the same `VLAMBDA_SECRET` or
+`VLAMBDA_ENCRYPTION_KEY`; if you accept that encrypted secrets will not decrypt,
+pass `--allow-key-mismatch`.
+
+Both databases expose a schema version through `PRAGMA user_version`. A build
+refuses to open a database written by a newer schema, so an older backup is the
+safe rollback path.
 
 ## Performance
 

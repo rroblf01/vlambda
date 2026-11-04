@@ -58,18 +58,11 @@ def init(db_path: str | None = None, retention_days: int | None = None):
             _conn.execute(f"PRAGMA journal_mode={mode}")
             _conn.execute("PRAGMA busy_timeout=5000")
             _CONN_PATH = target
-            try:
-                _conn.execute("ALTER TABLE metrics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                _conn.execute("ALTER TABLE metrics ADD COLUMN error_type TEXT NOT NULL DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                _conn.execute("ALTER TABLE metrics ADD COLUMN cold_start INTEGER NOT NULL DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass
+            version = int(_conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+            if version > 1:
+                raise RuntimeError(
+                    f"metrics schema version {version} is newer than this vlambda build"
+                )
             _conn.execute(
                 "CREATE TABLE IF NOT EXISTS metrics ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -110,6 +103,7 @@ def init(db_path: str | None = None, retention_days: int | None = None):
                 "PRIMARY KEY (day, slug)"
                 ")"
             )
+            _conn.execute("PRAGMA user_version = 1")
             _conn.commit()
     if _worker is None or not _worker.is_alive():
         _stop.clear()

@@ -36,10 +36,6 @@ def _connect():
     return conn
 
 
-def _columns(conn, table: str) -> set[str]:
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _init():
     try:
         conn = _connect()
@@ -50,7 +46,18 @@ def _init():
             "result TEXT,"
             "error TEXT,"
             "created REAL NOT NULL,"
-            "completed REAL"
+            "completed REAL,"
+            "owner_id INTEGER NOT NULL DEFAULT 0,"
+            "slug TEXT NOT NULL DEFAULT '',"
+            "code TEXT NOT NULL DEFAULT '',"
+            "method TEXT NOT NULL DEFAULT 'GET',"
+            "path TEXT NOT NULL DEFAULT '/',"
+            "query TEXT NOT NULL DEFAULT '',"
+            "body_b64 TEXT NOT NULL DEFAULT '',"
+            "request_meta TEXT NOT NULL DEFAULT '{}',"
+            "claimed_by TEXT NOT NULL DEFAULT '',"
+            "lease_until REAL,"
+            "attempts INTEGER NOT NULL DEFAULT 0"
             ")"
         )
         conn.execute(
@@ -58,28 +65,13 @@ def _init():
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "task_id TEXT NOT NULL,"
             "error TEXT NOT NULL,"
-            "ts REAL NOT NULL"
+            "ts REAL NOT NULL,"
+            "owner_id INTEGER NOT NULL DEFAULT 0"
             ")"
         )
-        task_columns = _columns(conn, "tasks")
-        additions = (
-            ("owner_id", "INTEGER NOT NULL DEFAULT 0"),
-            ("slug", "TEXT NOT NULL DEFAULT ''"),
-            ("code", "TEXT NOT NULL DEFAULT ''"),
-            ("method", "TEXT NOT NULL DEFAULT 'GET'"),
-            ("path", "TEXT NOT NULL DEFAULT '/'"),
-            ("query", "TEXT NOT NULL DEFAULT ''"),
-            ("body_b64", "TEXT NOT NULL DEFAULT ''"),
-            ("request_meta", "TEXT NOT NULL DEFAULT '{}'"),
-            ("claimed_by", "TEXT NOT NULL DEFAULT ''"),
-            ("lease_until", "REAL"),
-            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
-        )
-        for name, ddl in additions:
-            if name not in task_columns:
-                conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
-        if "owner_id" not in _columns(conn, "dlq"):
-            conn.execute("ALTER TABLE dlq ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dlq_owner ON dlq(owner_id)")
         conn.commit()
         conn.close()
     except Exception:

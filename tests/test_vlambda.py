@@ -519,9 +519,8 @@ def test_openapi():
     status, body = req("GET", "/openapi.json", token=other)
     assert status == 200 and f"/f/{slug}" not in body["paths"], body
 
-    import urllib.request
-    docs = urllib.request.urlopen(f"http://localhost:{PORT}/docs").read()
-    assert b"openapi.json" in docs
+    status, body = req("GET", "/docs")
+    assert status == 404, (status, body)
 
     status, body = req("GET", f"/vlambda/{slug}/meta")
     assert status == 401, body

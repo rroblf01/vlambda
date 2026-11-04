@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `vlambda backup` and `vlambda restore`: consistent offline archives of the main database, metrics/logs database, projects and optional package vendors.
+- Database schema versions (`PRAGMA user_version`) with startup checks and backup compatibility validation.
+
+### Changed
+- 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.
+- The 1.0 schema starts fresh; databases created before 1.0 are not migrated.
+
+### Removed
+- The bundled `/docs` viewer. `/openapi.json` and `vlambda openapi` remain the supported interface for OpenAPI clients.
+
 ## [0.4.0] - 2026-11-04
 
 ### Added

@@ -30,6 +30,7 @@ fn py_bytes_copy(obj vcraft.PyObj, name string, fallback string) string {
 
 __global (
 	vlambda_db_path = './vlambda.db'
+	vlambda_db_error = ''
 	vlambda_executor = voidptr(0)
 	vlambda_auth_verifier = voidptr(0)
 	vlambda_auth_register = voidptr(0)
@@ -123,13 +124,22 @@ fn init_db(db_path string) !sqlite.DB {
 		db.exec('PRAGMA journal_mode=WAL;')!
 	}
 	db.exec('PRAGMA busy_timeout=5000;')!
+	version := db.q_int('PRAGMA user_version') or { 0 }
+	if version > 1 {
+		return error('database schema version ${version} is newer than this vlambda build')
+	}
+	if version == 0 {
+		existing := db.q_int('SELECT count(*) FROM sqlite_master WHERE type = "table" AND name IN ("users", "lambdas")') or { 0 }
+		if existing > 0 {
+			return error('legacy vlambda database detected; 1.0 requires a fresh database')
+		}
+	}
 	db.exec('CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT UNIQUE NOT NULL,
 		password_hash TEXT NOT NULL,
 		auth_epoch TEXT NOT NULL DEFAULT ""
 	);')!
-	db.exec('ALTER TABLE users ADD COLUMN auth_epoch TEXT NOT NULL DEFAULT "";') or {}
 	db.exec('CREATE TABLE IF NOT EXISTS lambdas (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		slug TEXT UNIQUE NOT NULL,
@@ -137,18 +147,17 @@ fn init_db(db_path string) !sqlite.DB {
 		code TEXT NOT NULL,
 		method TEXT NOT NULL DEFAULT "GET",
 		owner_id INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL
+		created_at TEXT NOT NULL,
+		kind TEXT NOT NULL DEFAULT "code",
+		entrypoint TEXT NOT NULL DEFAULT "",
+		project_dir TEXT NOT NULL DEFAULT "",
+		timeout INTEGER NOT NULL DEFAULT 0,
+		memory_mb INTEGER NOT NULL DEFAULT 0,
+		version INTEGER NOT NULL DEFAULT 1,
+		summary TEXT NOT NULL DEFAULT "",
+		description TEXT NOT NULL DEFAULT "",
+		tags TEXT NOT NULL DEFAULT ""
 	);')!
-	db.exec('ALTER TABLE lambdas ADD COLUMN name TEXT NOT NULL DEFAULT "";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN kind TEXT NOT NULL DEFAULT "code";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN entrypoint TEXT NOT NULL DEFAULT "";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN project_dir TEXT NOT NULL DEFAULT "";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN timeout INTEGER NOT NULL DEFAULT 0;') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 0;') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN version INTEGER NOT NULL DEFAULT 1;') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN summary TEXT NOT NULL DEFAULT "";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN description TEXT NOT NULL DEFAULT "";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN tags TEXT NOT NULL DEFAULT "";') or {}
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, method TEXT NOT NULL DEFAULT "GET", entrypoint TEXT NOT NULL DEFAULT "", project_dir TEXT NOT NULL DEFAULT "", kind TEXT NOT NULL DEFAULT "code", created_at TEXT NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_aliases (alias TEXT PRIMARY KEY, slug TEXT NOT NULL, version INTEGER NOT NULL, owner_id INTEGER NOT NULL);')!
 	db.exec('CREATE TABLE IF NOT EXISTS lambda_env (slug TEXT NOT NULL, key TEXT NOT NULL, is_secret INTEGER NOT NULL DEFAULT 0, value TEXT NOT NULL, PRIMARY KEY (slug, key));')!
@@ -171,9 +180,7 @@ fn init_db(db_path string) !sqlite.DB {
 		last_used_at TEXT NOT NULL DEFAULT "",
 		revoked INTEGER NOT NULL DEFAULT 0
 	);')!
-	db.exec('ALTER TABLE lambdas ADD COLUMN kind TEXT NOT NULL DEFAULT "code";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN entrypoint TEXT NOT NULL DEFAULT "";') or {}
-	db.exec('ALTER TABLE lambdas ADD COLUMN project_dir TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('PRAGMA user_version = 1;')!
 	return db
 }
 
@@ -855,15 +862,6 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			body: get_ui_html()
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
 		}
-	}
-
-	// Route: /docs (lightweight OpenAPI viewer)
-	if req.url == '/docs' || req.url == '/docs/' {
-		body := get_asset('docs.html')
-		if body == '' {
-			return http.Response{ status_code: 404, body: 'docs not found', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' }) }
-		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html; charset=utf-8' }) }
 	}
 
 	// Route: /assets/<name>
@@ -2603,11 +2601,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 @[vc_fn]
 pub fn db_init(db_path string) bool {
 	vlambda_db_path = db_path
+	vlambda_db_error = ''
 	mut db := init_db(db_path) or {
+		vlambda_db_error = err.msg()
 		return false
 	}
 	db.close() or {}
 	return true
+}
+
+@[vc_fn]
+pub fn db_init_error() string {
+	return vlambda_db_error
 }
 
 @[vc_fn]

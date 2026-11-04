@@ -154,3 +154,64 @@ jobs:
       - name: stop the container
         if: always()
         run: docker rm -f vlambda-ci || true
+
+  wheel-smoke:
+    name: wheel-install
+    runs-on: ubuntu-latest
+    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.2
+    steps:
+      - uses: actions/checkout@v5
+      - name: build the release wheel
+        env:
+          VCRAFT_NO_MEMORY_LIMIT: 1
+        run: vcraft build --release --interpreter /opt/python/cp314-cp314/bin/python
+      - name: install into a clean environment
+        run: |
+          /opt/python/cp314-cp314/bin/python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install -q dist/*.whl
+          /tmp/wheel-venv/bin/vlambda --version
+      - name: smoke the installed wheel
+        run: |
+          export VLAMBDA_SECRET=wheel-secret
+          /tmp/wheel-venv/bin/vlambda --port 8099 --sqlite_path /tmp/wheel.db &
+          server=$!
+          trap 'kill $server 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8099/health >/dev/null; then break; fi
+            sleep 1
+          done
+          /tmp/wheel-venv/bin/python - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          base = "http://127.0.0.1:8099"
+
+          def q(method, path, data=None, token=None):
+              headers = {}
+              if token:
+                  headers["Authorization"] = "Bearer " + token
+              body = data.encode() if isinstance(data, str) else data
+              request = urllib.request.Request(base + path, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      return error.code, json.loads(raw) if raw else {}
+                  except Exception:
+                      return error.code, raw
+
+          status, body = q("POST", "/register", "wheel:wheel-passphrase-123")
+          assert status == 201, (status, body)
+          status, body = q("POST", "/login", "wheel:wheel-passphrase-123")
+          assert status == 200 and "token" in body, (status, body)
+          token = body["token"]
+          status, body = q("POST", "/vlambda?name=wheel", "def handler(r): return {'wheel': True}", token)
+          assert status == 201, (status, body)
+          status, body = q("GET", f"/f/{body['slug']}")
+          assert status == 200 and body == {"wheel": True}, (status, body)
+          print("WHEEL SMOKE OK")
+          PY

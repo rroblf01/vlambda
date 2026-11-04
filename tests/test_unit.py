@@ -1303,3 +1303,36 @@ def test_secret_tamper_detection():
     tampered = f"{version}:{kid}:" + base64.urlsafe_b64encode(bytes(raw)).decode()
     with pytest.raises(ValueError):
         env.decrypt(tampered, key=key)
+
+
+def test_stats_cache(tmp_path, monkeypatch):
+    import sqlite3
+    from vlambda import metrics
+
+    db = tmp_path / "metrics.db"
+    metrics.init(str(db), 1)
+    monkeypatch.setattr(metrics, "_STATS_TTL", 60)
+    metrics._stats_cache.clear()
+
+    def insert(latency):
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT INTO metrics (ts, request_id, slug, method, path, latency_ms, error, error_type, cold_start)"
+            " VALUES (?, '', 'l1', 'GET', '/f/l1', ?, '', '', 0)",
+            (time.time(), latency),
+        )
+        conn.commit()
+        conn.close()
+
+    insert(1.0)
+    first = metrics.stats(1, "l1", 0)
+    assert first["count"] == 1
+
+    insert(2.0)
+    cached = metrics.stats(1, "l1", 0)
+    assert cached["count"] == 1
+
+    metrics._stats_cache.clear()
+    fresh = metrics.stats(1, "l1", 0)
+    assert fresh["count"] == 2
+    metrics.close()

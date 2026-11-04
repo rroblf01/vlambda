@@ -33,6 +33,9 @@ _last_rollup = 0.0
 _seen_slugs: set[str] = set()
 _metrics_purge_before = 0.0
 _logs_purge_before = 0.0
+_STATS_TTL = float(os.environ.get("VLAMBDA_METRICS_STATS_TTL", "15"))
+_stats_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
+_stats_lock = threading.Lock()
 
 
 def init(db_path: str | None = None, retention_days: int | None = None):
@@ -43,6 +46,8 @@ def init(db_path: str | None = None, retention_days: int | None = None):
         _RETENTION_DAYS = retention_days
     target = os.path.abspath(_DB_PATH)
     os.makedirs(os.path.dirname(target), exist_ok=True)
+    with _stats_lock:
+        _stats_cache.clear()
     with _lock:
         if _conn is not None and _CONN_PATH != target:
             try:
@@ -91,6 +96,7 @@ def init(db_path: str | None = None, retention_days: int | None = None):
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_slug ON logs(slug)")
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts)")
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_slug ON metrics(slug)")
+            _conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_slug_ts ON metrics(slug, ts)")
             _conn.execute(
                 "CREATE TABLE IF NOT EXISTS metrics_daily ("
                 "day TEXT NOT NULL,"
@@ -476,7 +482,14 @@ def query_logs(days: int = 1, slug: str | None = None, limit: int = 1000, owner_
 def stats(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:
     if _conn is None:
         return {"days": days, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "errors": 0, "cold_starts": 0}
-    cutoff = time.time() - days * 86400
+    key = (int(days), slug or "", int(owner_id or 0))
+    now = time.time()
+    if _STATS_TTL > 0:
+        with _stats_lock:
+            cached = _stats_cache.get(key)
+            if cached is not None and cached[0] > now:
+                return dict(cached[1])
+    cutoff = now - days * 86400
     sql = "SELECT latency_ms, error, cold_start FROM metrics WHERE ts >= ?"
     params: list[Any] = [cutoff]
     if slug:
@@ -496,7 +509,7 @@ def stats(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str
         idx = min(n - 1, int((n - 1) * p))
         return latencies[idx]
 
-    return {
+    result = {
         "days": days,
         "count": n,
         "avg_ms": sum(latencies) / n,
@@ -506,6 +519,12 @@ def stats(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[str
         "errors": errors,
         "cold_starts": cold_starts,
     }
+    if _STATS_TTL > 0:
+        with _stats_lock:
+            if len(_stats_cache) >= 128:
+                _stats_cache.clear()
+            _stats_cache[key] = (now + _STATS_TTL, result)
+    return dict(result)
 
 
 def delete_metrics(days: int = 0, slug: str | None = None, owner_id: int = 0) -> dict[str, Any]:

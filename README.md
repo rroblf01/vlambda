@@ -154,6 +154,7 @@ See `docker/README.md` for details, limits and the reset command.
 | | `VLAMBDA_LOGIN_MAX_FAILURES` | 5 | Failed logins before a temporary block |
 | | `VLAMBDA_LOGIN_WINDOW` | 300 | Failure window in seconds |
 | | `VLAMBDA_LOGIN_BLOCK` | 300 | Block duration in seconds |
+| | `VLAMBDA_METRICS_STATS_TTL` | 15 | Cache for percentile stats in seconds (`0` disables it) |
 | | `VLAMBDA_SQLITE_JOURNAL` | auto | `wal` or `delete`; auto falls back to `delete` when CPython and system SQLite versions differ |
 | | `VLAMBDA_RESP_CACHE_TTL` | 0 | GET response cache TTL in seconds (0 disables it) |
 | | `VLAMBDA_CACHE_BACKEND` | memory | `memory`, `file` or `redis` for the optional response cache |

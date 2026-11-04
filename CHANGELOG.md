@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The production Docker image sets `VLAMBDA_REGISTRATION=0`; create users with the admin token or opt in to public registration.
 - Container images use the latest Python 3.15 free-threaded runtime and are published only after the release workflow and PyPI publish succeed.
 - CI runs a 55% unit-coverage floor, an aarch64 integration job, failure-isolation and fuzz smoke tests; manual soak and throughput gates are documented.
+- Percentile stats are cached (`VLAMBDA_METRICS_STATS_TTL`, default 15s) and slug/time queries use a composite index.
 - Release images only move the `latest` tag for final versions, and manual release dispatches must match `pyproject.toml`.
 
 ### Fixed

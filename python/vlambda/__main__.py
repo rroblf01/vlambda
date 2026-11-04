@@ -33,7 +33,7 @@ def main() -> None:
     if not os.environ.get("VLAMBDA_SECRET"):
         print("WARNING: VLAMBDA_SECRET is not set; using an insecure default for auth tokens.",
               file=sys.stderr)
-    if os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail", "process") \
+    if sys.version_info < (3, 15) and os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail", "process") \
             and os.environ.get("VLAMBDA_ISOLATE", "0") != "1":
         print("WARNING: no sandbox selected; lambda code runs in the server process.",
               file=sys.stderr)

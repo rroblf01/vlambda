@@ -1313,11 +1313,11 @@ def test_admin_reset():
 
 
 def test_rate_limit():
-    time.sleep(3.0)
-    # default 100 req/s; send enough to trigger 429
+    stop_server()
+    start_server({"VLAMBDA_RATE_LIMIT": "5"})
     token, slug = test_create_invoke()
     codes = []
-    for _ in range(150):
+    for _ in range(30):
         status, body = req("GET", f"/f/{slug}")
         codes.append(status)
     assert 429 in codes

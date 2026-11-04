@@ -869,5 +869,8 @@ elif _sandbox_mode == "nsjail" or os.environ.get("VLAMBDA_NSJAIL", "0") == "1":
     Pool = NsjailPool
 elif _sandbox_mode == "process" or os.environ.get("VLAMBDA_ISOLATE", "0") == "1":
     Pool = ProcessPool
+elif sys.version_info >= (3, 15):
+    # CPython 3.15 can crash when handlers run on server threads; isolate them.
+    Pool = ProcessPool
 else:
     Pool = InProcessPool

@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The scheduler lease prevents duplicate automatic runs across replicas.
 - Deleting a lambda also removes its KV, egress, schedules, runs and pending tasks.
 - Python 3.15 uses a rollback journal when CPython and system SQLite versions differ, avoiding WAL files being unlinked across libraries.
+- Python 3.15 defaults to the process pool because in-process handler threads can crash the interpreter; other versions keep the in-process pool for lower latency.
 
 ## [0.3.0] - 2026-11-03
 

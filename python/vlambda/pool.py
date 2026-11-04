@@ -70,7 +70,7 @@ class Worker:
                     vendor_dir = task.get("vendor_dir", "")
                     if vendor_dir and vendor_dir not in sys.path:
                         sys.path.insert(0, vendor_dir)
-                    compiled, ns_template, handler = get_compiled(task["code"])
+                    compiled, ns_template, handler = get_compiled(task["code"], task.get("code_key") or None)
                     if handler is None:
                         raise ValueError("no handler function defined")
                     ns = dict(ns_template)
@@ -90,7 +90,7 @@ class Worker:
 
     _SINGLE_FLIGHT = __import__("os").environ.get("VLAMBDA_SINGLE_FLIGHT", "0") == "1"
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="") -> Any:
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key="") -> Any:
         if memory_mb and memory_mb > 0:
             import resource
             usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
@@ -102,6 +102,7 @@ class Worker:
                 "kind": "code", "code": code, "method": method, "path": path,
                 "query_string": query, "body": body, "vendor_dir": vendor_dir,
                 "request_id": request_id, "slug": slug, "request_meta": request_meta,
+                "code_key": code_key or "",
                 "result_queue": result_queue,
             }
             try:
@@ -137,6 +138,7 @@ class Worker:
             "kind": "code", "code": code, "method": method, "path": path,
             "query_string": query, "body": body, "vendor_dir": vendor_dir,
             "request_id": request_id, "slug": slug, "request_meta": request_meta,
+            "code_key": code_key or "",
             "result_queue": result_queue,
         }
         try:
@@ -186,7 +188,7 @@ class InProcessPool:
         self._lock = threading.Lock()
         self._counter = itertools.count()
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="") -> Any:
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key="") -> Any:
         # Auto-scale: if queue is deep, add a worker up to the configured cap.
         with self._lock:
             if len(self._workers) < self._max_workers and self._queue_depth() > len(self._workers) * 2:
@@ -194,7 +196,7 @@ class InProcessPool:
             workers = list(self._workers)
         # Atomic round-robin selection without holding the lock during submit.
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta, code_key)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._lock:
@@ -357,7 +359,7 @@ class ProcessWorker:
             env=env,
         )
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         payload = {
             "kind": "code",
             "code": code,
@@ -369,6 +371,7 @@ class ProcessWorker:
             "request_id": request_id or "",
             "slug": slug or "",
             "request_meta": request_meta or "",
+            "code_key": code_key or "",
         }
         return self._call(payload, timeout)
 
@@ -441,11 +444,11 @@ class ProcessPool:
         self._lock = threading.Lock()
         self._max_workers = len(self._workers)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta, code_key)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._lock:
@@ -491,7 +494,7 @@ class ForkWorker:
             env=env,
         )
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         timeout = timeout if timeout and timeout > 0 else int(os.environ.get("VLAMBDA_INVOKE_TIMEOUT", "30"))
         payload = {
             "kind": "code",
@@ -504,6 +507,7 @@ class ForkWorker:
             "request_id": request_id or "",
             "slug": slug or "",
             "request_meta": request_meta or "",
+            "code_key": code_key or "",
             "timeout": timeout,
         }
         return self._call(payload, timeout)
@@ -576,11 +580,11 @@ class ForkPool:
         self._lock = threading.Lock()
         self._max_workers = len(self._workers)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         with self._lock:
             workers = list(self._workers)
         idx = next(self._counter) % len(workers)
-        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+        return workers[idx].submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta, code_key)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._lock:
@@ -629,7 +633,7 @@ def _landlock_read_paths() -> list[str]:
 class LandlockWorker:
     """Run one invocation in a fresh Landlock + seccomp sandbox."""
 
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         vendor = vendor_dir or ""
         if vendor and not os.path.isdir(vendor):
             vendor = ""
@@ -644,6 +648,7 @@ class LandlockWorker:
             "request_id": request_id or "",
             "slug": slug or "",
             "request_meta": request_meta or "",
+            "code_key": code_key or "",
         }
         return self._run(payload, timeout, vendor_dir=vendor)
 
@@ -718,9 +723,9 @@ class LandlockPool:
         self._sem = threading.BoundedSemaphore(max(1, size))
         self._max_workers = max(1, size)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         with self._sem:
-            return LandlockWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+            return LandlockWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta, code_key)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._sem:
@@ -755,7 +760,7 @@ def _nsjail_payload(payload: dict) -> tuple[dict, str]:
 
 class NsjailWorker:
     """Run one invocation in a fresh nsjail sandbox."""
-    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def submit(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         vendor = vendor_dir or ""
         if vendor and not os.path.isdir(vendor):
             vendor = ""
@@ -770,6 +775,7 @@ class NsjailWorker:
             "request_id": request_id or "",
             "slug": slug or "",
             "request_meta": request_meta or "",
+            "code_key": code_key or "",
         }
         payload, broker_dir = _nsjail_payload(payload)
         return self._run(payload, timeout, vendor_dir=vendor, broker_dir=broker_dir)
@@ -843,9 +849,9 @@ class NsjailPool:
         self._sem = threading.BoundedSemaphore(max(1, size))
         self._max_workers = max(1, size)
 
-    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta=""):
+    def execute(self, code, method, path, query, body, timeout=0, memory_mb=0, vendor_dir="", request_id="", slug="", request_meta="", code_key=""):
         with self._sem:
-            return NsjailWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+            return NsjailWorker().submit(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta, code_key)
 
     def execute_project(self, project_dir, entrypoint, method, path, query, body, timeout=0, request_id="", slug="", request_meta=""):
         with self._sem:

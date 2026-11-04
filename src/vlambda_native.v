@@ -97,6 +97,8 @@ __global (
 	// In-memory code cache: slug -> code|method
 	vlambda_code_cache = map[string]string{}
 	vlambda_missing_cache = map[string]bool{}
+	vlambda_project_cache = map[string]string{}
+	vlambda_project_missing = map[string]bool{}
 	// Shutdown
 	vlambda_overloaded = false
 	vlambda_resetting = false
@@ -1748,9 +1750,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if aslug != slug { '' } else { db_get_version_code(slug, aver) }
 			}
 		} else { db_get_lambda_code(slug) }
-		// A code lambda already answered; only projects need this query.
-		project_info := if code_method == '' { db_get_project(slug) } else { '' }
-		if code_method == '' && project_info == '' {
+		parts := code_method.split('|')
+		code := if parts.len > 0 { parts[0] } else { '' }
+		method := if parts.len > 1 { parts[1] } else { 'GET' }
+		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
+		memory_mb := if parts.len > 3 { parts[3].int() } else { 0 }
+		version := if parts.len > 4 { parts[4] } else { '0' }
+		kind := if parts.len > 5 { parts[5] } else { 'code' }
+		// Only projects need the project lookup.
+		project_info := if kind == 'project' || code == '' { db_get_project(slug) } else { '' }
+		if code == '' && project_info == '' {
 			vlambda_req_errors++
 			return cors_json(404, '{"error": "lambda not found"}')
 		}
@@ -1758,7 +1767,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			pparts := project_info.split('|')
 			project_dir := if pparts.len > 0 { pparts[0] } else { '' }
 			entrypoint := if pparts.len > 1 { pparts[1] } else { 'main.py' }
-			method := if pparts.len > 2 { pparts[2] } else { 'GET' }
+			project_method := if pparts.len > 2 { pparts[2] } else { 'GET' }
 			// Serve project files: /f/<slug>/<path>, and index.html for the root.
 			if req.method == .get || req.method == .head {
 				if sub != '' {
@@ -1778,8 +1787,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					}
 				}
 			}
-			if method != req.method.str() {
-				return cors_json(405, '{"error": "method not allowed, expected ${method}"}')
+			if project_method != req.method.str() {
+				return cors_json(405, '{"error": "method not allowed, expected ${project_method}"}')
 			}
 			mut q := ''
 			if qi2 := req.url.index('?') {
@@ -1787,7 +1796,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			vlambda_request_counter++
 			request_id := 'req-${vlambda_request_counter}'
-			result := run_project(project_dir, entrypoint, method, req.url, q, req.data, request_id, slug, request_meta_json(req))
+			result := run_project(project_dir, entrypoint, project_method, req.url, q, req.data, request_id, slug, request_meta_json(req))
 			elapsed := time.since(start_time).microseconds()
 			vlambda_latency_sum += f64(elapsed) / 1000.0
 			vlambda_latency_count++
@@ -1801,12 +1810,6 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			resp.header.add_custom('X-Request-Id', request_id) or {}
 			return resp
 		}
-		// Split code and method
-		parts := code_method.split('|')
-		code := if parts.len > 0 { parts[0] } else { '' }
-		method := if parts.len > 1 { parts[1] } else { 'GET' }
-		timeout := if parts.len > 2 { parts[2].int() } else { 0 }
-		memory_mb := if parts.len > 3 { parts[3].int() } else { 0 }
 		// Check method
 		if method != req.method.str() {
 			return cors_json(405, '{"error": "method not allowed, expected ${method}"}')
@@ -1819,7 +1822,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		vlambda_request_counter++
 		request_id := 'req-${vlambda_request_counter}'
-		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout, memory_mb, request_meta_json(req))
+		code_key := slug + ':' + version
+		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout, memory_mb, request_meta_json(req), code_key)
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
@@ -2607,7 +2611,7 @@ pub fn db_create_lambda(slug string, name string, code string, method string, ow
 		[slug, name, code, method, owner_id.str(), '2026-01-01T00:00:00Z', timeout.str(), memory_mb.str()]) or { return false }
 	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) VALUES (?, 1, ?, ?, "", "", "code", ?);',
 		[slug, code, method, '2026-01-01T00:00:00Z']) or {}
-	vlambda_missing_cache.delete(slug)
+	invalidate_lambda_caches(slug)
 	return true
 }
 
@@ -2624,7 +2628,7 @@ pub fn db_update_lambda(slug string, name string, code string, method string, ow
 	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) SELECT slug, version, code, method, entrypoint, project_dir, kind, created_at FROM lambdas WHERE slug = ? AND owner_id = ? AND NOT EXISTS (SELECT 1 FROM lambda_versions WHERE slug = ? AND version = (SELECT version FROM lambdas WHERE slug = ? AND owner_id = ?));', [slug, owner_id.str(), slug, slug, owner_id.str()]) or {}
 	db.exec_param_many('UPDATE lambdas SET name = ?, code = ?, method = ?, timeout = ?, memory_mb = ?, version = ? WHERE slug = ? AND owner_id = ?;', [name, code, method, timeout.str(), memory_mb.str(), version.str(), slug, owner_id.str()]) or { return false }
 	// Invalidate cache
-	vlambda_code_cache.delete(slug)
+	invalidate_lambda_caches(slug)
 	return true
 }
 
@@ -2647,6 +2651,13 @@ pub fn prewarm_lambda(code string) {
 	})
 }
 
+fn invalidate_lambda_caches(slug string) {
+	vlambda_code_cache.delete(slug)
+	vlambda_missing_cache.delete(slug)
+	vlambda_project_cache.delete(slug)
+	vlambda_project_missing.delete(slug)
+}
+
 @[vc_fn]
 pub fn db_get_lambda_code(slug string) string {
 	// Check in-memory cache first
@@ -2658,7 +2669,7 @@ pub fn db_get_lambda_code(slug string) string {
 	if vlambda_missing_cache[slug] {
 		return ''
 	}
-	rows := db.exec_param("SELECT code, method, timeout, memory_mb FROM lambdas WHERE slug = ? AND kind = 'code';", slug) or { return '' }
+	rows := db.exec_param("SELECT code, method, timeout, memory_mb, version, kind FROM lambdas WHERE slug = ? AND kind = 'code';", slug) or { return '' }
 	if rows.len == 0 {
 		vlambda_missing_cache[slug] = true
 		if vlambda_missing_cache.len > 10000 {
@@ -2670,7 +2681,9 @@ pub fn db_get_lambda_code(slug string) string {
 	method := rows[0].vals[1] or { return '' }
 	timeout := rows[0].vals[2] or { '0' }
 	memory_mb := rows[0].vals[3] or { '0' }
-	result := code + '|' + method + '|' + timeout + '|' + memory_mb
+	version := rows[0].vals[4] or { '0' }
+	kind := rows[0].vals[5] or { 'code' }
+	result := code + '|' + method + '|' + timeout + '|' + memory_mb + '|' + version + '|' + kind
 	vlambda_code_cache[slug] = result
 	return result
 }
@@ -2693,19 +2706,34 @@ pub fn db_create_project(slug string, name string, method string, entrypoint str
 		[slug, name, '', method, owner_id.str(), '2026-01-01T00:00:00Z', 'project', entrypoint, project_dir]) or { return false }
 	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) VALUES (?, 1, ?, ?, ?, ?, "project", ?);',
 		[slug, '', method, entrypoint, project_dir, '2026-01-01T00:00:00Z']) or {}
+	invalidate_lambda_caches(slug)
 	return true
 }
 
 @[vc_fn]
 pub fn db_get_project(slug string) string {
+	if cached := vlambda_project_cache[slug] {
+		return cached
+	}
+	if vlambda_project_missing[slug] {
+		return ''
+	}
 	mut db := db_open() or { return '' }
 	defer { db.close() or {} }
 	rows := db.exec_param('SELECT project_dir, entrypoint, method FROM lambdas WHERE slug = ? AND kind = "project";', slug) or { return '' }
-	if rows.len == 0 { return '' }
+	if rows.len == 0 {
+		vlambda_project_missing[slug] = true
+		if vlambda_project_missing.len > 10000 {
+			vlambda_project_missing = map[string]bool{}
+		}
+		return ''
+	}
 	project_dir := rows[0].vals[0] or { return '' }
 	entrypoint := rows[0].vals[1] or { return '' }
 	method := rows[0].vals[2] or { return '' }
-	return project_dir + '|' + entrypoint + '|' + method
+	result := project_dir + '|' + entrypoint + '|' + method
+	vlambda_project_cache[slug] = result
+	return result
 }
 
 @[vc_fn]
@@ -2752,11 +2780,13 @@ pub fn db_resolve_alias(alias string) string {
 pub fn db_get_version_code(slug string, version int) string {
 	mut db := db_open() or { return '' }
 	defer { db.close() or {} }
-	rows := db.exec_param_many('SELECT code, method FROM lambda_versions WHERE slug = ? AND version = ?;', [slug, version.str()]) or { return '' }
+	rows := db.exec_param_many('SELECT code, method, kind, version FROM lambda_versions WHERE slug = ? AND version = ?;', [slug, version.str()]) or { return '' }
 	if rows.len == 0 { return '' }
 	code := rows[0].vals[0] or { return '' }
 	method := rows[0].vals[1] or { return '' }
-	return code + '|' + method + '|0|0' 
+	kind := rows[0].vals[2] or { 'code' }
+	version_str := rows[0].vals[3] or { version.str() }
+	return code + '|' + method + '|0|0|' + version_str + '|' + kind
 }
 
 @[vc_fn]
@@ -2777,8 +2807,7 @@ pub fn db_delete_lambda(slug string, owner_id int) bool {
 	db.exec_param_many('DELETE FROM tasks WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_versions WHERE slug = ?;', [slug]) or {}
 	db.exec_param_many('DELETE FROM lambda_aliases WHERE slug = ?;', [slug]) or {}
-	vlambda_code_cache.delete(slug)
-	vlambda_missing_cache.delete(slug)
+	invalidate_lambda_caches(slug)
 	return true
 }
 
@@ -2933,7 +2962,7 @@ fn lambda_content_type(result string) string {
 	return 'application/json'
 }
 
-pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int, request_meta string) string {
+pub fn run_lambda(request_id string, slug string, code string, method string, path string, query string, body string, timeout int, memory_mb int, request_meta string, code_key string) string {
 	// The result must live on this invocation's stack: V handles requests on
 	// several threads, so a package-global result string races under load.
 	mut result_str := error_envelope('not started')
@@ -2952,7 +2981,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			}
 			return result_str
 		}
-		args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr, vcraft.to_py_string(request_meta).ptr]
+		args := [vcraft.to_py_string(request_id).ptr, vcraft.to_py_string(slug).ptr, vcraft.to_py_string(code).ptr, vcraft.to_py_string(method).ptr, vcraft.to_py_string(path).ptr, vcraft.to_py_string(query).ptr, body_to_py_bytes(body).ptr, vcraft.to_py_int(timeout).ptr, vcraft.to_py_int(memory_mb).ptr, vcraft.to_py_string(request_meta).ptr, vcraft.to_py_string(code_key).ptr]
 		result := vcraft.call(vlambda_executor, args)
 		for a in args { vcraft.borrow(a).decref() }
 		if result.is_null() {
@@ -3431,6 +3460,8 @@ pub fn get_asset(name string) string {
 pub fn clear_caches() {
 	vlambda_code_cache = map[string]string{}
 	vlambda_missing_cache = map[string]bool{}
+	vlambda_project_cache = map[string]string{}
+	vlambda_project_missing = map[string]bool{}
 }
 
 @[vc_fn]

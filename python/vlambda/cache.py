@@ -64,31 +64,32 @@ def _save_to_disk(code: str, compiled):
             pass
 
 
-def get(code: str):
+def get(code: str, key: str | None = None):
+    cache_key = key or code
     with _lock:
-        if code in _cache:
-            _cache.move_to_end(code)
-            return _cache[code]
+        if cache_key in _cache:
+            _cache.move_to_end(cache_key)
+            return _cache[cache_key]
     # Try disk cache
-    compiled = _load_from_disk(code)
+    compiled = _load_from_disk(cache_key)
     if compiled is None:
         compiled = compile(code, "<lambda>", "exec", optimize=2)
-        _save_to_disk(code, compiled)
+        _save_to_disk(cache_key, compiled)
     ns_template = make_namespace(None)
     exec(compiled, ns_template)
     handler = ns_template.get("handler")
     with _lock:
-        if code in _cache:
-            _cache.move_to_end(code)
-            return _cache[code]
+        if cache_key in _cache:
+            _cache.move_to_end(cache_key)
+            return _cache[cache_key]
         if len(_cache) >= _MAX_SIZE:
             _cache.popitem(last=False)
-        _cache[code] = (compiled, ns_template, handler)
-        return _cache[code]
+        _cache[cache_key] = (compiled, ns_template, handler)
+        return _cache[cache_key]
 
 
-def prewarm(code: str):
-    get(code)
+def prewarm(code: str, key: str | None = None):
+    get(code, key)
 
 
 def invalidate(code: str):

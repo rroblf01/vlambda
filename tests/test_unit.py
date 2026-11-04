@@ -1336,3 +1336,15 @@ def test_stats_cache(tmp_path, monkeypatch):
     fresh = metrics.stats(1, "l1", 0)
     assert fresh["count"] == 2
     metrics.close()
+
+
+def test_code_cache_uses_explicit_key():
+    from vlambda import cache
+
+    cache.clear()
+    code = "def handler(request): return 1"
+    _, _, handler = cache.get(code, "l1:7")
+    assert handler is not None
+    assert "l1:7" in cache._cache
+    assert code not in cache._cache
+    cache.clear()

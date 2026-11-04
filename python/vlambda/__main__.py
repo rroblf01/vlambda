@@ -174,7 +174,7 @@ def main() -> None:
     def _response_cacheable(code):
         return _RESPONSE_CACHE_TTL > 0 and not any(token in code for token in _CACHE_BYPASS)
 
-    def _pool_execute(request_id, slug, code, method, path, query, body, timeout=0, memory_mb=0, request_meta=""):
+    def _pool_execute(request_id, slug, code, method, path, query, body, timeout=0, memory_mb=0, request_meta="", code_key=""):
         method = method or "GET"
         path = path or "/"
         query = query or ""
@@ -231,7 +231,7 @@ def main() -> None:
             request_meta = _meta_with_env(slug, request_meta)
             request_meta, broker_token = _broker.attach(request_meta, slug, request_id)
             try:
-                result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta)
+                result = pool.execute(code, method, path, query, body, timeout, memory_mb, vendor_dir, request_id, slug, request_meta, code_key)
             finally:
                 _broker.release(broker_token)
         finally:

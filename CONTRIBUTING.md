@@ -48,6 +48,24 @@ The harness uses a unique database and log per case.
 For the release matrix, run the suite under the pinned manylinux image for
 cp314, cp315, cp314t and cp315t. `test_packages` needs network access.
 
+## Performance and soak
+
+`bench.py` creates a temporary lambda and measures throughput. Set
+`VLAMBDA_MIN_RPS` to turn it into a pass/fail gate:
+
+```bash
+VLAMBDA_MIN_RPS=50 python bench.py
+```
+
+`scripts/soak.py` runs sustained load and reports errors, p95 latency and,
+optionally, RSS growth for a local server PID:
+
+```bash
+python scripts/soak.py --url http://127.0.0.1:8080 --token "$VLAMBDA_TOKEN" \
+  --slug <slug> --duration 3600 --concurrency 8 --max-errors 0 \
+  --pid "$(pgrep -f 'python -m vlambda' | head -1)" --max-rss-growth-mb 32
+```
+
 ## Style
 
 - Match the surrounding style; keep changes focused.

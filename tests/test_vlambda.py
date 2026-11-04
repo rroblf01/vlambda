@@ -1492,6 +1492,58 @@ def test_project_export_import():
     assert body.get("ok") is True
 
 
+def test_failure_isolation():
+    token = test_register_login()
+    status, body = req("POST", "/vlambda?name=bad", "def handler(r): raise RuntimeError('boom')", token)
+    assert status == 201, body
+    bad = body["slug"]
+    status, body = req("POST", "/vlambda?name=good", "def handler(r): return {'ok': True}", token)
+    assert status == 201, body
+    good = body["slug"]
+
+    for _ in range(3):
+        status, body = req("GET", f"/f/{bad}")
+        assert status == 500, (status, body)
+        status, body = req("GET", f"/f/{good}")
+        assert status == 200 and body == {"ok": True}, (status, body)
+
+    status, body = req("POST", "/vlambda?name=too-big", "x" * 200, token)
+    assert status == 413, (status, body)
+    status, body = req("POST", f"/f/{good}", "not-json", token)
+    assert status == 405, (status, body)
+    status, body = req("GET", f"/f/{good}?x=%00")
+    assert status == 200, (status, body)
+    status, body = req("GET", "/health")
+    assert status == 200 and body["status"] == "ok", (status, body)
+
+
+def test_fuzz_smoke():
+    import random
+    import string
+
+    token = test_register_login()
+    code = "def handler(r): return {'method': r.method, 'path': r.path, 'q': r.query_string}"
+    status, body = req("POST", "/vlambda?name=fuzz", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    rnd = random.Random(1234)
+    alphabet = string.ascii_letters + string.digits + "{}[]:,\"'+-=_%"
+    for _ in range(40):
+        method = rnd.choice(["GET", "POST", "PUT", "DELETE", "PATCH"])
+        path = f"/f/{slug}"
+        if rnd.random() < 0.5:
+            path += "?" + "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 30)))
+        data = None
+        headers = {}
+        if method != "GET":
+            data = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 80)))
+            headers["Content-Type"] = rnd.choice(["application/json", "text/plain", "application/octet-stream"])
+        status, body = req(method, path, data, token, extra_headers=headers)
+        assert status in (200, 400, 405, 413, 429, 500), (method, path, status, body)
+    status, body = req("GET", "/health")
+    assert status == 200 and body["status"] == "ok", (status, body)
+
+
 if __name__ == "__main__":
     tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
@@ -1504,7 +1556,7 @@ if __name__ == "__main__":
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,
-             test_concurrency, test_rate_limit]
+             test_concurrency, test_failure_isolation, test_fuzz_smoke, test_rate_limit]
     failed = 0
     for t in tests:
         # Each test gets a fresh server and database. Retry once if the native

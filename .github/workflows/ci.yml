@@ -52,3 +52,36 @@ jobs:
       - uses: actions/checkout@v5
       - name: gVisor smoke (skips when runsc is unavailable)
         run: ./scripts/gvisor-smoke.sh
+
+  unit:
+    name: unit-coverage
+    runs-on: ubuntu-latest
+    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.2
+    steps:
+      - uses: actions/checkout@v5
+      - name: build and run unit tests
+        env:
+          VCRAFT_NO_MEMORY_LIMIT: 1
+        run: |
+          rm -rf .venv
+          /opt/python/cp314-cp314/bin/python -m venv .venv
+          . .venv/bin/activate
+          vcraft develop --interpreter /opt/python/cp314-cp314/bin/python
+          pip install -q pytest pytest-cov
+          python -m pytest tests/test_unit.py -q --cov --cov-report=term
+
+  arm64:
+    name: python-3.15-arm64
+    runs-on: ubuntu-24.04-arm
+    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.2
+    steps:
+      - uses: actions/checkout@v5
+      - name: build and test
+        env:
+          VCRAFT_NO_MEMORY_LIMIT: 1
+        run: |
+          rm -rf .venv
+          /opt/python/cp315-cp315/bin/python -m venv .venv
+          . .venv/bin/activate
+          vcraft develop --interpreter /opt/python/cp315-cp315/bin/python
+          python tests/test_vlambda.py

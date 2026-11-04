@@ -40,4 +40,9 @@ else:
     for t in threads: t.join()
     dt = time.perf_counter() - t0
 
-print(f"vlambda: {N} invocations in {dt*1000:.1f}ms = {dt/N*1000:.2f}ms/req = {N/dt:.0f} req/s (concurrency={CONCURRENCY})")
+rps = N / dt
+print(f"vlambda: {N} invocations in {dt*1000:.1f}ms = {dt/N*1000:.2f}ms/req = {rps:.0f} req/s (concurrency={CONCURRENCY})")
+min_rps = float(os.environ.get("VLAMBDA_MIN_RPS", "0"))
+if min_rps and rps < min_rps:
+    print(f"vlambda: {rps:.0f} req/s is below VLAMBDA_MIN_RPS={min_rps:.0f}", file=sys.stderr)
+    sys.exit(1)

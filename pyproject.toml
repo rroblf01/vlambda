@@ -23,3 +23,15 @@ extra-paths = ["./python"]
 
 [tool.setuptools.package-data]
 vlambda = ["ui.html", "favicon.ico"]
+
+[tool.coverage.run]
+source = ["python/vlambda"]
+omit = [
+    "python/vlambda/__main__.py",
+    "python/vlambda/assets.py",
+    "python/vlambda/forkd.py",
+]
+
+[tool.coverage.report]
+fail_under = 55
+skip_covered = true

@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (defaults to pyproject.toml)"
-        required: false
+        description: "Version to publish (must match pyproject.toml)"
+        required: true
 
 permissions:
   contents: read
@@ -32,6 +32,15 @@ jobs:
             fi
           fi
           echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: check version
+        shell: bash
+        run: |
+          py=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          if [ "${{ steps.version.outputs.value }}" != "$py" ]; then
+            echo "resolved version ${{ steps.version.outputs.value }} does not match pyproject.toml ($py)" >&2
+            exit 1
+          fi
 
   build:
     name: ${{ matrix.target }}

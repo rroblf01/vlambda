@@ -85,3 +85,70 @@ jobs:
           . .venv/bin/activate
           vcraft develop --interpreter /opt/python/cp315-cp315/bin/python
           python tests/test_vlambda.py
+
+  docker-smoke:
+    name: docker-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: build the development image
+        run: docker build -f Dockerfile.dev -t vlambda:ci .
+      - name: start the container
+        run: |
+          docker run -d --name vlambda-ci -p 8080:8080 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:size=64m \
+            -e VLAMBDA_SECRET=test-secret -e VLAMBDA_ADMIN_TOKEN=admin-token \
+            vlambda:ci
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs vlambda-ci
+          exit 1
+      - name: smoke test
+        run: |
+          python3 - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          base = "http://127.0.0.1:8080"
+
+          def q(method, path, data=None, token=None):
+              headers = {}
+              if token:
+                  headers["Authorization"] = "Bearer " + token
+              body = data.encode() if isinstance(data, str) else data
+              request = urllib.request.Request(base + path, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      raw = response.read()
+                      try:
+                          return response.status, json.loads(raw) if raw else {}
+                      except Exception:
+                          return response.status, raw
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      return error.code, json.loads(raw) if raw else {}
+                  except Exception:
+                      return error.code, raw
+
+          q("POST", "/register", "ci:pass")
+          _, body = q("POST", "/login", "ci:pass")
+          token = body["token"]
+          status, body = q("POST", "/vlambda?name=ci", "def handler(r): return {'ok': True}", token)
+          assert status == 201, (status, body)
+          status, body = q("GET", f"/f/{body['slug']}")
+          assert status == 200 and body == {"ok": True}, (status, body)
+          status, _ = q("GET", "/docs")
+          assert status == 404, status
+          print("DOCKER SMOKE OK")
+          PY
+      - name: container logs on failure
+        if: failure()
+        run: docker logs vlambda-ci
+      - name: stop the container
+        if: always()
+        run: docker rm -f vlambda-ci || true

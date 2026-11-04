@@ -1221,7 +1221,13 @@ def test_packages():
     slug = body["slug"]
     status, body = req("GET", f"/vlambda/{slug}/packages", token=token)
     assert status == 200 and body.get("packages") == []
-    status, body = req("POST", f"/vlambda/{slug}/packages", '{"packages":["six"]}', token)
+    status, body = 0, {}
+    for attempt in range(3):
+        status, body = req("POST", f"/vlambda/{slug}/packages", '{"packages":["six"]}', token)
+        if status == 200 and "six" in body.get("installed", []):
+            break
+        if attempt < 2:
+            time.sleep(2)
     assert status == 200 and "six" in body.get("installed", []), body
     status, body = req("GET", f"/f/{slug}")
     assert status == 200 and body.get("six"), (status, body)

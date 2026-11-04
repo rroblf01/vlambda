@@ -234,6 +234,21 @@ def cmd_restore(args):
     print(json.dumps(result, indent=2))
 
 
+def cmd_secrets(args):
+    from vlambda.env import rotate_secrets
+
+    if args.action != "rotate":
+        raise SystemExit(f"vlambda: unknown secrets action {args.action!r}")
+    old_key = args.old_key or os.environ.get("VLAMBDA_OLD_ENCRYPTION_KEY", "")
+    new_key = args.new_key or os.environ.get("VLAMBDA_ENCRYPTION_KEY", "")
+    db_path = args.db or os.environ.get("VLAMBDA_DB", "./vlambda.db")
+    try:
+        result = rotate_secrets(db_path, old_key, new_key)
+    except Exception as exc:
+        raise SystemExit(f"vlambda: {exc}") from exc
+    print(json.dumps(result, indent=2))
+
+
 def cmd_openapi(args):
     status, _, body = _request(args.url.rstrip("/") + "/openapi.json", args.token)
     if status >= 400:
@@ -325,6 +340,13 @@ def main(argv=None) -> int:
     openapi = sub.add_parser("openapi", help="export the OpenAPI document", parents=[common])
     openapi.add_argument("--out", default="")
     openapi.set_defaults(func=cmd_openapi)
+
+    secrets = sub.add_parser("secrets", help="rotate encrypted lambda secrets")
+    secrets.add_argument("action", choices=["rotate"])
+    secrets.add_argument("--old-key", default="")
+    secrets.add_argument("--new-key", default="")
+    secrets.add_argument("--db", default="")
+    secrets.set_defaults(func=cmd_secrets, offline=True)
 
     backup = sub.add_parser("backup", help="create an offline backup archive")
     backup.add_argument("--out", required=True)

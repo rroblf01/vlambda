@@ -8,6 +8,7 @@ import json
 import base64
 import time
 import os
+import threading
 
 SECRET = os.environ.get("VLAMBDA_SECRET", "change-me-in-production")
 _PBKDF2_ITERATIONS = int(os.environ.get("VLAMBDA_PBKDF2_ITERATIONS", "200000"))
@@ -22,6 +23,57 @@ def _b64decode(s: str) -> bytes:
     if padding != 4:
         s += "=" * padding
     return base64.urlsafe_b64decode(s)
+
+
+_LOGIN_MAX_FAILURES = int(os.environ.get("VLAMBDA_LOGIN_MAX_FAILURES", "5"))
+_LOGIN_WINDOW = float(os.environ.get("VLAMBDA_LOGIN_WINDOW", "300"))
+_LOGIN_BLOCK = float(os.environ.get("VLAMBDA_LOGIN_BLOCK", "300"))
+_login_failures: dict[tuple[str, str], list] = {}
+_login_lock = threading.Lock()
+
+
+def _login_key(username: str, remote_ip: str) -> tuple[str, str]:
+    return (str(username)[:128], str(remote_ip or "unknown")[:64])
+
+
+def login_allowed(username: str, remote_ip: str = "") -> bool:
+    """Return whether a login attempt may proceed without checking the password."""
+    now = time.time()
+    key = _login_key(username, remote_ip)
+    with _login_lock:
+        entry = _login_failures.get(key)
+        if entry is None:
+            return True
+        count, first, blocked_until = entry
+        if blocked_until > now:
+            return False
+        if now - first > _LOGIN_WINDOW:
+            _login_failures.pop(key, None)
+            return True
+        return True
+
+
+def record_login_failure(username: str, remote_ip: str = "") -> None:
+    now = time.time()
+    key = _login_key(username, remote_ip)
+    with _login_lock:
+        entry = _login_failures.get(key)
+        if entry is None or now - entry[1] > _LOGIN_WINDOW:
+            entry = [1, now, 0.0]
+        else:
+            entry[0] += 1
+        if entry[0] >= _LOGIN_MAX_FAILURES:
+            entry[2] = now + _LOGIN_BLOCK
+        _login_failures[key] = entry
+        if len(_login_failures) > 4096:
+            cutoff = now - _LOGIN_WINDOW
+            for candidate in [k for k, v in _login_failures.items() if v[1] < cutoff and v[2] < now]:
+                _login_failures.pop(candidate, None)
+
+
+def record_login_success(username: str, remote_ip: str = "") -> None:
+    with _login_lock:
+        _login_failures.pop(_login_key(username, remote_ip), None)
 
 
 def new_auth_epoch() -> str:

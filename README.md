@@ -60,6 +60,9 @@ Or with pip:
 pip install vlambda
 ```
 
+The production container image is published as
+`ghcr.io/rroblf01/vlambda:<version>` for `linux/amd64` and `linux/arm64`.
+
 ## Usage
 
 ```bash
@@ -137,7 +140,10 @@ See `docker/README.md` for details, limits and the reset command.
 | `--cors_origin` | `VLAMBDA_CORS` | * | CORS allowed origin |
 | `--cert` | `VLAMBDA_CERT` | | TLS certificate path |
 | `--key` | `VLAMBDA_KEY` | | TLS key path |
-| | `VLAMBDA_REGISTRATION` | 1 | Allow public registration (`0` disables it) |
+| | `VLAMBDA_REGISTRATION` | 1 | Allow public registration (`0` disables it; the production image sets `0`) |
+| | `VLAMBDA_LOGIN_MAX_FAILURES` | 5 | Failed logins before a temporary block |
+| | `VLAMBDA_LOGIN_WINDOW` | 300 | Failure window in seconds |
+| | `VLAMBDA_LOGIN_BLOCK` | 300 | Block duration in seconds |
 | | `VLAMBDA_SQLITE_JOURNAL` | auto | `wal` or `delete`; auto falls back to `delete` when CPython and system SQLite versions differ |
 | | `VLAMBDA_RESP_CACHE_TTL` | 0 | GET response cache TTL in seconds (0 disables it) |
 | | `VLAMBDA_CACHE_BACKEND` | memory | `memory`, `file` or `redis` for the optional response cache |
@@ -327,12 +333,19 @@ in-process pool and is a development mode: lambdas run inside the server process
 with only Python-level restrictions. Use `VLAMBDA_SANDBOX=fork` (Docker default),
 `landlock`, `process` or `nsjail` for any untrusted code.
 
-The Docker image keeps public registration open by default for toy deployments.
-Set `VLAMBDA_REGISTRATION=0` to close it and create users with
-`POST /admin/users` instead. A daily data reset removes state, but it does not
-undo a kernel-level escape. Keep this deployment disposable and do not store
-valuable secrets in it; for stronger isolation use gVisor, Firecracker or one
-container per tenant.
+The production Docker image closes public registration by default. Create
+users with `POST /admin/users` and `X-Admin-Token`, or set
+`VLAMBDA_REGISTRATION=1` to open registration. Login attempts are throttled per
+username and source IP after `VLAMBDA_LOGIN_MAX_FAILURES` failures.
+
+At startup vlambda checks that the project, package and cache directories are
+writable and, when `VLAMBDA_SANDBOX=fork`/`landlock` is selected, that Landlock
+and libseccomp are available. It refuses to start instead of silently running
+unsandboxed.
+
+A daily data reset removes state, but it does not undo a kernel-level escape.
+Keep this deployment disposable and do not store valuable secrets in it; for
+stronger isolation use gVisor, Firecracker or one container per tenant.
 
 ## Environment and secrets
 
@@ -347,8 +360,21 @@ Set per-lambda variables with `PUT /vlambda/<slug>/env`:
 
 Secrets are encrypted at rest, masked by the API and decrypted only for that
 lambda's runner. Code lambdas read them from `request.env`; projects also see
-them in `os.environ`. Use `VLAMBDA_ENCRYPTION_KEY` if you want to rotate
-`VLAMBDA_SECRET` without losing existing secrets.
+them in `os.environ`. Use a dedicated `VLAMBDA_ENCRYPTION_KEY` so rotating
+`VLAMBDA_SECRET` (JWT signing) does not require re-encrypting secrets.
+
+To rotate the encryption key, stop the server and re-encrypt the stored secrets
+offline:
+
+```bash
+python -m vlambda backup --out before-rotate.tar.gz
+python -m vlambda secrets rotate \
+  --old-key "$OLD_ENCRYPTION_KEY" --new-key "$NEW_ENCRYPTION_KEY"
+```
+
+The command is idempotent and reports how many rows it rotated. Every secret
+carries a short key identifier, so a wrong old key fails closed instead of
+writing garbage.
 
 ## KV store
 
@@ -507,6 +533,7 @@ python -m vlambda openapi --out openapi.json
 python -m vlambda task <task-id>
 python -m vlambda backup --out backup.tar.gz
 python -m vlambda restore --from backup.tar.gz --force
+python -m vlambda secrets rotate --old-key "$OLD" --new-key "$NEW"
 ```
 
 ## Web UI
@@ -601,6 +628,12 @@ safe rollback path.
                                          │   builtins) │
                                          └─────────────┘
 ```
+
+## Security
+
+Report vulnerabilities through GitHub's private advisories or the contact in
+[SECURITY.md](SECURITY.md). Do not open a public issue for a suspected sandbox
+escape or authentication bypass.
 
 ## License
 

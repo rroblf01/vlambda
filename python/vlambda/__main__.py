@@ -13,7 +13,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from vlambda.reset import main as reset_main
         raise SystemExit(reset_main(sys.argv[2:]))
-    if any(arg in ("invoke", "deploy", "logs", "env", "task", "kv", "egress", "schedule", "openapi", "backup", "restore") for arg in sys.argv[1:]):
+    if any(arg in ("invoke", "deploy", "logs", "env", "task", "kv", "egress", "schedule", "openapi", "backup", "restore", "secrets") for arg in sys.argv[1:]):
         from vlambda.cli import main as cli_main
         raise SystemExit(cli_main(sys.argv[1:]))
 
@@ -107,6 +107,18 @@ def main() -> None:
         metrics_init(metrics_db, metrics_retention)
     except RuntimeError as exc:
         print(f"Metrics schema error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    from vlambda import selfcheck
+    try:
+        selfcheck.run(
+            os.environ.get("VLAMBDA_PROJECTS_DIR", "/tmp/opencode/vlambda_projects"),
+            os.environ.get("VLAMBDA_PACKAGES_DIR", "/tmp/opencode/vlambda_packages"),
+            os.environ.get("VLAMBDA_CACHE_DIR", "/tmp/opencode/vlambda_cache"),
+            os.environ.get("VLAMBDA_SANDBOX", ""),
+        )
+    except selfcheck.SelfCheckError as exc:
+        print(f"Startup check failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
     from vlambda.pool import Pool
@@ -280,15 +292,22 @@ def main() -> None:
             return -1
 
     # Auth: login
-    def _auth_login(username, password):
+    def _auth_login(username, password, remote_ip=""):
+        from vlambda.auth import login_allowed, record_login_failure, record_login_success
         from vlambda.dbpool import get as db_get
+
+        if not login_allowed(username, remote_ip):
+            return ""
         with db_get(args.sqlite_path) as conn:
             row = conn.execute("SELECT id, password_hash, auth_epoch FROM users WHERE username = ?", (username,)).fetchone()
             if row is None:
+                record_login_failure(username, remote_ip)
                 return ""
             uid, stored, epoch = row
             if not check_password(password, stored):
+                record_login_failure(username, remote_ip)
                 return ""
+            record_login_success(username, remote_ip)
             if not epoch:
                 epoch = new_auth_epoch()
                 conn.execute("UPDATE users SET auth_epoch = ? WHERE id = ?", (epoch, uid))

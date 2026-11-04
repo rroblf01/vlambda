@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import time
 
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -28,11 +29,19 @@ def _db_path() -> str:
     return os.environ.get("VLAMBDA_DB", "./vlambda.db")
 
 
-def _master_key() -> bytes:
-    raw = os.environ.get("VLAMBDA_ENCRYPTION_KEY") or os.environ.get("VLAMBDA_SECRET", "")
+def _key_from(raw: str) -> bytes:
     if not raw:
         raise RuntimeError("VLAMBDA_SECRET or VLAMBDA_ENCRYPTION_KEY is required for secrets")
     return hashlib.sha256(("vlambda-env:" + raw).encode()).digest()
+
+
+def _master_key() -> bytes:
+    raw = os.environ.get("VLAMBDA_ENCRYPTION_KEY") or os.environ.get("VLAMBDA_SECRET", "")
+    return _key_from(raw)
+
+
+def _key_id(key: bytes) -> str:
+    return hmac.new(key, b"vlambda-env-key-id", hashlib.sha256).hexdigest()[:16]
 
 
 def _keystream(key: bytes, nonce: bytes, length: int) -> bytes:
@@ -44,24 +53,78 @@ def _keystream(key: bytes, nonce: bytes, length: int) -> bytes:
     return bytes(out[:length])
 
 
-def encrypt(value: str) -> str:
-    key = _master_key()
+def encrypt(value: str, key: bytes | None = None) -> str:
+    key = key or _master_key()
     nonce = secrets.token_bytes(16)
     data = value.encode("utf-8")
     cipher = bytes(a ^ b for a, b in zip(data, _keystream(key, nonce, len(data))))
     tag = hmac.new(key, b"vlambda-env:" + nonce + cipher, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(nonce + tag + cipher).decode("ascii")
+    payload = base64.urlsafe_b64encode(nonce + tag + cipher).decode("ascii")
+    return f"v1:{_key_id(key)}:{payload}"
 
 
-def decrypt(token: str) -> str:
-    key = _master_key()
-    raw = base64.urlsafe_b64decode(token.encode("ascii"))
+def decrypt(token: str, key: bytes | None = None) -> str:
+    key = key or _master_key()
+    payload = token
+    parts = token.split(":", 2)
+    if len(parts) == 3 and parts[0] == "v1":
+        _, kid, payload = parts
+        if kid != _key_id(key):
+            raise ValueError("secret was encrypted with a different key")
+    elif len(parts) == 3 and parts[0].startswith("v"):
+        raise ValueError("unsupported secret format")
+    raw = base64.urlsafe_b64decode(payload.encode("ascii"))
     nonce, tag, cipher = raw[:16], raw[16:48], raw[48:]
     expected = hmac.new(key, b"vlambda-env:" + nonce + cipher, hashlib.sha256).digest()
     if not hmac.compare_digest(tag, expected):
         raise ValueError("invalid secret payload")
     data = bytes(a ^ b for a, b in zip(cipher, _keystream(key, nonce, len(cipher))))
     return data.decode("utf-8")
+
+
+def rotate_secrets(db_path: str, old_key_raw: str, new_key_raw: str) -> dict:
+    """Re-encrypt every stored secret from the old key to the new key."""
+    if not old_key_raw or not new_key_raw:
+        raise ValueError("both the old and new keys are required")
+    old_key = _key_from(old_key_raw)
+    new_key = _key_from(new_key_raw)
+    conn = sqlite3.connect(db_path, timeout=15)
+    try:
+        mode = os.environ.get("VLAMBDA_SQLITE_JOURNAL", "wal").upper()
+        if mode not in ("WAL", "DELETE"):
+            mode = "WAL"
+        conn.execute(f"PRAGMA journal_mode={mode}")
+        conn.execute("PRAGMA busy_timeout=15000")
+        rows = conn.execute(
+            "SELECT slug, key, value FROM lambda_env WHERE is_secret = 1 ORDER BY slug, key"
+        ).fetchall()
+        rotated = 0
+        already_new = 0
+        for slug, key, value in rows:
+            try:
+                plain = decrypt(value, key=old_key)
+            except Exception:
+                try:
+                    decrypt(value, key=new_key)
+                    already_new += 1
+                    continue
+                except Exception as exc:
+                    raise ValueError(f"{slug}/{key}: cannot decrypt with the old key") from exc
+            conn.execute(
+                "UPDATE lambda_env SET value = ? WHERE slug = ? AND key = ?",
+                (encrypt(plain, key=new_key), slug, key),
+            )
+            rotated += 1
+        conn.commit()
+    finally:
+        conn.close()
+    clear_cache()
+    return {
+        "db": db_path,
+        "rotated": rotated,
+        "already_new": already_new,
+        "total": rotated + already_new,
+    }
 
 
 def _connect():

@@ -10,6 +10,19 @@ supervisor and a fresh Landlock + seccomp child per invocation, and expose plain
 HTTP on port `8080`. TLS and the public reverse proxy are handled by Dokploy or
 the platform in front of the container.
 
+## Official image
+
+Images are published from the PyPI wheel and attested by the release workflow:
+
+```bash
+docker pull ghcr.io/rroblf01/vlambda:1.0.0
+```
+
+Pin the image by digest in production so a rebuild cannot change what you run.
+The GitHub Actions `image` workflow waits for the version to appear on PyPI,
+then publishes `linux/amd64` and `linux/arm64` images tagged with the version
+and `latest`.
+
 ## Build
 
 PyPI image:
@@ -49,8 +62,8 @@ flags or host sysctl changes. It requires a Linux kernel with Landlock (5.13+;
 Ubuntu 22.04+, Debian 12+). If Landlock is unavailable, invocations fail closed
 with a `sandbox:` error instead of running unsandboxed.
 
-Public registration is open by default for toy deployments. To close it, set
-`VLAMBDA_REGISTRATION=0` and create users with the admin token:
+Public registration is closed by default in the production image. Create
+users with the admin token:
 
 ```bash
 curl -X POST https://your-domain/admin/users \
@@ -138,7 +151,7 @@ and cross-process signals are blocked. Only `AF_UNIX` client sockets to the
 capability broker are allowed, and each invocation gets a scoped token. The
 server and database stay outside the sandbox.
 
-This is suitable for a disposable toy deployment with open registration, but it
+This is suitable for a disposable toy deployment, but it
 is not a hypervisor. Keep the host and image updated, keep only disposable
 secrets, and use gVisor, Firecracker or one container per tenant if you need a
 stronger boundary.

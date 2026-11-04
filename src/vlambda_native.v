@@ -1458,7 +1458,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		token := auth_login_user(parts[0], parts[1])
+		token := auth_login_user(parts[0], parts[1], req.remote_addr.all_before(':'))
 		if token == '' {
 			return http.Response{
 				status_code: 401
@@ -3123,15 +3123,16 @@ pub fn auth_register_user(username string, password string) int {
 }
 
 @[vc_fn]
-pub fn auth_login_user(username string, password string) string {
+pub fn auth_login_user(username string, password string, remote_ip string) string {
 	if vlambda_auth_login == unsafe { nil } { return '' }
 	mut cell := ''
 	ptr := &cell
-	vcraft.with_gil(fn [username, password, ptr] () {
-		args := [vcraft.to_py_string(username).ptr, vcraft.to_py_string(password).ptr]
+	vcraft.with_gil(fn [username, password, remote_ip, ptr] () {
+		args := [vcraft.to_py_string(username).ptr, vcraft.to_py_string(password).ptr, vcraft.to_py_string(remote_ip).ptr]
 		r := vcraft.call(vlambda_auth_login, args)
 		vcraft.borrow(args[0]).decref()
 		vcraft.borrow(args[1]).decref()
+		vcraft.borrow(args[2]).decref()
 		if r.is_null() {
 			vcraft.clear_error()
 			unsafe { *ptr = '' }

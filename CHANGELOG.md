@@ -11,10 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vlambda backup` and `vlambda restore`: consistent offline archives of the main database, metrics/logs database, projects and optional package vendors.
 - Database schema versions (`PRAGMA user_version`) with startup checks and backup compatibility validation.
 - `vlambda reset --wipe` removes the database files for a fresh 1.0 start.
+- `vlambda secrets rotate` re-encrypts stored secrets between encryption keys; ciphertexts carry a key identifier and rotation is idempotent.
+- Login throttling per username and source IP (`VLAMBDA_LOGIN_MAX_FAILURES`, `VLAMBDA_LOGIN_WINDOW`, `VLAMBDA_LOGIN_BLOCK`).
+- Startup checks for writable project/package/cache directories and for Landlock + libseccomp when a confined sandbox is requested.
+- `SECURITY.md` with the disclosure process and the 1.0 threat model.
+- CycloneDX SBOM generation in CI and a GitHub Container Registry image workflow for `linux/amd64` and `linux/arm64`.
 
 ### Changed
 - 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.
 - The 1.0 schema starts fresh; databases created before 1.0 are not migrated.
+- The production Docker image sets `VLAMBDA_REGISTRATION=0`; create users with the admin token or opt in to public registration.
 
 ### Removed
 - The bundled `/docs` viewer. `/openapi.json` and `vlambda openapi` remain the supported interface for OpenAPI clients.

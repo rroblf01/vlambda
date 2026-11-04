@@ -1217,3 +1217,63 @@ def test_server_rejects_newer_schema(tmp_path):
     )
     assert result.returncode == 1
     assert "newer than this vlambda build" in (result.stderr + result.stdout)
+
+
+def test_secret_rotation(tmp_path):
+    import sqlite3
+    from vlambda import env
+
+    db = tmp_path / "vlambda.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE lambda_env (slug TEXT, key TEXT, is_secret INTEGER, value TEXT,"
+        " PRIMARY KEY (slug, key))"
+    )
+    old_key = env._key_from("old-key")
+    token = env.encrypt("s3cret", key=old_key)
+    assert token.startswith("v1:")
+    conn.execute("INSERT INTO lambda_env VALUES ('l1', 'TOKEN', 1, ?)", (token,))
+    conn.commit()
+    conn.close()
+
+    result = env.rotate_secrets(str(db), "old-key", "new-key")
+    assert result["rotated"] == 1
+
+    conn = sqlite3.connect(db)
+    rotated = conn.execute("SELECT value FROM lambda_env WHERE slug = 'l1' AND key = 'TOKEN'").fetchone()[0]
+    conn.close()
+    new_key = env._key_from("new-key")
+    assert env.decrypt(rotated, key=new_key) == "s3cret"
+    with pytest.raises(ValueError):
+        env.decrypt(rotated, key=old_key)
+
+    again = env.rotate_secrets(str(db), "old-key", "new-key")
+    assert again["already_new"] == 1
+
+
+def test_login_rate_limit(monkeypatch):
+    from vlambda import auth
+
+    auth._login_failures.clear()
+    monkeypatch.setattr(auth, "_LOGIN_MAX_FAILURES", 3)
+    monkeypatch.setattr(auth, "_LOGIN_WINDOW", 60)
+    monkeypatch.setattr(auth, "_LOGIN_BLOCK", 60)
+    user, ip = "limited-user", "192.0.2.10"
+    assert auth.login_allowed(user, ip)
+    for _ in range(3):
+        auth.record_login_failure(user, ip)
+    assert not auth.login_allowed(user, ip)
+    assert auth.login_allowed(user, "192.0.2.11")
+    auth.record_login_success(user, ip)
+    assert auth.login_allowed(user, ip)
+    auth._login_failures.clear()
+
+
+def test_selfcheck_writable(tmp_path):
+    from vlambda.selfcheck import SelfCheckError, check_writable
+
+    check_writable(str(tmp_path / "nested" / "dir"), "nested")
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    with pytest.raises(SelfCheckError):
+        check_writable(str(blocker), "blocker")

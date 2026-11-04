@@ -64,6 +64,14 @@ def _run_install(target_dir: str):
             "--only-binary", ":all:",
             "-r", req,
         ]
+    index_url = os.environ.get("VLAMBDA_PIP_INDEX_URL", "").strip()
+    if index_url:
+        cmd.extend(["--index-url", index_url])
+    extra_index = os.environ.get("VLAMBDA_PIP_EXTRA_INDEX_URL", "").strip()
+    if extra_index:
+        cmd.extend(["--extra-index-url", extra_index])
+    if os.environ.get("VLAMBDA_PIP_REQUIRE_HASHES", "0").lower() in ("1", "true", "yes", "on"):
+        cmd.append("--require-hashes")
     result = subprocess.run(
         cmd,
         capture_output=True,

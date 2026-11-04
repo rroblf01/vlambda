@@ -105,3 +105,13 @@ add gVisor, Firecracker or one container per tenant.
 Do not expose the server without TLS, and do not reuse `VLAMBDA_SECRET` or
 `VLAMBDA_ADMIN_TOKEN` across deployments. Backups contain encrypted secrets:
 protect the archive and the encryption key separately.
+
+Login and registration throttles live in process memory. That is correct for
+the single-host model: do not run multiple replicas behind one host expecting
+a shared limit. If you later add replicas, move the counters to SQLite or the
+proxy.
+
+Package installation runs `uv pip install`/`pip install` against PyPI. Pin
+versions and use a controlled index (`VLAMBDA_PIP_INDEX_URL`) or
+`VLAMBDA_PIP_REQUIRE_HASHES=1` for production, and treat a package install as
+code execution inside the vendor directory.

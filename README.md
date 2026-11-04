@@ -164,6 +164,9 @@ See `docker/README.md` for details, limits and the reset command.
 | | `VLAMBDA_REGISTER_WINDOW` | 600 | Registration window in seconds |
 | | `VLAMBDA_PASSWORD_MIN_LENGTH` | 12 | Minimum password length |
 | | `VLAMBDA_USER_RATE_LIMIT` | rate limit | Requests/s per authenticated user (`0` follows the global limit) |
+| | `VLAMBDA_PIP_INDEX_URL` | PyPI | Index used when installing lambda packages |
+| | `VLAMBDA_PIP_EXTRA_INDEX_URL` | | Additional allowed package index |
+| | `VLAMBDA_PIP_REQUIRE_HASHES` | 0 | Require hashes in `requirements.txt` (`--require-hashes`) |
 | | `VLAMBDA_METRICS_STATS_TTL` | 15 | Cache for percentile stats in seconds (`0` disables it) |
 | | `VLAMBDA_DEV` | 0 | Allow local development without `VLAMBDA_SECRET` |
 | | `VLAMBDA_SQLITE_JOURNAL` | auto | `wal` or `delete`; auto falls back to `delete` when CPython and system SQLite versions differ |
@@ -242,6 +245,11 @@ Project exports include text files. Binary files are listed in
 ### Packages
 - `GET /vlambda/<slug>/packages` — List requirements
 - `POST /vlambda/<slug>/packages` — Install PyPI packages into the vendor dir
+
+For production, pin versions in `requirements.txt` and point
+`VLAMBDA_PIP_INDEX_URL` at a controlled mirror (or use
+`VLAMBDA_PIP_REQUIRE_HASHES=1` with hashes). Without that, package
+installation trusts whatever PyPI serves at upload time.
 
 ### KV, egress and schedules
 - `GET/PUT/DELETE /vlambda/<slug>/kv[/<key>]` — Read, write or delete KV entries

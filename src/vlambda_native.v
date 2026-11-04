@@ -80,7 +80,7 @@ __global (
 	vlambda_registration_enabled = true
 	vlambda_metric_counter = u64(0)
 	vlambda_request_counter = u64(0)
-	vlambda_cors_origin = '*'        // CORS origin
+	vlambda_cors_origin = ''         // CORS origin (empty = no CORS headers)
 	vlambda_cert_path = ''
 	vlambda_key_path = ''
 	// Metrics
@@ -229,6 +229,9 @@ fn make_slug(code string) string {
 // ---- CORS / static file helpers ----
 
 fn add_cors_headers(mut hdr http.Header) {
+	if vlambda_cors_origin == '' {
+		return
+	}
 	hdr.add_custom('Access-Control-Allow-Origin', vlambda_cors_origin) or {}
 	hdr.add_custom('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS') or {}
 	hdr.add_custom('Access-Control-Allow-Headers', 'Content-Type, Authorization') or {}

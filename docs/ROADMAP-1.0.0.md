@@ -34,8 +34,10 @@ Theme: stability, safety and operations for a single-host deployment
   - [x] Native callback result leak fixed under sustained load.
   - [x] Soak and throughput tooling (`scripts/soak.py`, `VLAMBDA_MIN_RPS`).
   - [x] 2-minute in-process soak: 156k requests, 0 errors, ~10 MB RSS growth.
+  - [x] 5-minute sandboxed soak (seccomp allow-list): 156,603 requests, 0 errors, 522 req/s, flat RSS.
   - [ ] Full 24 h soak on a staging host.
-  - [ ] Extended chaos: DB lock, broker down, lease loss, disk full.
+  - [x] Extended chaos: DB lock, broker down and read-only startup are automated in `scripts/chaos.py` and CI.
+  - [ ] Lease-loss and real disk-full drills on a staging host.
   - [x] Broker protocol fuzzing for malformed, oversized and unauthenticated messages.
   - [x] Fresh install from a release wheel in a clean environment (CI).
 - [ ] Phase 5: 1.0.0 release.

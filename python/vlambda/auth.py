@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import base64
+import sqlite3
 import time
 import os
 import threading
@@ -41,10 +42,58 @@ def password_error(password: str) -> str:
     return ""
 
 
+def _throttle_db():
+    """Open the shared throttle table, or return None for a memory fallback."""
+    path = os.environ.get("VLAMBDA_DB", "")
+    if not path:
+        return None
+    try:
+        conn = sqlite3.connect(path, timeout=5, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS auth_throttle ("
+            " key TEXT PRIMARY KEY, count INTEGER NOT NULL,"
+            " window_start REAL NOT NULL, blocked_until REAL NOT NULL DEFAULT 0)"
+        )
+        return conn
+    except sqlite3.Error:
+        return None
+
+
 def registration_allowed(remote_ip: str = "") -> bool:
-    """Fixed-window registration limit per source IP."""
+    """Fixed-window registration limit per source IP, shared through SQLite."""
     now = time.time()
-    key = str(remote_ip or "unknown")[:64]
+    key = "reg:" + str(remote_ip or "unknown")[:64]
+    conn = _throttle_db()
+    if conn is not None:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT count, window_start FROM auth_throttle WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None or now - row[1] >= _REGISTER_WINDOW:
+                conn.execute(
+                    "INSERT INTO auth_throttle (key, count, window_start, blocked_until)"
+                    " VALUES (?, 1, ?, 0)"
+                    " ON CONFLICT(key) DO UPDATE SET count = 1, window_start = excluded.window_start,"
+                    " blocked_until = 0",
+                    (key, now),
+                )
+                allowed = True
+            elif row[0] >= _REGISTER_MAX:
+                allowed = False
+            else:
+                conn.execute("UPDATE auth_throttle SET count = count + 1 WHERE key = ?", (key,))
+                allowed = True
+            conn.execute("COMMIT")
+            return allowed
+        except sqlite3.Error:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+        finally:
+            conn.close()
     with _register_lock:
         entry = _register_attempts.get(key)
         if entry is None or now >= entry[1]:
@@ -67,35 +116,95 @@ def _login_key(username: str, remote_ip: str) -> tuple[str, str]:
     return (str(username)[:128], str(remote_ip or "unknown")[:64])
 
 
+def _login_db_key(username: str, remote_ip: str) -> str:
+    user, ip = _login_key(username, remote_ip)
+    return "login:" + user + "\x00" + ip
+
+
 def login_allowed(username: str, remote_ip: str = "") -> bool:
     """Return whether a login attempt may proceed without checking the password."""
     now = time.time()
-    key = _login_key(username, remote_ip)
+    db_key = _login_db_key(username, remote_ip)
+    memory_key = _login_key(username, remote_ip)
+    conn = _throttle_db()
+    if conn is not None:
+        try:
+            row = conn.execute(
+                "SELECT count, window_start, blocked_until FROM auth_throttle WHERE key = ?",
+                (db_key,),
+            ).fetchone()
+            if row is None:
+                return True
+            if row[2] > now:
+                return False
+            if now - row[1] > _LOGIN_WINDOW:
+                conn.execute("DELETE FROM auth_throttle WHERE key = ?", (db_key,))
+                return True
+            return True
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
     with _login_lock:
-        entry = _login_failures.get(key)
+        entry = _login_failures.get(memory_key)
         if entry is None:
             return True
         count, first, blocked_until = entry
         if blocked_until > now:
             return False
         if now - first > _LOGIN_WINDOW:
-            _login_failures.pop(key, None)
+            _login_failures.pop(memory_key, None)
             return True
         return True
 
 
 def record_login_failure(username: str, remote_ip: str = "") -> None:
     now = time.time()
-    key = _login_key(username, remote_ip)
+    db_key = _login_db_key(username, remote_ip)
+    memory_key = _login_key(username, remote_ip)
+    conn = _throttle_db()
+    if conn is not None:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT count, window_start FROM auth_throttle WHERE key = ?", (db_key,)
+            ).fetchone()
+            if row is None or now - row[1] > _LOGIN_WINDOW:
+                count, first, blocked = 1, now, 0.0
+            else:
+                count, first = row[0] + 1, row[1]
+                blocked = 0.0
+            if count >= _LOGIN_MAX_FAILURES:
+                blocked = now + _LOGIN_BLOCK
+            conn.execute(
+                "INSERT INTO auth_throttle (key, count, window_start, blocked_until)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET count = excluded.count,"
+                " window_start = excluded.window_start, blocked_until = excluded.blocked_until",
+                (db_key, count, first, blocked),
+            )
+            conn.execute(
+                "DELETE FROM auth_throttle WHERE window_start < ?",
+                (now - _LOGIN_WINDOW * 2,),
+            )
+            conn.execute("COMMIT")
+            return
+        except sqlite3.Error:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+        finally:
+            conn.close()
     with _login_lock:
-        entry = _login_failures.get(key)
+        entry = _login_failures.get(memory_key)
         if entry is None or now - entry[1] > _LOGIN_WINDOW:
             entry = [1, now, 0.0]
         else:
             entry[0] += 1
         if entry[0] >= _LOGIN_MAX_FAILURES:
             entry[2] = now + _LOGIN_BLOCK
-        _login_failures[key] = entry
+        _login_failures[memory_key] = entry
         if len(_login_failures) > 4096:
             cutoff = now - _LOGIN_WINDOW
             for candidate in [k for k, v in _login_failures.items() if v[1] < cutoff and v[2] < now]:
@@ -103,6 +212,15 @@ def record_login_failure(username: str, remote_ip: str = "") -> None:
 
 
 def record_login_success(username: str, remote_ip: str = "") -> None:
+    db_key = _login_db_key(username, remote_ip)
+    conn = _throttle_db()
+    if conn is not None:
+        try:
+            conn.execute("DELETE FROM auth_throttle WHERE key = ?", (db_key,))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
     with _login_lock:
         _login_failures.pop(_login_key(username, remote_ip), None)
 

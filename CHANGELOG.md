@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /password` changes the current password and revokes every existing session; `POST /admin/password` lets an administrator reset a user password.
 - Audit entries expire after `VLAMBDA_AUDIT_RETENTION_DAYS` (default 90).
 - HSTS is sent when vlambda terminates TLS itself.
+- Backups can be encrypted with `vlambda backup --encrypt` (chunked, authenticated, key never stored).
+- The runner uses a seccomp allow-list by default, with a denylist fallback.
+- Login and registration throttles are shared through SQLite instead of process memory.
+- CORS is disabled by default; set `VLAMBDA_CORS` explicitly to enable it.
+- `VLAMBDA_SANDBOX=auto` picks the fork sandbox when Landlock and seccomp are available.
+- A 5-minute sandboxed soak (156,603 requests, concurrency 8) completed with 0 errors, 522 req/s, p95 19.4 ms and flat RSS.
 - The UI documents the password policy and includes a change-password card.
 
 ### Changed

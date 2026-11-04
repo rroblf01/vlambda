@@ -63,6 +63,26 @@ account cannot exhaust the instance. Administrative actions (registration,
 user creation, reset, token creation and revocation) are written to
 `audit_log` and exposed read-only to the admin token at `/admin/audit`.
 
+## Syscall filter
+
+The runner uses a seccomp **allow-list** by default. CPython startup, SQLite,
+TLS, threads, asyncio, the AF_UNIX broker client and normal file I/O are
+permitted; process creation, new socket families, ptrace, mounts, namespaces,
+kernel keyrings, io_uring, BPF and privilege changes are denied by the default
+action. `clone` is allowed only with `CLONE_THREAD`, `socket`/`socketpair` only
+for `AF_UNIX`, and `clone3` reports `ENOSYS` so glibc falls back to `clone`.
+`VLAMBDA_SECCOMP_MODE=denylist` is a compatibility fallback for unusual
+runtimes; it is less strict.
+
+## Backup encryption
+
+`vlambda backup --encrypt` derives keys from `VLAMBDA_BACKUP_KEY`, splits the
+archive into 1 MiB chunks, encrypts each chunk with the HMAC-SHA256 counter-mode
+keystream and authenticates it with an HMAC-SHA256 encrypt-then-MAC tag bound to
+the header and chunk index. Truncation, reordering and tampering fail before
+anything is extracted. The key is never stored in the archive; keep it in a
+secret manager, separate from `VLAMBDA_ENCRYPTION_KEY`.
+
 ## Egress
 
 `request.fetch` resolves the host once, rejects non-public addresses and then
@@ -111,10 +131,9 @@ Do not expose the server without TLS, and do not reuse `VLAMBDA_SECRET` or
 `VLAMBDA_ADMIN_TOKEN` across deployments. Backups contain encrypted secrets:
 protect the archive and the encryption key separately.
 
-Login and registration throttles live in process memory. That is correct for
-the single-host model: do not run multiple replicas behind one host expecting
-a shared limit. If you later add replicas, move the counters to SQLite or the
-proxy.
+Login and registration throttles are stored in the `auth_throttle` table, so
+multiple vlambda processes that share the same SQLite database enforce one
+budget. The database is still single-host: do not place it on NFS.
 
 Package installation runs `uv pip install`/`pip install` against PyPI. Pin
 versions and use a controlled index (`VLAMBDA_PIP_INDEX_URL`) or

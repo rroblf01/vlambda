@@ -1251,9 +1251,10 @@ def test_secret_rotation(tmp_path):
     assert again["already_new"] == 1
 
 
-def test_login_rate_limit(monkeypatch):
+def test_login_rate_limit(monkeypatch, tmp_path):
     from vlambda import auth
 
+    monkeypatch.setenv("VLAMBDA_DB", str(tmp_path / "auth.db"))
     auth._login_failures.clear()
     monkeypatch.setattr(auth, "_LOGIN_MAX_FAILURES", 3)
     monkeypatch.setattr(auth, "_LOGIN_WINDOW", 60)
@@ -1350,9 +1351,10 @@ def test_code_cache_uses_explicit_key():
     cache.clear()
 
 
-def test_password_policy_and_registration_limit(monkeypatch):
+def test_password_policy_and_registration_limit(monkeypatch, tmp_path):
     from vlambda import auth
 
+    monkeypatch.setenv("VLAMBDA_DB", str(tmp_path / "register.db"))
     monkeypatch.setattr(auth, "_PASSWORD_MIN_LENGTH", 12)
     assert auth.password_error("short")
     assert auth.password_error("longenough1234") == ""
@@ -1418,3 +1420,77 @@ def test_broker_rejects_malformed_messages(monkeypatch, tmp_path):
         assert broker.running()
     finally:
         broker.stop()
+
+
+def test_encrypted_backup_roundtrip(tmp_path, monkeypatch):
+    from vlambda.backup import BackupError, create_backup, is_encrypted, restore_backup
+
+    monkeypatch.setenv("VLAMBDA_BACKUP_KEY", "backup-passphrase")
+    db = tmp_path / "vlambda.db"
+    projects = tmp_path / "projects"
+    _make_db(db)
+    projects.mkdir()
+    (projects / "main.py").write_text("print('encrypted')\n", encoding="utf-8")
+    archive = tmp_path / "backup.tar.gz.enc"
+
+    manifest = create_backup(
+        str(archive), db_path=str(db), projects_dir=str(projects), encrypt=True,
+    )
+    assert manifest["encrypted"] is True
+    assert is_encrypted(str(archive))
+    assert b"main.py" not in archive.read_bytes()
+
+    db.unlink()
+    shutil.rmtree(projects)
+    result = restore_backup(
+        str(archive), db_path=str(db), projects_dir=str(projects),
+    )
+    assert result["encrypted"] is True
+    assert (projects / "main.py").read_text(encoding="utf-8") == "print('encrypted')\n"
+
+    # Tampering must fail before anything is restored.
+    raw = bytearray(archive.read_bytes())
+    raw[-1] ^= 0x01
+    tampered = tmp_path / "tampered.enc"
+    tampered.write_bytes(raw)
+    with pytest.raises(BackupError):
+        restore_backup(str(tampered), db_path=str(tmp_path / "other.db"))
+
+    # A wrong key must fail as well.
+    monkeypatch.setenv("VLAMBDA_BACKUP_KEY", "wrong-passphrase")
+    with pytest.raises(BackupError):
+        restore_backup(str(archive), db_path=str(tmp_path / "other2.db"))
+
+
+def test_encrypted_backup_streams_multiple_chunks(tmp_path, monkeypatch):
+    import os as _os
+
+    from vlambda.backup import _decrypt_archive, _encrypt_archive
+
+    monkeypatch.setenv("VLAMBDA_BACKUP_KEY", "chunk-key")
+    source = tmp_path / "source.bin"
+    source.write_bytes(_os.urandom(2 * 1024 * 1024 + 123))
+    encrypted = tmp_path / "source.enc"
+    decrypted = tmp_path / "source.out"
+    _encrypt_archive(str(source), str(encrypted))
+    assert encrypted.stat().st_size > source.stat().st_size
+    _decrypt_archive(str(encrypted), str(decrypted))
+    assert decrypted.read_bytes() == source.read_bytes()
+
+
+def test_backup_rejects_path_traversal(tmp_path, monkeypatch):
+    import io
+    import tarfile
+
+    from vlambda.backup import BackupError, restore_backup
+
+    monkeypatch.setenv("VLAMBDA_BACKUP_KEY", "traversal-key")
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        data = b"escaped"
+        info = tarfile.TarInfo("../escape.txt")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    with pytest.raises(BackupError):
+        restore_backup(str(archive), db_path=str(tmp_path / "evil.db"))
+    assert not (tmp_path / "escape.txt").exists()

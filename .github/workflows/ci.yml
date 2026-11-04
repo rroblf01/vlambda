@@ -169,11 +169,11 @@ jobs:
         run: |
           /opt/python/cp314-cp314/bin/python -m venv /tmp/wheel-venv
           /tmp/wheel-venv/bin/pip install -q dist/*.whl
-          /tmp/wheel-venv/bin/vlambda --version
+          /tmp/wheel-venv/bin/python -m vlambda --version
       - name: smoke the installed wheel
         run: |
           export VLAMBDA_SECRET=wheel-secret
-          /tmp/wheel-venv/bin/vlambda --port 8099 --sqlite_path /tmp/wheel.db &
+          /tmp/wheel-venv/bin/python -m vlambda --port 8099 --sqlite_path /tmp/wheel.db &
           server=$!
           trap 'kill $server 2>/dev/null || true' EXIT
           for _ in $(seq 1 30); do
@@ -215,3 +215,20 @@ jobs:
           assert status == 200 and body == {"wheel": True}, (status, body)
           print("WHEEL SMOKE OK")
           PY
+
+  chaos-smoke:
+    name: chaos
+    runs-on: ubuntu-latest
+    container: ghcr.io/rroblf01/vcraft-manylinux:1.7.2
+    steps:
+      - uses: actions/checkout@v5
+      - name: run the chaos checklist
+        env:
+          VCRAFT_NO_MEMORY_LIMIT: 1
+          VLAMBDA_BACKUP_KEY: chaos-backup-key
+        run: |
+          rm -rf .venv
+          /opt/python/cp314-cp314/bin/python -m venv .venv
+          . .venv/bin/activate
+          vcraft develop --interpreter /opt/python/cp314-cp314/bin/python
+          python scripts/chaos.py

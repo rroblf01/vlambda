@@ -30,15 +30,31 @@ def main() -> None:
     parser.add_argument("--rate_limit", type=int, default=int(os.environ.get("VLAMBDA_RATE_LIMIT", "100")))
     parser.add_argument("--invoke_timeout", type=int, default=int(os.environ.get("VLAMBDA_TIMEOUT", "30")))
     parser.add_argument("--max_memory_mb", type=int, default=int(os.environ.get("VLAMBDA_MAX_MEMORY_MB", "0")))
-    parser.add_argument("--cors_origin", default=os.environ.get("VLAMBDA_CORS", "*"))
+    parser.add_argument("--cors_origin", default=os.environ.get("VLAMBDA_CORS", ""))
     parser.add_argument("--cert", default=os.environ.get("VLAMBDA_CERT", ""))
     parser.add_argument("--key", default=os.environ.get("VLAMBDA_KEY", ""))
     args = parser.parse_args()
     os.environ["VLAMBDA_DB"] = args.sqlite_path
-    if sys.version_info < (3, 15) and os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail", "process") \
-            and os.environ.get("VLAMBDA_ISOLATE", "0") != "1":
-        print("WARNING: no sandbox selected; lambda code runs in the server process.",
-              file=sys.stderr)
+    sandbox_mode = os.environ.get("VLAMBDA_SANDBOX", "").lower()
+    if not sandbox_mode:
+        sandbox_mode = "auto"
+    if sandbox_mode == "auto":
+        resolved = "process"
+        try:
+            import ctypes.util
+            from vlambda.sandbox_os import sandbox_supported
+            if sandbox_supported() and ctypes.util.find_library("seccomp"):
+                resolved = "fork"
+        except Exception:
+            resolved = "process"
+        sandbox_mode = resolved
+        os.environ["VLAMBDA_SANDBOX"] = resolved
+    if sandbox_mode == "process" and os.environ.get("VLAMBDA_ISOLATE", "0") != "1":
+        print(
+            "WARNING: no OS sandbox available; lambda code runs in a separate "
+            "process without Landlock/seccomp.",
+            file=sys.stderr,
+        )
 
     # Try to use jemalloc for better allocation performance
     try:

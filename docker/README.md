@@ -68,7 +68,7 @@ users with the admin token:
 ```bash
 curl -X POST https://your-domain/admin/users \
   -H "X-Admin-Token: $VLAMBDA_ADMIN_TOKEN" \
-  -d "alice:change-me"
+  -d "alice:change-me-please-123"
 ```
 
 A daily reset removes users and lambdas. Keep only disposable data and secrets

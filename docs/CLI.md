@@ -25,7 +25,7 @@ python -m vlambda --port 8080 --sqlite_path ./vlambda.db --num_coroutines 10
 | `--rate_limit` | `VLAMBDA_RATE_LIMIT` | 100 |
 | `--invoke_timeout` | `VLAMBDA_TIMEOUT` | 30 |
 | `--max_memory_mb` | `VLAMBDA_MAX_MEMORY_MB` | 0 |
-| `--cors_origin` | `VLAMBDA_CORS` | `*` |
+| `--cors_origin` | `VLAMBDA_CORS` | *(none)* |
 | `--cert` | `VLAMBDA_CERT` | |
 | `--key` | `VLAMBDA_KEY` | |
 
@@ -105,7 +105,7 @@ python -m vlambda task <task-id>
 Create an offline archive. Safe while the server is running.
 
 ```bash
-python -m vlambda backup --out backup.tar.gz [--db PATH] [--metrics-db PATH]
+python -m vlambda backup --out backup.tar.gz [--db PATH] [--metrics-db PATH] [--encrypt]
   [--projects-dir PATH] [--packages-dir PATH] [--with-packages]
 ```
 

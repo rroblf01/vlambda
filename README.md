@@ -153,7 +153,7 @@ See `docker/README.md` for details, limits and the reset command.
 | `--rate_limit` | `VLAMBDA_RATE_LIMIT` | 100 | Requests/sec per IP |
 | `--invoke_timeout` | `VLAMBDA_TIMEOUT` | 30 | Lambda invocation timeout (s) |
 | `--max_memory_mb` | `VLAMBDA_MAX_MEMORY_MB` | 0 | RAM limit (0=unlimited) |
-| `--cors_origin` | `VLAMBDA_CORS` | * | CORS allowed origin |
+| `--cors_origin` | `VLAMBDA_CORS` | *(none)* | CORS allowed origin; set `*` or an explicit origin to enable CORS |
 | `--cert` | `VLAMBDA_CERT` | | TLS certificate path |
 | `--key` | `VLAMBDA_KEY` | | TLS key path |
 | | `VLAMBDA_REGISTRATION` | 1 | Allow public registration (`0` disables it; the production image sets `0`) |
@@ -165,6 +165,10 @@ See `docker/README.md` for details, limits and the reset command.
 | | `VLAMBDA_PASSWORD_MIN_LENGTH` | 12 | Minimum password length |
 | | `VLAMBDA_USER_RATE_LIMIT` | rate limit | Requests/s per authenticated user (`0` follows the global limit) |
 | | `VLAMBDA_AUDIT_RETENTION_DAYS` | 90 | Days of administrative audit entries to keep (`0` keeps all) |
+| | `VLAMBDA_BACKUP_KEY` | encryption key | Key for `vlambda backup --encrypt`; keep it out of the backup |
+| | `VLAMBDA_SANDBOX` | auto | `auto`, `fork`, `landlock`, `nsjail` or `process` (`auto` selects fork when Landlock + seccomp are available) |
+| | `VLAMBDA_SECCOMP_MODE` | allowlist | `allowlist` (default) or `denylist` fallback for unusual runtimes |
+| | `VLAMBDA_CORS` | *(none)* | Allowed CORS origin for `/f/`; set `*` or an explicit origin to enable |
 | | `VLAMBDA_PIP_INDEX_URL` | PyPI | Index used when installing lambda packages |
 | | `VLAMBDA_PIP_EXTRA_INDEX_URL` | | Additional allowed package index |
 | | `VLAMBDA_PIP_REQUIRE_HASHES` | 0 | Require hashes in `requirements.txt` (`--require-hashes`) |
@@ -403,7 +407,7 @@ To rotate the encryption key, stop the server and re-encrypt the stored secrets
 offline:
 
 ```bash
-python -m vlambda backup --out before-rotate.tar.gz
+python -m vlambda backup --out before-rotate.tar.gz --encrypt
 python -m vlambda secrets rotate \
   --old-key "$OLD_ENCRYPTION_KEY" --new-key "$NEW_ENCRYPTION_KEY"
 ```

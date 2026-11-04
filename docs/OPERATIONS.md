@@ -47,21 +47,25 @@ Test a restore into a disposable directory or host regularly. A backup that has
 never been restored is not a backup.
 
 Backups contain plaintext code, KV data and logs, plus encrypted secrets.
-Encrypt the archive before storing or shipping it:
+vlambda can encrypt the archive itself with `--encrypt`:
 
 ```bash
-age -r "$BACKUP_RECIPIENT" -o vlambda-$(date +%F).tar.gz.age vlambda-$(date +%F).tar.gz
-age -d -i "$BACKUP_IDENTITY" vlambda-2026-11-04.tar.gz.age > restore.tar.gz
+export VLAMBDA_BACKUP_KEY="$(openssl rand -hex 32)"
+python -m vlambda backup --out vlambda-$(date +%F).tar.gz --encrypt
+python -m vlambda restore --from vlambda-2026-11-04.tar.gz --force
 ```
 
-or with GPG:
+The key is never written into the archive; without it the backup cannot be
+restored. Keep `VLAMBDA_BACKUP_KEY` separate from `VLAMBDA_ENCRYPTION_KEY` and
+store it in a secret manager. If you prefer an external tool, `age` and GPG
+still work and are applied to the already-encrypted-or-plain archive:
 
 ```bash
-gpg --encrypt --recipient "$BACKUP_RECIPIENT" vlambda-2026-11-04.tar.gz
+age -r "$BACKUP_RECIPIENT" -o backup.tar.gz.age backup.tar.gz
 ```
 
-Keep the backup key separate from `VLAMBDA_ENCRYPTION_KEY`; rotating one must
-not require the other.
+Backups contain plaintext code, KV data and logs; encryption at rest is
+mandatory for anything that leaves the host.
 
 ## Upgrades and rollback
 
@@ -104,9 +108,22 @@ python scripts/soak.py --url http://127.0.0.1:8080 --token "$VLAMBDA_TOKEN" \
 A 5-minute local run (631k invocations, concurrency 4) finished with 0 errors,
 ~2.1k req/s, p95 2.95 ms and ~12 MB of RSS growth.
 
+A 5-minute run through the fork sandbox with the seccomp allow-list and
+concurrency 8 served 156,603 invocations with 0 errors, 522 req/s, p95 19.4 ms
+and no RSS growth. The sandbox cost is real but bounded; the 24 h gate should
+use the same configuration.
+
 ## Chaos checklist
 
-Run these against a staging host before a major release:
+`scripts/chaos.py` automates the disposable-host scenarios (SQLite lock
+recovery, broker loss, read-only startup and encrypted backup/restore) and runs
+in CI:
+
+```bash
+VLAMBDA_BACKUP_KEY=chaos-backup-key python scripts/chaos.py
+```
+
+Run the remaining scenarios against a staging host before a major release:
 
 - lock the main database with a write transaction; management calls should fail
   cleanly and recover when the lock is released;

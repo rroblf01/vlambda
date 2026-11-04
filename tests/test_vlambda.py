@@ -8,7 +8,7 @@ PROC = None
 _DB_COUNTER = [0]
 SERVER_LOG = "/tmp/vlambda_test_server.log"
 
-def start_server(extra_env=None, keep_db=False):
+def start_server(extra_env=None, keep_db=False, max_body=100):
     import glob
     import os
     global DB, PROC, SERVER_LOG
@@ -46,7 +46,7 @@ def start_server(extra_env=None, keep_db=False):
     env["VLAMBDA_METRICS_DB"] = DB.replace(".db", "_metrics.db")
     env.update(extra_env or {})
     PROC = subprocess.Popen(
-        [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", "100"],
+        [python_bin, "-m", "vlambda", "--port", str(PORT), "--sqlite_path", DB, "--max_body_size", str(max_body)],
         cwd=cwd,
         env=env,
         stdout=open(SERVER_LOG, "w"), stderr=subprocess.STDOUT,
@@ -1441,15 +1441,25 @@ def _upload_project(name, files, entry="main.py"):
 
 
 def test_cors_headers():
-    token, slug = test_create_invoke()
     import urllib.request
+
+    token, slug = test_create_invoke()
     resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}")
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
-    assert resp.headers.get("Access-Control-Allow-Methods")
-    preflight = urllib.request.Request(f"http://localhost:{PORT}/f/{slug}", method="OPTIONS")
-    resp = urllib.request.urlopen(preflight)
-    assert resp.status == 204
-    assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+    assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+    stop_server()
+    start_server({"VLAMBDA_CORS": "*"})
+    try:
+        token, slug = test_create_invoke()
+        resp = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}")
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+        assert resp.headers.get("Access-Control-Allow-Methods")
+        preflight = urllib.request.Request(f"http://localhost:{PORT}/f/{slug}", method="OPTIONS")
+        resp = urllib.request.urlopen(preflight)
+        assert resp.status == 204
+        assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+    finally:
+        stop_server()
 
 
 def test_json_listing():
@@ -1545,6 +1555,79 @@ def test_password_change():
     actions = [item["action"] for item in body["entries"]]
     assert "user.password.change" in actions, actions
     assert "admin.user.password.reset" in actions, actions
+
+
+def test_sandbox_runtime_coverage():
+    stop_server()
+    start_server({
+        "VLAMBDA_SANDBOX": "fork",
+        "VLAMBDA_SECCOMP_MODE": "allowlist",
+        "VLAMBDA_SECRET": "test-secret",
+        "VLAMBDA_TIMEOUT": "20",
+    }, max_body=8192)
+    try:
+        code = (
+            "import asyncio, base64, csv, datetime, decimal, gzip, hashlib, io, json, os, re, sqlite3, ssl, statistics, tempfile, threading, urllib.parse, zlib\n"
+            "def handler(request):\n"
+            "    db = os.path.join(tempfile.mkdtemp(), 't.db')\n"
+            "    conn = sqlite3.connect(db)\n"
+            "    conn.execute('create table t (x)')\n"
+            "    conn.execute('insert into t values (1)')\n"
+            "    conn.commit()\n"
+            "    value = conn.execute('select x from t').fetchone()[0]\n"
+            "    conn.close()\n"
+            "    ctx = ssl.create_default_context()\n"
+            "    values = []\n"
+            "    thread = threading.Thread(target=lambda: values.append(statistics.mean([1, 2, 3])))\n"
+            "    thread.start(); thread.join()\n"
+            "    async def go(): return decimal.Decimal('1.5') * 2\n"
+            "    return {\n"
+            "        'db': value, 'gzip': gzip.decompress(gzip.compress(b'vlambda')).decode(),\n"
+            "        'thread': values, 'hash': hashlib.sha256(b'x').hexdigest()[:8],\n"
+            "        'ssl': ctx is not None, 'async': str(asyncio.run(go())),\n"
+            "        're': bool(re.match('v', 'vlambda')), 'zlib': zlib.crc32(b'x'),\n"
+            "        'csv': list(csv.reader(io.StringIO('a,b'))), 'year': datetime.datetime(2020, 1, 1).year,\n"
+            "        'b64': base64.b64encode(b'x').decode(), 'path': urllib.parse.urlparse('https://x/y').path,\n"
+            "        'json': json.loads(json.dumps({'ok': True}))['ok'],\n"
+            "    }\n"
+        )
+        token, slug = _upload_project("runtime", {"main.py": code})
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 200, body
+        assert body["db"] == 1 and body["gzip"] == "vlambda"
+        assert body["thread"] == [2] and body["async"] == "3.0"
+        assert body["csv"] == [["a", "b"]] and body["year"] == 2020
+        assert body["path"] == "/y" and body["json"] is True
+    finally:
+        stop_server()
+
+
+def test_security_regressions():
+    import hashlib
+    import sqlite3
+
+    token = test_register_login()
+    status, body = req("GET", "/vlambda?format=json", token=token)
+    assert status == 200, body
+
+    parts = token.split(".")
+    tampered = ".".join(parts[:2] + ["AAAA" + parts[2][4:]])
+    status, body = req("GET", "/vlambda", token=tampered)
+    assert status == 401, body
+
+    status, body = req("DELETE", "/vlambda/does-not-exist%27%20OR%201=1", token=token)
+    assert status in (400, 404, 500), (status, body)
+    status, body = req("GET", "/vlambda?format=json&limit=1%20OR%201=1", token=token)
+    assert status == 200, body
+
+    status, body = req("POST", "/tokens", json.dumps({"name": "hash", "scopes": ["read"]}), token)
+    assert status == 201, body
+    raw = body["token"]
+    conn = sqlite3.connect(DB)
+    stored = conn.execute("SELECT token_hash FROM api_tokens WHERE id = ?", (body["id"],)).fetchone()[0]
+    conn.close()
+    assert stored != raw
+    assert stored == hashlib.sha256(raw.encode()).hexdigest()
 
 
 def test_audit_log():
@@ -1705,7 +1788,7 @@ if __name__ == "__main__":
              test_fork_sandbox,
              test_async_task, test_task_recovery, test_shutdown_drains, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
-             test_cors_headers, test_json_listing, test_api_tokens, test_password_change, test_audit_log, test_project_static_files,
+             test_cors_headers, test_json_listing, test_api_tokens, test_password_change, test_audit_log, test_security_regressions, test_sandbox_runtime_coverage, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_failure_isolation, test_fuzz_smoke, test_rate_limit]
     failed = 0

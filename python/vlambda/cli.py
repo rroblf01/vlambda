@@ -210,6 +210,7 @@ def cmd_backup(args):
             projects_dir=args.projects_dir or None,
             packages_dir=args.packages_dir or None,
             include_packages=args.with_packages,
+            encrypt=args.encrypt,
         )
     except Exception as exc:
         raise SystemExit(f"vlambda: {exc}") from exc
@@ -358,6 +359,8 @@ def main(argv=None) -> int:
     backup.add_argument("--projects-dir", default="")
     backup.add_argument("--packages-dir", default="")
     backup.add_argument("--with-packages", action="store_true")
+    backup.add_argument("--encrypt", action="store_true",
+                        help="encrypt with VLAMBDA_BACKUP_KEY (or VLAMBDA_ENCRYPTION_KEY)")
     backup.set_defaults(func=cmd_backup, offline=True)
 
     restore = sub.add_parser("restore", help="restore an offline backup archive")

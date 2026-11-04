@@ -205,10 +205,12 @@ def create_project(zip_b64: str, entrypoint: str, name: str, method: str, owner_
 
 
 def execute_project(project_dir: str, entrypoint: str, request) -> Any:
+    from vlambda.async_support import resolve
+
     handler = _load_handler(project_dir, entrypoint)
     if handler is None:
         return {"error": "no handler function defined"}
-    return handler(request)
+    return resolve(handler(request))
 
 
 def delete_project(project_dir: str):

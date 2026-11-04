@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from vlambda.async_support import resolve
 from vlambda.cache import get as get_compiled
 from vlambda.capabilities import CapabilityClient, clear_current, set_current
 from vlambda.request import Request, set_log_sink
@@ -71,7 +72,7 @@ def _execute(code: str, method: str, path: str, query: str, body: bytes, request
                   request_id=request_id, slug=slug, remote_ip=remote_ip, host=host, scheme=scheme, env=env,
                   kv_client=kv_client, fetch_client=fetch_client)
     ns["request"] = req
-    return handler(req)
+    return resolve(handler(req))
 
 
 def _execute_project(project_dir: str, entrypoint: str, method: str, path: str, query: str, body: bytes,

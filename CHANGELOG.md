@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-11-03
 
 ### Added
+- Async handlers: lambdas and projects may define `async def handler(request)`; the coroutine is awaited before serialization. The editor ships an "Async handler" template.
 - Per-lambda KV store with typed values, TTL, atomic increments, quotas, REST API, UI card and CLI.
 - Capability broker over a Unix socket: per-invocation tokens, scoped KV access and automatic release for sync and async invocations.
 - Sandboxes now allow only `AF_UNIX` client sockets; `AF_INET`/`AF_INET6` remain blocked.
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deleting a lambda also removes its KV, egress, schedules, runs and pending tasks.
 - Python 3.15 uses a rollback journal when CPython and system SQLite versions differ, avoiding WAL files being unlinked across libraries.
 - Native responses and callback results are copied out of CPython memory before the Python object is released, fixing truncated responses and intermittent crashes (notably on Python 3.15).
+- The compiled-code disk cache is scoped per interpreter and published atomically, so a shared cache can no longer feed the server invalid code objects.
 
 ## [0.3.0] - 2026-11-03
 

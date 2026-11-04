@@ -10,6 +10,7 @@ databases or external services.
 | [`webhook`](webhook/) | Receive and log a webhook | Create a `POST` lambda |
 | [`html-fetch`](html-fetch/) | HTML page plus `fetch()` to its own API | Create a `GET` lambda |
 | [`static-site`](static-site/) | Static files served by a project | Upload the folder as a ZIP |
+| [`async`](async/) | Async handler with `await` | Create a `GET` lambda |
 
 ## Deploy from the UI
 

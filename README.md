@@ -288,6 +288,20 @@ and helpers `header()`, `json()`, `form()` and `log()`.
 `Response` supports `json()`, `text()`, `html()`, `redirect()`, `no_content()`,
 status codes, headers, cookies and binary bodies.
 
+Handlers may also be coroutine functions. vlambda awaits the coroutine and
+serializes its value exactly like a synchronous return:
+
+```python
+async def double(value):
+    return value * 2
+
+async def handler(request):
+    return {"values": [await double(n) for n in (1, 2, 3)]}
+```
+
+Await local coroutines or third-party async clients. The `asyncio` module stays
+blocked because it exposes sockets indirectly.
+
 Safe builtins: `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `range`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`, `print`, etc.
 
 Blocked modules: `os`, `posix`, `subprocess`, `sys`, `importlib`, `ctypes`, `socket`, `_socket`, `urllib`, `http`, `shutil`, `pathlib`, `io`, `pickle`, `marshal`, `resource`, `fcntl`, `mmap`, `sqlite3`, etc.

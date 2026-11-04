@@ -66,7 +66,7 @@ _DENY_SYSCALLS = (
     # network: only client connections to AF_UNIX sockets are allowed. The
     # socket() rule is added separately in _load_seccomp so AF_INET/AF_INET6
     # remain blocked while the capability broker stays reachable.
-    "socketpair", "bind", "listen", "accept", "accept4",
+    "bind", "listen", "accept", "accept4",
     "sendmsg", "recvmsg", "sendmmsg", "recvmmsg",
     # process creation / execution
     "fork", "vfork", "execve", "execveat",
@@ -253,6 +253,14 @@ def _load_seccomp():
             rc = lib.seccomp_rule_add_array(ctx, action, socket_nr, 1, ctypes.byref(cmp))
             if rc != 0:
                 raise RuntimeError(f"seccomp socket family rule failed: {rc}")
+        # asyncio's event loop creates an AF_UNIX socketpair for its self-pipe.
+        # Keep non-Unix socketpairs denied, matching the socket() rule.
+        socketpair_nr = lib.seccomp_syscall_resolve_name(b"socketpair")
+        if socketpair_nr >= 0:
+            cmp = _ScmpArgCmp(0, _SCMP_CMP_NE, 1, 0)  # arg0 != AF_UNIX
+            rc = lib.seccomp_rule_add_array(ctx, action, socketpair_nr, 1, ctypes.byref(cmp))
+            if rc != 0:
+                raise RuntimeError(f"seccomp socketpair family rule failed: {rc}")
         # glibc falls back to clone() when clone3() reports ENOSYS.
         clone3_nr = lib.seccomp_syscall_resolve_name(b"clone3")
         if clone3_nr >= 0:

@@ -193,6 +193,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
           <option value="math">Compute</option>
           <option value="html">HTML page</option>
           <option value="logging">Save logs</option>
+          <option value="async">Async handler</option>
         </select>
       </div>
       <div class="form-group"><label>Python code</label><div id="create-editor" class="editor-host"></div></div>
@@ -1701,6 +1702,7 @@ const TEMPLATES = {
   math: 'def handler(request):\n    n = int(request.query_string.split("n=")[-1] or 10)\n    return {"sum": sum(range(n)), "n": n}\n',
   html: 'def handler(request):\n    items = ["alpha", "beta", "gamma"]\n    rows = "\\n    ".join("<li>{}</li>".format(item) for item in items)\n    page = """<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <title>Hello from vlambda</title>\n</head>\n<body>\n  <h1>Hello from vlambda</h1>\n  <p>Path: {path}</p>\n  <ul>\n    {rows}\n  </ul>\n</body>\n</html>""".format(path=request.path, rows=rows)\n    return page\n',
   logging: 'def handler(request):\n    request.log("processing " + request.path)\n    request.log("method: " + request.method, "debug")\n    return {"ok": True}\n',
+  async: 'async def lookup(item):\n    # Any awaitable works here (an async database or HTTP client, etc.).\n    return {"id": item, "ok": True}\n\nasync def handler(request):\n    # Handlers may be async; vlambda awaits the coroutine for you.\n    request.log("async handler start")\n    items = [await lookup(i) for i in range(3)]\n    return {"async": True, "items": items, "path": request.path}\n',
 };
 function applyTemplate() {
   const name = document.getElementById('template-select').value;

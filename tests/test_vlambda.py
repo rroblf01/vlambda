@@ -205,6 +205,30 @@ def test_create_invoke():
     assert status == 200 and body["msg"] == "hi"
     return token, slug
 
+def test_async_handler():
+    token = test_register_login()
+    # The harness caps creation bodies at 100 bytes, so keep the sample short.
+    code = "async def d(n): return n * 2\nasync def handler(r): return {'v': await d(4)}"
+    status, body = req("POST", "/vlambda?name=async-handler", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200, body
+    assert body == {"v": 8}, body
+
+    status, body = req("POST", f"/async/{slug}", token=token)
+    assert status == 202, body
+    task_id = body["task_id"]
+    for _ in range(50):
+        status, body = req("GET", f"/task/{task_id}", token=token)
+        if body.get("status") in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+    assert body.get("status") == "completed", body
+    payload = json.loads(body["result"]["body"])
+    assert payload == {"v": 8}, payload
+
+
 def test_lambda_names():
     from urllib.parse import quote
     token = test_register_login()
@@ -956,6 +980,14 @@ def test_fork_sandbox():
                 break
             time.sleep(0.3)
         assert logs.get("count", 0) >= 3, logs
+
+        # The runner also resolves async handlers inside the sandbox.
+        status, body = req("POST", "/vlambda?name=fork-async",
+                           "async def d(n): return n * 3\nasync def handler(r): return {'v': await d(2)}",
+                           token)
+        assert status == 201, body
+        status, body = req("GET", f"/f/{body['slug']}")
+        assert status == 200 and body == {"v": 6}, (status, body)
     finally:
         stop_server()
 
@@ -1455,7 +1487,7 @@ def test_project_export_import():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,

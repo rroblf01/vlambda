@@ -21,6 +21,7 @@ import tempfile
 from typing import Any
 
 from vlambda.sandbox import execute_lambda, make_sandbox
+from vlambda.async_support import resolve
 from vlambda.capabilities import CapabilityClient, clear_current, set_current
 from vlambda.request import Request
 from vlambda.cache import get as get_compiled
@@ -74,7 +75,7 @@ class Worker:
                         raise ValueError("no handler function defined")
                     ns = dict(ns_template)
                     ns["request"] = req_obj
-                    result = handler(req_obj)
+                    result = resolve(handler(req_obj))
                 from vlambda.response import serialize
                 result = serialize(result)
             except Exception as e:

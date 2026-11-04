@@ -57,10 +57,11 @@ def make_sandbox(code: str, request_obj):
 
 def execute_lambda(code: str, request_obj) -> dict:
     """Execute lambda code and return the result."""
+    from vlambda.async_support import resolve
+
     compiled, ns = make_sandbox(code, request_obj)
     exec(compiled, ns)
     handler = ns.get("handler")
     if handler is None:
         raise ValueError("no 'handler' function defined")
-    result = handler(request_obj)
-    return result
+    return resolve(handler(request_obj))

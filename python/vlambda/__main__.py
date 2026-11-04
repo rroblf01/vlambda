@@ -55,7 +55,7 @@ def main() -> None:
             return f"syntax error: {e}"
         # Check for handler function
         has_handler = any(
-            isinstance(node, ast.FunctionDef) and node.name == "handler"
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "handler"
             for node in ast.walk(tree)
         )
         if not has_handler:

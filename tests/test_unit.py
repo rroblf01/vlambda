@@ -1013,3 +1013,53 @@ def test_transfer_export_code(tmp_path, monkeypatch):
     assert data["code"].startswith("def handler")
     assert data["format"] == "vlambda/v1"
     assert export_lambda("l1", "8") == ""
+
+
+def test_async_handler_resolution():
+    import asyncio
+
+    from vlambda.async_support import resolve
+
+    async def handler(value):
+        await asyncio.sleep(0)
+        return {"value": value}
+
+    async def failing():
+        raise ValueError("boom")
+
+    assert resolve(handler(3)) == {"value": 3}
+    assert resolve({"ok": True}) == {"ok": True}
+    with pytest.raises(ValueError, match="boom"):
+        resolve(failing())
+
+
+def test_code_disk_cache_is_scoped_and_atomic(tmp_path, monkeypatch):
+    from vlambda import cache as code_cache
+
+    monkeypatch.setattr(code_cache, "_CACHE_DIR", str(tmp_path))
+    code = "def handler(request): return 1"
+    path = code_cache._disk_path(code)
+    assert code_cache._CACHE_TAG in path
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"not a code object")
+    assert code_cache._load_from_disk(code) is None
+
+    code_cache.invalidate(code)
+    code_cache._save_to_disk(code, compile(code, "<lambda>", "exec"))
+    loaded = code_cache._load_from_disk(code)
+    assert loaded is not None and loaded.co_filename == "<lambda>"
+
+
+def test_async_project_handler(tmp_path):
+    from vlambda.project import execute_project
+
+    (tmp_path / "main.py").write_text(
+        "async def value():\n"
+        "    return 21\n\n"
+        "async def handler(request):\n"
+        "    return {'value': await value()}\n",
+        encoding="utf-8",
+    )
+    assert execute_project(str(tmp_path), "main.py", None) == {"value": 21}

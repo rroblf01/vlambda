@@ -1181,3 +1181,39 @@ def test_offline_wipe_removes_database_files(tmp_path):
     assert not db.with_name(db.name + "-wal").exists()
     assert not projects.exists() and not packages.exists()
     assert result["removed"]
+
+
+def test_server_rejects_legacy_database(tmp_path):
+    import sqlite3
+    import subprocess
+    import sys
+
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT)")
+    conn.commit()
+    conn.close()
+    result = subprocess.run(
+        [sys.executable, "-m", "vlambda", "--port", "0", "--sqlite_path", str(db)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 1
+    assert "legacy vlambda database" in (result.stderr + result.stdout)
+
+
+def test_server_rejects_newer_schema(tmp_path):
+    import sqlite3
+    import subprocess
+    import sys
+
+    db = tmp_path / "newer.db"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+    result = subprocess.run(
+        [sys.executable, "-m", "vlambda", "--port", "0", "--sqlite_path", str(db)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 1
+    assert "newer than this vlambda build" in (result.stderr + result.stdout)

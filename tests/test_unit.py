@@ -1159,3 +1159,25 @@ def test_restore_checks_encryption_key(tmp_path, monkeypatch):
                    projects_dir=str(tmp_path / "missing-projects"),
                    packages_dir=str(tmp_path / "missing-packages"),
                    allow_key_mismatch=True)
+
+
+def test_offline_wipe_removes_database_files(tmp_path):
+    import sqlite3
+    from vlambda.reset import offline_wipe
+
+    db = tmp_path / "vlambda.db"
+    metrics = tmp_path / "metrics.db"
+    for path in (db, metrics):
+        sqlite3.connect(path).close()
+        path.with_name(path.name + "-wal").write_bytes(b"")
+    projects = tmp_path / "projects"
+    packages = tmp_path / "packages"
+    projects.mkdir()
+    packages.mkdir()
+    (projects / "main.py").write_text("x = 1", encoding="utf-8")
+
+    result = offline_wipe(str(db), str(metrics), str(projects), str(packages), str(tmp_path / "cache"))
+    assert not db.exists() and not metrics.exists()
+    assert not db.with_name(db.name + "-wal").exists()
+    assert not projects.exists() and not packages.exists()
+    assert result["removed"]

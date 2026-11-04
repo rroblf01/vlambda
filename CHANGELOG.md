@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `vlambda backup` and `vlambda restore`: consistent offline archives of the main database, metrics/logs database, projects and optional package vendors.
 - Database schema versions (`PRAGMA user_version`) with startup checks and backup compatibility validation.
+- `vlambda reset --wipe` removes the database files for a fresh 1.0 start.
 
 ### Changed
 - 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.

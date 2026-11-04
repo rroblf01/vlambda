@@ -82,6 +82,41 @@ def offline_reset(
     }
 
 
+def _remove_dir(path: str) -> int:
+    if not os.path.isdir(path):
+        return 0
+    shutil.rmtree(path, ignore_errors=True)
+    return 1
+
+
+def offline_wipe(
+    db_path: str,
+    metrics_db: str,
+    projects_dir: str,
+    packages_dir: str,
+    cache_dir: str | None = None,
+) -> dict:
+    """Delete the database files so a newer major version can start fresh."""
+    removed: list[str] = []
+    for path in (db_path, metrics_db):
+        for candidate in (path, path + "-wal", path + "-shm"):
+            try:
+                os.remove(candidate)
+                removed.append(candidate)
+            except FileNotFoundError:
+                pass
+    result = {
+        "db": db_path,
+        "metrics_db": metrics_db,
+        "removed": removed,
+        "projects_removed": _remove_dir(projects_dir),
+        "packages_removed": _remove_dir(packages_dir),
+        "cache_removed": _remove_dir(cache_dir) if cache_dir else 0,
+        "timestamp": time.time(),
+    }
+    return result
+
+
 def online_reset(url: str, token: str) -> dict:
     req = urllib.request.Request(
         url.rstrip("/") + "/admin/reset",
@@ -197,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
         "--cache-dir",
         default=os.environ.get("VLAMBDA_CACHE_DIR", "/tmp/opencode/vlambda_cache"),
     )
+    parser.add_argument(
+        "--wipe",
+        action="store_true",
+        help="delete the database files instead of only their rows (for a fresh 1.0 start)",
+    )
     args = parser.parse_args(argv)
 
     if not args.yes:
@@ -206,6 +246,16 @@ def main(argv: list[str] | None = None) -> int:
             print("Aborted.")
             return 1
 
+    metrics_db = args.metrics_db or args.db.replace(".db", "_metrics.db")
+    if args.wipe:
+        if args.url and args.token:
+            print("Wipe is offline-only; stop the server before running it.", file=sys.stderr)
+        result = offline_wipe(
+            args.db, metrics_db, args.projects_dir, args.packages_dir, args.cache_dir
+        )
+        print(json.dumps(result, indent=2))
+        return 0
+
     if args.url and args.token:
         try:
             result = online_reset(args.url, args.token)
@@ -214,7 +264,6 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"Online reset failed ({exc}); falling back to offline", file=sys.stderr)
 
-    metrics_db = args.metrics_db or args.db.replace(".db", "_metrics.db")
     result = offline_reset(
         args.db, metrics_db, args.projects_dir, args.packages_dir, args.cache_dir
     )

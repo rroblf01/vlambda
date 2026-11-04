@@ -533,6 +533,17 @@ python -m vlambda reset --yes --url http://127.0.0.1:8080 --token "$VLAMBDA_ADMI
 
 A reset also invalidates existing JWT sessions and API tokens.
 
+1.0 starts with a fresh schema and refuses to open a pre-1.0 database. To move
+an existing deployment to 1.0, stop the server and wipe the database files:
+
+```bash
+python -m vlambda reset --yes --wipe
+```
+
+This removes the main and metrics databases plus project, package and cache
+data. Copy the data volume first if you need to keep anything; the old schema is
+not migrated automatically.
+
 For a disposable demo, run it from cron every day:
 
 ```cron

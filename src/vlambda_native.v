@@ -12,6 +12,20 @@ import rand
 import json2
 import encoding.base64
 
+// vcraft.from_py_string/from_py_bytes reuse the Python object's buffer instead
+// of copying it. Reading the result after decref touches freed memory, which
+// shows up as truncated or corrupted responses under load. Copy while the
+// object is still alive.
+fn py_string_copy(obj vcraft.PyObj, name string, fallback string) string {
+	s := vcraft.from_py_string(obj, name) or { return fallback }
+	return s.clone()
+}
+
+fn py_bytes_copy(obj vcraft.PyObj, name string, fallback string) string {
+	s := vcraft.from_py_bytes(obj, name) or { return fallback }
+	return s.clone()
+}
+
 // ---- Global state ----
 
 __global (
@@ -728,7 +742,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				return
 			}
 			if r.type_name() == 'str' {
-				ss := vcraft.from_py_string(r, 'result') or { '[]' }
+				ss := py_string_copy(r, 'result', '[]')
 				r.decref()
 				unsafe { *ptr = ss + '' }
 				return
@@ -759,7 +773,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"error": "openapi failed"}' }
+					ss := py_string_copy(r, 'result', '{"error": "openapi failed"}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -933,7 +947,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					vcraft.borrow(args[2]).decref()
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"deleted": 0}' }
+						ss := py_string_copy(r, 'result', '{"deleted": 0}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -954,7 +968,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vcraft.borrow(args[2]).decref()
 				if r.is_null() { vcraft.clear_error(); return }
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "count": 0, "items": []}' }
+					ss := py_string_copy(r, 'result', '{"days": ${days}, "count": 0, "items": []}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1059,7 +1073,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 						return
 					}
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"deleted": 0}' }
+						ss := py_string_copy(r, 'result', '{"deleted": 0}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -1082,7 +1096,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "items": []}' }
+					ss := py_string_copy(r, 'result', '{"days": ${days}, "items": []}')
 					r.decref()
 					unsafe { *ptr = ss }
 					return
@@ -1131,7 +1145,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '[]' }
+					ss := py_string_copy(r, 'result', '[]')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1177,7 +1191,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vcraft.borrow(args[2]).decref()
 				if r.is_null() { vcraft.clear_error(); return }
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}' }
+					ss := py_string_copy(r, 'result', '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1221,7 +1235,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"days": ${days}, "items": []}' }
+					ss := py_string_copy(r, 'result', '{"days": ${days}, "items": []}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1269,7 +1283,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '' }
+					ss := py_string_copy(r, 'result', '')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1304,7 +1318,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{}' }
+					ss := py_string_copy(r, 'result', '{}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1338,7 +1352,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{}' }
+					ss := py_string_copy(r, 'result', '{}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1381,7 +1395,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"error": "failed"}' }
+					ss := py_string_copy(r, 'result', '{"error": "failed"}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -1498,7 +1512,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					for a in args { vcraft.borrow(a).decref() }
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{}' }
+						ss := py_string_copy(r, 'result', '{}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -1522,7 +1536,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					for a in args { vcraft.borrow(a).decref() }
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{}' }
+						ss := py_string_copy(r, 'result', '{}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -1586,7 +1600,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 						return
 					}
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"error": "bad result"}' }
+						ss := py_string_copy(r, 'result', '{"error": "bad result"}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -1888,7 +1902,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					for a in args { vcraft.borrow(a).decref() }
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"env": []}' }
+						ss := py_string_copy(r, 'result', '{"env": []}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -1912,7 +1926,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					for a in args { vcraft.borrow(a).decref() }
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"error": "save failed"}' }
+						ss := py_string_copy(r, 'result', '{"error": "save failed"}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -1975,7 +1989,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"error": "kv failed"}' }
+					ss := py_string_copy(r, 'result', '{"error": "kv failed"}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -2023,7 +2037,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"error": "egress failed"}' }
+					ss := py_string_copy(r, 'result', '{"error": "egress failed"}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -2087,7 +2101,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"error": "schedules failed"}' }
+					ss := py_string_copy(r, 'result', '{"error": "schedules failed"}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -2135,7 +2149,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					return
 				}
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"error": "meta failed"}' }
+					ss := py_string_copy(r, 'result', '{"error": "meta failed"}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -2245,7 +2259,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					for a in args { vcraft.borrow(a).decref() }
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"packages": []}' }
+						ss := py_string_copy(r, 'result', '{"packages": []}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -2266,7 +2280,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					for a in args { vcraft.borrow(a).decref() }
 					if r.is_null() { vcraft.clear_error(); return }
 					if r.type_name() == 'str' {
-						ss := vcraft.from_py_string(r, 'result') or { '{"error": "install failed"}' }
+						ss := py_string_copy(r, 'result', '{"error": "install failed"}')
 						r.decref()
 						unsafe { *ptr = ss + '' }
 						return
@@ -2304,7 +2318,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vcraft.borrow(args[0]).decref()
 				if r.is_null() { vcraft.clear_error(); return }
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"versions": []}' }
+					ss := py_string_copy(r, 'result', '{"versions": []}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -2340,7 +2354,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vcraft.borrow(args[0]).decref()
 				if r.is_null() { vcraft.clear_error(); return }
 				if r.type_name() == 'str' {
-					ss := vcraft.from_py_string(r, 'result') or { '{"aliases": []}' }
+					ss := py_string_copy(r, 'result', '{"aliases": []}')
 					r.decref()
 					unsafe { *ptr = ss + '' }
 					return
@@ -2997,7 +3011,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			return
 		}
 		if result.type_name() == 'str' {
-			ss := vcraft.from_py_string(result, 'result') or { '{"error": "bad result"}' }
+			ss := py_string_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
 			vlambda_result_str = ss + ''
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
@@ -3010,7 +3024,7 @@ pub fn run_lambda(request_id string, slug string, code string, method string, pa
 			return
 		}
 		if result.type_name() == 'bytes' {
-			ss := vcraft.from_py_bytes(result, 'result') or { '{"error": "bad result"}' }
+			ss := py_bytes_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
 			vlambda_result_str = ss + ''
 			if vlambda_metrics_enabled && vlambda_record_metric != unsafe { nil } && (vlambda_metrics_sample <= 1 || int(vlambda_metric_counter) % vlambda_metrics_sample == 0) {
@@ -3053,13 +3067,13 @@ pub fn run_project(project_dir string, entrypoint string, method string, path st
 			return
 		}
 		if result.type_name() == 'str' {
-			ss := vcraft.from_py_string(result, 'result') or { '{"error": "bad result"}' }
+			ss := py_string_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
 			vlambda_result_str = ss + ''
 			return
 		}
 		if result.type_name() == 'bytes' {
-			ss := vcraft.from_py_bytes(result, 'result') or { '{"error": "bad result"}' }
+			ss := py_bytes_copy(result, 'result', '{"error": "bad result"}')
 			result.decref()
 			vlambda_result_str = ss + ''
 			return
@@ -3119,7 +3133,7 @@ pub fn auth_login_user(username string, password string) string {
 			return
 		}
 		if r.type_name() == 'str' {
-			s := vcraft.from_py_string(r, 'token') or { '' }
+			s := py_string_copy(r, 'token', '')
 			r.decref()
 			unsafe { *ptr = s }
 			return
@@ -3158,7 +3172,7 @@ pub fn get_favicon() string {
 			return
 		}
 		if r.type_name() == 'bytes' {
-			ss := vcraft.from_py_bytes(r, 'favicon') or { '' }
+			ss := py_bytes_copy(r, 'favicon', '')
 			r.decref()
 			unsafe { *ptr = ss }
 			return
@@ -3293,7 +3307,7 @@ fn call_py_two_str(cb voidptr, first string, second string) string {
 			return
 		}
 		if r.type_name() == 'str' {
-			ss := vcraft.from_py_string(r, 'result') or { '' }
+			ss := py_string_copy(r, 'result', '')
 			r.decref()
 			unsafe { *ptr = ss + '' }
 			return
@@ -3386,7 +3400,7 @@ pub fn create_task_async(code string, method string, path string, query string, 
 			return
 		}
 		if r.type_name() == 'str' {
-			ss := vcraft.from_py_string(r, 'result') or { '' }
+			ss := py_string_copy(r, 'result', '')
 			r.decref()
 			unsafe { *ptr = ss }
 			return
@@ -3411,7 +3425,7 @@ pub fn get_task_status(task_id string, owner_id int) string {
 			return
 		}
 		if r.type_name() == 'str' {
-			ss := vcraft.from_py_string(r, 'result') or { '' }
+			ss := py_string_copy(r, 'result', '')
 			r.decref()
 			unsafe { *ptr = ss }
 			return
@@ -3435,13 +3449,13 @@ pub fn get_asset(name string) string {
 			return
 		}
 		if r.type_name() == 'bytes' {
-			ss := vcraft.from_py_bytes(r, 'asset') or { 'FROM_BYTES_ERR' }
+			ss := py_bytes_copy(r, 'asset', 'FROM_BYTES_ERR')
 			r.decref()
 			unsafe { *ptr = ss + '' }
 			return
 		}
 		if r.type_name() == 'str' {
-			ss := vcraft.from_py_string(r, 'asset') or { 'FROM_STR_ERR' }
+			ss := py_string_copy(r, 'asset', 'FROM_STR_ERR')
 			r.decref()
 			unsafe { *ptr = ss + '' }
 			return
@@ -3471,7 +3485,7 @@ pub fn get_ui_html() string {
 			return
 		}
 		if r.type_name() == 'str' {
-			ss := vcraft.from_py_string(r, 'html') or { '<h1>vlambda</h1>' }
+			ss := py_string_copy(r, 'html', '<h1>vlambda</h1>')
 			r.decref()
 			unsafe { *ptr = ss }
 			return
@@ -3501,7 +3515,7 @@ pub fn validate_code(code string) string {
 			return
 		}
 		if r.type_name() == 'str' {
-			ss := vcraft.from_py_string(r, 'result') or { '' }
+			ss := py_string_copy(r, 'result', '')
 			r.decref()
 			unsafe { *ptr = ss }
 			return

@@ -310,10 +310,8 @@ limits are applied too, and each invocation gets a fresh process.
 
 The plain `python -m vlambda` command without `VLAMBDA_SANDBOX` uses the
 in-process pool and is a development mode: lambdas run inside the server process
-with only Python-level restrictions. Python 3.15 defaults to the `process` pool
-instead because handler threads can crash that interpreter. Use
-`VLAMBDA_SANDBOX=fork` (Docker default), `landlock`, `process` or `nsjail` for any
-untrusted code.
+with only Python-level restrictions. Use `VLAMBDA_SANDBOX=fork` (Docker default),
+`landlock`, `process` or `nsjail` for any untrusted code.
 
 The Docker image keeps public registration open by default for toy deployments.
 Set `VLAMBDA_REGISTRATION=0` to close it and create users with

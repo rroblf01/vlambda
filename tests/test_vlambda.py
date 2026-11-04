@@ -513,7 +513,9 @@ def test_openapi_public():
         status, body = req("POST", "/vlambda?name=public", "def handler(r): return {}", token)
         assert status == 201, body
         status, body = req("GET", "/openapi.json")
-        assert status == 200 and any(path.startswith("/f/") for path in body["paths"]), body
+        assert status == 200, body
+        assert "paths" in body, body
+        assert any(path.startswith("/f/") for path in body["paths"]), body
     finally:
         stop_server()
 

@@ -1748,7 +1748,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if aslug != slug { '' } else { db_get_version_code(slug, aver) }
 			}
 		} else { db_get_lambda_code(slug) }
-		project_info := db_get_project(slug)
+		// A code lambda already answered; only projects need this query.
+		project_info := if code_method == '' { db_get_project(slug) } else { '' }
 		if code_method == '' && project_info == '' {
 			vlambda_req_errors++
 			return cors_json(404, '{"error": "lambda not found"}')
@@ -2657,7 +2658,7 @@ pub fn db_get_lambda_code(slug string) string {
 	if vlambda_missing_cache[slug] {
 		return ''
 	}
-	rows := db.exec_param('SELECT code, method, timeout, memory_mb FROM lambdas WHERE slug = ?;', slug) or { return '' }
+	rows := db.exec_param("SELECT code, method, timeout, memory_mb FROM lambdas WHERE slug = ? AND kind = 'code';", slug) or { return '' }
 	if rows.len == 0 {
 		vlambda_missing_cache[slug] = true
 		if vlambda_missing_cache.len > 10000 {

@@ -1484,6 +1484,40 @@ def test_api_tokens():
     status, body = req("POST", "/vlambda", "def handler(request): return {}", readonly)
     assert status == 403
 
+    status, body = req("POST", "/tokens", json.dumps({"name": "bad", "scopes": ["read"], "expires_in": -1}), token)
+    assert status == 400, body
+
+    status, body = req("POST", "/tokens", json.dumps({"name": "short", "scopes": ["read"], "expires_in": 1}), token)
+    assert status == 201, body
+    short = body["token"]
+    assert body["expires_at"]
+    status, body = req("GET", "/vlambda?format=json", token=short)
+    assert status == 200
+    status, body = req("GET", "/tokens", token=token)
+    entry = next(item for item in body["tokens"] if item["id"] == body["tokens"][0]["id"])
+    assert entry["expires_at"]
+    time.sleep(1.2)
+    status, body = req("GET", "/vlambda?format=json", token=short)
+    assert status == 401, body
+
+
+def test_audit_log():
+    token = test_register_login()
+    status, body = req("POST", "/tokens", json.dumps({"name": "audited", "scopes": ["read"]}), token)
+    assert status == 201, body
+
+    status, body = req("GET", "/admin/audit", extra_headers={"X-Admin-Token": "wrong"})
+    assert status == 403, body
+
+    status, body = req("GET", "/admin/audit?limit=20",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200, body
+    actions = [entry["action"] for entry in body["entries"]]
+    assert "user.register" in actions, actions
+    assert "token.create" in actions, actions
+    entry = body["entries"][0]
+    assert "actor_id" in entry and "created_at" in entry and "remote_ip" in entry
+
 
 def test_project_static_files():
     token, slug = _upload_project("static", {
@@ -1610,7 +1644,7 @@ if __name__ == "__main__":
              test_fork_sandbox,
              test_async_task, test_task_recovery, test_shutdown_drains, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
-             test_cors_headers, test_json_listing, test_api_tokens, test_project_static_files,
+             test_cors_headers, test_json_listing, test_api_tokens, test_audit_log, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_failure_isolation, test_fuzz_smoke, test_rate_limit]
     failed = 0

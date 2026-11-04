@@ -154,9 +154,10 @@ addresses are blocked.
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/tokens` | Create `{"name": "ci", "scopes": ["read","write"]}` |
-| GET | `/tokens` | List tokens; secrets are never returned |
+| POST | `/tokens` | Create `{"name": "ci", "scopes": ["read","write"], "expires_in": 2592000}`; `expires_in` is optional, in seconds, `0` means never |
+| GET | `/tokens` | List tokens with `created_at`, `last_used_at`, `expires_at`, `expired` and `revoked` |
 | DELETE | `/tokens/<id>` | Revoke a token |
+| GET | `/admin/audit?limit=100` | Admin token only; recent administrative actions |
 
 ## Metrics and logs
 

@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CycloneDX SBOM generation in CI and a GitHub Container Registry image workflow for `linux/amd64` and `linux/arm64`.
 - `vlambda --version` and the running version in `/health` and `/ready`.
 - API, CLI, compatibility, upgrade and operations references, plus `CONTRIBUTING.md` and the 1.0 roadmap.
+- API tokens accept an optional `expires_in` (seconds); expired tokens are rejected and listed as `expired`.
+- Administrative actions are recorded in `audit_log` and exposed read-only at `GET /admin/audit` with the admin token.
+- Per-user rate limiting (`VLAMBDA_USER_RATE_LIMIT`) gives each authenticated account its own budget.
 
 ### Changed
 - 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.
@@ -36,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Egress pins the validated IP with the original Host/SNI, closing the DNS-rebinding window.
 - Passwords require 12 characters by default, PBKDF2 uses 600k iterations, and registration is limited per source IP.
 - The UI sends `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and a CSP.
+- `SECURITY.md` documents the secret encryption construction, backup encryption guidance and the per-user rate limit.
 
 ### Fixed
 - Concurrent invocations no longer share the native result buffer; under load a request could receive `not started` or another invocation's response.

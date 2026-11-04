@@ -513,12 +513,18 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
           <option value="read">read only</option>
           <option value="read,write,admin">admin</option>
         </select>
+        <select id="token-expiry">
+          <option value="0">never expires</option>
+          <option value="2592000">30 days</option>
+          <option value="7776000">90 days</option>
+          <option value="31536000">1 year</option>
+        </select>
         <button class="btn btn-primary btn-sm" onclick="createToken()">Create token</button>
         <button class="btn btn-sm" onclick="loadTokens()">Refresh</button>
       </div>
       <div id="token-new" class="mono" style="margin-bottom:10px;"></div>
       <table>
-        <thead><tr><th>ID</th><th>Name</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>Name</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Expires</th><th>Status</th><th></th></tr></thead>
         <tbody id="token-list"></tbody>
       </table>
     </div>
@@ -1658,7 +1664,8 @@ async function loadTokens() {
         '<td class="mono">' + escapeHtml(t.scopes) + '</td>' +
         '<td class="muted">' + escapeHtml(formatUnix(t.created_at)) + '</td>' +
         '<td class="muted">' + (t.last_used_at ? escapeHtml(formatUnix(t.last_used_at)) : 'never') + '</td>' +
-        '<td>' + (t.revoked ? '<span class="badge badge-DELETE">revoked</span>' : '<span class="badge badge-GET">active</span>') + '</td>' +
+        '<td class="muted">' + (t.expires_at ? escapeHtml(formatUnix(t.expires_at)) : 'never') + '</td>' +
+        '<td>' + (t.revoked ? '<span class="badge badge-DELETE">revoked</span>' : (t.expired ? '<span class="badge badge-DELETE">expired</span>' : '<span class="badge badge-GET">active</span>')) + '</td>' +
         '<td>' + (t.revoked ? '' : '<button class="btn btn-sm btn-danger" onclick="revokeToken(' + t.id + ')">Revoke</button>') + '</td>';
       tbody.appendChild(tr);
     });
@@ -1667,10 +1674,11 @@ async function loadTokens() {
 async function createToken() {
   const name = document.getElementById('token-name').value.trim() || 'token';
   const scopes = document.getElementById('token-scopes').value;
+  const expiresIn = parseInt(document.getElementById('token-expiry').value, 10) || 0;
   try {
     const data = await api('/tokens', {
       method: 'POST',
-      body: JSON.stringify({ name, scopes: scopes.split(',') }),
+      body: JSON.stringify({ name, scopes: scopes.split(','), expires_in: expiresIn }),
       headers: { 'Content-Type': 'application/json' },
     });
     document.getElementById('token-new').innerHTML =

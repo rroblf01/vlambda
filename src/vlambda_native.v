@@ -70,6 +70,7 @@ __global (
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
 	vlambda_rate_limit = 100          // req/s per IP
+	vlambda_user_rate_limit = 0       // req/s per authenticated user (0 = follow rate_limit)
 	vlambda_invoke_timeout = 30       // seconds
 	vlambda_max_memory_mb = 0         // 0 = unlimited
 	vlambda_metrics_enabled = true
@@ -182,8 +183,21 @@ fn init_db(db_path string) !sqlite.DB {
 		scopes TEXT NOT NULL DEFAULT "read,write",
 		created_at TEXT NOT NULL,
 		last_used_at TEXT NOT NULL DEFAULT "",
+		expires_at TEXT NOT NULL DEFAULT "",
 		revoked INTEGER NOT NULL DEFAULT 0
 	);')!
+	// Upgrade databases created by an earlier 1.0 pre-release.
+	db.exec('ALTER TABLE api_tokens ADD COLUMN expires_at TEXT NOT NULL DEFAULT "";') or {}
+	db.exec('CREATE TABLE IF NOT EXISTS audit_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		actor_id INTEGER NOT NULL DEFAULT 0,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT "",
+		detail TEXT NOT NULL DEFAULT "",
+		remote_ip TEXT NOT NULL DEFAULT "",
+		created_at REAL NOT NULL
+	);')!
+	db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);')!
 	db.exec('PRAGMA user_version = 1;')!
 	return db
 }
@@ -452,13 +466,15 @@ mut:
 }
 
 struct TokenCreateRequest {
-	name   string
-	scopes []string
+	name       string
+	scopes     []string
+	expires_in int
 }
 
 struct TokenCreateRequestString {
-	name   string
-	scopes string
+	name       string
+	scopes     string
+	expires_in int
 }
 
 
@@ -604,6 +620,33 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Per-user rate limiting: an authenticated account gets its own bucket so
+	// one user cannot consume the instance and users behind the same NAT do not
+	// share a single per-IP budget.
+	if auth_uid >= 0 && vlambda_user_rate_limit > 0 && req.url != '/health' && req.url != '/metrics' && req.url != '/metrics/json' && req.url != '/favicon.ico' {
+		key := 'u:' + auth_uid.str()
+		now := f64(time.now().unix())
+		mut bucket := vlambda_rate_buckets[key] or { TokenBucket{ tokens: f64(vlambda_user_rate_limit), last: now } }
+		elapsed := now - bucket.last
+		if elapsed > 0 {
+			bucket.tokens += elapsed * f64(vlambda_user_rate_limit)
+			if bucket.tokens > f64(vlambda_user_rate_limit) {
+				bucket.tokens = f64(vlambda_user_rate_limit)
+			}
+		}
+		bucket.last = now
+		if bucket.tokens < 1 {
+			vlambda_rate_buckets[key] = bucket
+			return http.Response{
+				status_code: 429
+				body: '{"error": "user rate limit exceeded"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		bucket.tokens -= 1
+		vlambda_rate_buckets[key] = bucket
+	}
+
 	// Route: /async/<slug> (fire-and-forget, owner only)
 	if req.url.starts_with('/async/') {
 		if auth_uid < 0 {
@@ -678,11 +721,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			mut token_name := ''
 			mut token_scopes := 'read,write'
+			mut token_expires := 0
 			if req.data.len > 0 {
 				parsed := json2.decode[TokenCreateRequest](req.data, json2.DecoderOptions{}) or {
 					TokenCreateRequest{}
 				}
 				token_name = parsed.name
+				token_expires = parsed.expires_in
 				if parsed.scopes.len > 0 {
 					token_scopes = parsed.scopes.join(',')
 				} else {
@@ -694,6 +739,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 						token_scopes = str_parsed.scopes
 					}
 				}
+				if parsed.expires_in == 0 {
+					token_expires = parsed.expires_in
+				}
 			}
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
@@ -703,6 +751,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					}
 					if part.starts_with('scopes=') {
 						token_scopes = decode_query_value(part.all_after('='))
+					}
+					if part.starts_with('expires_in=') {
+						token_expires = decode_query_value(part.all_after('=')).int()
 					}
 				}
 			}
@@ -718,10 +769,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if valid_scopes.len == 0 {
 				return http.Response{ status_code: 400, body: '{"error": "no valid scopes"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
-			result := db_create_api_token(auth_uid, token_name, valid_scopes.join(','))
+			if token_expires < 0 || token_expires > 315360000 {
+				return http.Response{ status_code: 400, body: '{"error": "expires_in must be between 0 and 315360000 seconds"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			expires_at := if token_expires > 0 { (time.now().unix() + i64(token_expires)).str() } else { '' }
+			result := db_create_api_token(auth_uid, token_name, valid_scopes.join(','), expires_at)
 			if result.starts_with('{"error"') {
 				return http.Response{ status_code: 500, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
+			db_audit(auth_uid, 'token.create', token_name, 'scopes=' + valid_scopes.join(',') + ' expires_at=' + expires_at, req.remote_addr.all_before(':'))
 			return http.Response{ status_code: 201, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		if req.method == .get {
@@ -748,6 +804,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				return http.Response{ status_code: 400, body: '{"error": "invalid token id"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
 			if db_revoke_api_token(auth_uid, id) {
+				db_audit(auth_uid, 'token.revoke', id.str(), '', req.remote_addr.all_before(':'))
 				return http.Response{ status_code: 200, body: '{"revoked": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
 			return http.Response{ status_code: 404, body: '{"error": "token not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
@@ -1196,6 +1253,28 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /admin/audit (GET, admin token protected)
+	if req.url.starts_with('/admin/audit') && req.method == .get {
+		if !is_admin_request(req) {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		mut limit := 100
+		if req.url.contains('limit=') {
+			raw := req.url.all_after('limit=').all_before('&')
+			if raw != '' && raw.int() > 0 {
+				limit = raw.int()
+			}
+		}
+		if limit <= 0 || limit > 1000 {
+			limit = 100
+		}
+		return http.Response{
+			status_code: 200
+			body: '{"entries": ' + db_list_audit(limit) + '}'
+			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+		}
+	}
+
 	// Route: /admin/reset (POST, token protected)
 	if req.url == '/admin/reset' && req.method == .post {
 		if !is_admin_request(req) {
@@ -1207,6 +1286,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if body == '' {
 			body = '{}'
 		}
+		db_audit(0, 'admin.reset', '', body, req.remote_addr.all_before(':'))
 		vlambda_resetting = false
 	vlambda_draining = false
 		return http.Response{
@@ -1242,6 +1322,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			400
 		} else {
 			403
+		}
+		if status == 201 {
+			db_audit(0, 'admin.user.create', parts[0], 'user_id=' + body.all_after('"user_id": ').all_before('}'), req.remote_addr.all_before(':'))
 		}
 		return http.Response{
 			status_code: status
@@ -1290,6 +1373,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
+		db_audit(uid, 'user.register', parts[0], '', req.remote_addr.all_before(':'))
 		return http.Response{
 			status_code: 201
 			body: '{"user_id": ${uid}}'
@@ -2605,26 +2689,26 @@ pub fn db_list_lambdas_json(owner_id int, limit int, offset int) string {
 // ---- API token storage (long-lived personal access tokens) ----
 
 @[vc_fn]
-pub fn db_create_api_token(user_id int, name string, scopes string) string {
+pub fn db_create_api_token(user_id int, name string, scopes string, expires_at string) string {
 	mut db := db_open() or { return '{"error": "db unavailable"}' }
 	defer { db.close() or {} }
 	raw := 'vl_' + rand.string(40)
 	hash := sha256.sum256(raw.bytes()).hex()
 	created := time.now().unix().str()
-	db.exec_param_many('INSERT INTO api_tokens (user_id, name, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?);',
-		[user_id.str(), name, hash, scopes, created]) or {
+	db.exec_param_many('INSERT INTO api_tokens (user_id, name, token_hash, scopes, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?);',
+		[user_id.str(), name, hash, scopes, created, expires_at]) or {
 		return '{"error": "failed to store token"}'
 	}
 	rows := db.exec_param('SELECT id FROM api_tokens WHERE token_hash = ?;', hash) or { [] }
 	id := if rows.len > 0 { rows[0].vals[0] or { '0' } } else { '0' }
-	return '{"id": ${id}, "token": ${json_str(raw)}, "name": ${json_str(name)}, "scopes": ${json_str(scopes)}}'
+	return '{"id": ${id}, "token": ${json_str(raw)}, "name": ${json_str(name)}, "scopes": ${json_str(scopes)}, "expires_at": ${json_str(expires_at)}}'
 }
 
 @[vc_fn]
 pub fn db_list_api_tokens(user_id int) string {
 	mut db := db_open() or { return '[]' }
 	defer { db.close() or {} }
-	rows := db.exec_param('SELECT id, name, scopes, created_at, last_used_at, revoked FROM api_tokens WHERE user_id = ? ORDER BY id DESC;',
+	rows := db.exec_param('SELECT id, name, scopes, created_at, last_used_at, expires_at, revoked FROM api_tokens WHERE user_id = ? ORDER BY id DESC;',
 		user_id.str()) or { return '[]' }
 	mut items := []string{}
 	for row in rows {
@@ -2633,8 +2717,10 @@ pub fn db_list_api_tokens(user_id int) string {
 		scopes := row.vals[2] or { '' }
 		created := row.vals[3] or { '' }
 		last := row.vals[4] or { '' }
-		revoked := row.vals[5] or { '0' }
-		items << '{"id": ${id}, "name": ${json_str(name)}, "scopes": ${json_str(scopes)}, "created_at": ${json_str(created)}, "last_used_at": ${json_str(last)}, "revoked": ${revoked == '1'}}'
+		expires := row.vals[5] or { '' }
+		revoked := row.vals[6] or { '0' }
+		expired := expires != '' && expires.int() <= time.now().unix()
+		items << '{"id": ${id}, "name": ${json_str(name)}, "scopes": ${json_str(scopes)}, "created_at": ${json_str(created)}, "last_used_at": ${json_str(last)}, "expires_at": ${json_str(expires)}, "revoked": ${revoked == '1'}, "expired": ${expired}}'
 	}
 	return '[' + items.join(',') + ']'
 }
@@ -2648,13 +2734,39 @@ pub fn db_revoke_api_token(user_id int, token_id int) bool {
 	return true
 }
 
+fn db_audit(actor_id int, action string, target string, detail string, remote_ip string) {
+	mut db := db_open() or { return }
+	db.exec_param_many('INSERT INTO audit_log (actor_id, action, target, detail, remote_ip, created_at) VALUES (?, ?, ?, ?, ?, ?);',
+		[actor_id.str(), action, target, detail, remote_ip, f64(time.now().unix()).str()]) or {}
+	db.close() or {}
+}
+
+pub fn db_list_audit(limit int) string {
+	mut db := db_open() or { return '[]' }
+	defer { db.close() or {} }
+	rows := db.exec_param('SELECT id, actor_id, action, target, detail, remote_ip, created_at FROM audit_log ORDER BY id DESC LIMIT ?;',
+		limit.str()) or { return '[]' }
+	mut items := []string{}
+	for row in rows {
+		id := row.vals[0] or { '0' }
+		actor := row.vals[1] or { '0' }
+		action := row.vals[2] or { '' }
+		target := row.vals[3] or { '' }
+		detail := row.vals[4] or { '' }
+		remote := row.vals[5] or { '' }
+		created := row.vals[6] or { '0' }
+		items << '{"id": ${id}, "actor_id": ${actor}, "action": ${json_str(action)}, "target": ${json_str(target)}, "detail": ${json_str(detail)}, "remote_ip": ${json_str(remote)}, "created_at": ${json_str(created)}}'
+	}
+	return '[' + items.join(',') + ']'
+}
+
 @[vc_fn]
 pub fn db_verify_api_token(raw string) string {
 	hash := sha256.sum256(raw.bytes()).hex()
 	mut db := db_open() or { return '' }
 	defer { db.close() or {} }
-	rows := db.exec_param('SELECT t.user_id, t.scopes FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.revoked = 0;',
-		hash) or { return '' }
+	rows := db.exec_param_many('SELECT t.user_id, t.scopes FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.revoked = 0 AND (t.expires_at = "" OR t.expires_at > ?);',
+		[hash, time.now().unix().str()]) or { return '' }
 	if rows.len == 0 {
 		return ''
 	}
@@ -2816,6 +2928,12 @@ pub fn auth_login_user(username string, password string, remote_ip string) strin
 pub fn configure(max_body_size int, rate_limit int, invoke_timeout int, max_memory_mb int, cors_origin string, cert_path string, key_path string, metrics_enabled bool, metrics_sample int, registration_enabled bool) {
 	if max_body_size > 0 { vlambda_max_body_size = max_body_size }
 	if rate_limit > 0 { vlambda_rate_limit = rate_limit }
+	raw_user_limit := os.getenv('VLAMBDA_USER_RATE_LIMIT')
+	if raw_user_limit != '' {
+		vlambda_user_rate_limit = raw_user_limit.int()
+	} else {
+		vlambda_user_rate_limit = vlambda_rate_limit
+	}
 	if invoke_timeout > 0 { vlambda_invoke_timeout = invoke_timeout }
 	vlambda_max_memory_mb = max_memory_mb
 	vlambda_metrics_enabled = metrics_enabled

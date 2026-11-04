@@ -46,6 +46,23 @@ are not needed.
 Test a restore into a disposable directory or host regularly. A backup that has
 never been restored is not a backup.
 
+Backups contain plaintext code, KV data and logs, plus encrypted secrets.
+Encrypt the archive before storing or shipping it:
+
+```bash
+age -r "$BACKUP_RECIPIENT" -o vlambda-$(date +%F).tar.gz.age vlambda-$(date +%F).tar.gz
+age -d -i "$BACKUP_IDENTITY" vlambda-2026-11-04.tar.gz.age > restore.tar.gz
+```
+
+or with GPG:
+
+```bash
+gpg --encrypt --recipient "$BACKUP_RECIPIENT" vlambda-2026-11-04.tar.gz
+```
+
+Keep the backup key separate from `VLAMBDA_ENCRYPTION_KEY`; rotating one must
+not require the other.
+
 ## Upgrades and rollback
 
 1. Back up.

@@ -163,6 +163,7 @@ See `docker/README.md` for details, limits and the reset command.
 | | `VLAMBDA_REGISTER_MAX` | 5 | Registrations allowed per IP in the window |
 | | `VLAMBDA_REGISTER_WINDOW` | 600 | Registration window in seconds |
 | | `VLAMBDA_PASSWORD_MIN_LENGTH` | 12 | Minimum password length |
+| | `VLAMBDA_USER_RATE_LIMIT` | rate limit | Requests/s per authenticated user (`0` follows the global limit) |
 | | `VLAMBDA_METRICS_STATS_TTL` | 15 | Cache for percentile stats in seconds (`0` disables it) |
 | | `VLAMBDA_DEV` | 0 | Allow local development without `VLAMBDA_SECRET` |
 | | `VLAMBDA_SQLITE_JOURNAL` | auto | `wal` or `delete`; auto falls back to `delete` when CPython and system SQLite versions differ |

@@ -51,6 +51,13 @@ explicit local-development escape hatch and uses an insecure secret.
 Passwords must be at least 12 characters, and registrations are limited per
 source IP (`VLAMBDA_REGISTER_MAX`/`VLAMBDA_REGISTER_WINDOW`).
 
+API tokens can carry an expiry (`expires_in` seconds); expired tokens are
+rejected at authentication time. Rate limiting is applied per source IP and,
+for authenticated requests, per user (`VLAMBDA_USER_RATE_LIMIT`), so one
+account cannot exhaust the instance. Administrative actions (registration,
+user creation, reset, token creation and revocation) are written to
+`audit_log` and exposed read-only to the admin token at `/admin/audit`.
+
 ## Egress
 
 `request.fetch` resolves the host once, rejects non-public addresses and then
@@ -60,13 +67,32 @@ to a private address. Redirects remain disabled.
 
 ## Secret storage
 
-Lambda secrets are encrypted at rest with a per-value random nonce, an
-HMAC-SHA256 keystream and an HMAC-SHA256 tag, and each ciphertext carries a
-short key identifier for rotation. This protects against casual database reads;
-it is not a KMS and does not protect a host that is already compromised. Keep
-`VLAMBDA_ENCRYPTION_KEY` outside the database and backups, and rotate it with
-`vlambda secrets rotate` if it may have leaked. A dependency-free standard AEAD
-is a candidate for a later 1.x release.
+Lambda secrets are encrypted at rest with a documented, dependency-free
+construction:
+
+1. `K = SHA-256("vlambda-env:" || VLAMBDA_ENCRYPTION_KEY)` (256-bit key).
+2. A random 128-bit nonce `N` is generated for every value.
+3. The keystream is `HMAC-SHA256(K, N || counter)` with a 64-bit big-endian
+   counter, truncated to the plaintext length; ciphertext `C = P xor keystream`.
+4. The tag is `T = HMAC-SHA256(K, "vlambda-env:" || N || C)` (encrypt-then-MAC,
+   constant-time verification).
+5. The stored value is `v1:<key-id>:base64url(N || T || C)`, where the key id is
+   `HMAC-SHA256(K, "vlambda-env-key-id")[:16]` and lets `vlambda secrets rotate`
+   re-encrypt values without guessing which key produced them.
+
+This is HMAC-SHA256 in counter mode with an encrypt-then-MAC tag. It is secure
+under the standard PRF assumption on HMAC-SHA256, uses an independent nonce per
+value, authenticates the ciphertext before decrypting and rejects values from
+another key. It is not a KMS and does not protect a host that is already
+compromised. Keep `VLAMBDA_ENCRYPTION_KEY` outside the database and backups,
+and rotate it with `vlambda secrets rotate` if it may have leaked.
+
+## Backups
+
+Backups contain plaintext lambda code, KV data and logs, and encrypted secrets.
+Encrypt the archive before it leaves the host, for example with `age` or GPG,
+and keep that key separate from `VLAMBDA_ENCRYPTION_KEY`. A backup is only as
+safe as the storage and key that protect it.
 
 ## Deployment assumptions
 

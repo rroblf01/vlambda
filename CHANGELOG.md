@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Concurrent invocations no longer share the native result buffer; under load a request could receive `not started` or another invocation's response.
 - Native callback results are copied under an explicit GIL scope instead of a closure, and helper queries open a lightweight connection. A 2-minute in-process soak (156k requests) stays under 10 MB of RSS growth.
+- Every native callback (invocation, auth, projects, KV, env, egress, schedules, logs, metrics, tasks and assets) uses an explicit GIL scope; no `with_gil` closures remain.
 
 ### Removed
 - The bundled `/docs` viewer. `/openapi.json` and `vlambda openapi` remain the supported interface for OpenAPI clients.

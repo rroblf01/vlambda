@@ -35,9 +35,6 @@ def main() -> None:
     parser.add_argument("--key", default=os.environ.get("VLAMBDA_KEY", ""))
     args = parser.parse_args()
     os.environ["VLAMBDA_DB"] = args.sqlite_path
-    if not os.environ.get("VLAMBDA_SECRET"):
-        print("WARNING: VLAMBDA_SECRET is not set; using an insecure default for auth tokens.",
-              file=sys.stderr)
     if sys.version_info < (3, 15) and os.environ.get("VLAMBDA_SANDBOX", "").lower() not in ("fork", "forklandlock", "landlock", "nsjail", "process") \
             and os.environ.get("VLAMBDA_ISOLATE", "0") != "1":
         print("WARNING: no sandbox selected; lambda code runs in the server process.",
@@ -85,6 +82,18 @@ def main() -> None:
     except _schema.SchemaError as exc:
         print(f"Database schema error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    if not os.environ.get("VLAMBDA_SECRET"):
+        if os.environ.get("VLAMBDA_DEV", "0").lower() in ("1", "true", "yes", "on"):
+            print("WARNING: development mode without VLAMBDA_SECRET; tokens are not secure.",
+                  file=sys.stderr)
+        else:
+            print(
+                "VLAMBDA_SECRET is required. Set it to a random value, or set "
+                "VLAMBDA_DEV=1 for local development.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     from vlambda.dbpool import init as pool_init
     pool_init(args.sqlite_path)
@@ -284,8 +293,15 @@ def main() -> None:
     register_auth_verifier(_auth_verify)
 
     # Auth: register user
-    def _auth_register(username, password):
+    def _auth_register(username, password, remote_ip="", enforce_rate_limit=True):
+        from vlambda.auth import password_error, registration_allowed
         from vlambda.dbpool import get as db_get
+
+        problem = password_error(password)
+        if problem:
+            return -3
+        if enforce_rate_limit and not registration_allowed(remote_ip):
+            return -2
         epoch = new_auth_epoch()
         try:
             with db_get(args.sqlite_path) as conn:
@@ -364,7 +380,9 @@ def main() -> None:
     def _admin_create_user(token, username, password):
         if not _admin_token_ok(token):
             return json.dumps({"error": "forbidden"})
-        uid = _auth_register(username, password)
+        uid = _auth_register(username, password, enforce_rate_limit=False)
+        if uid == -3:
+            return json.dumps({"error": "password does not meet policy"})
         if uid < 0:
             return json.dumps({"error": "user already exists"})
         return json.dumps({"user_id": uid})

@@ -9,18 +9,18 @@ receiving a network socket.
 from __future__ import annotations
 
 import base64
+import http.client
 import ipaddress
 import json
 import os
 import secrets
 import socket
 import socketserver
+import ssl
 import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from vlambda import egress_store, kv_store
 
@@ -122,9 +122,31 @@ def _wire_value(value):
     return {"binary": False, "value": value}
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection that connects to an already validated IP address."""
+
+    def __init__(self, host: str, ip: str, port: int, timeout: float):
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_ip = ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection pinned to an IP, with SNI and certificate checks for the host."""
+
+    def __init__(self, host: str, ip: str, port: int, timeout: float):
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self._pinned_ip = ip
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
 def _bool_env(name: str) -> bool:
@@ -215,23 +237,39 @@ def _http_fetch(context: dict, payload: dict) -> dict:
     except (TypeError, ValueError):
         timeout = 5.0
     timeout = min(10.0, max(0.1, timeout))
-    request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    opener = urllib.request.build_opener(_NoRedirect())
-    try:
-        response = opener.open(request, timeout=timeout)
-    except urllib.error.HTTPError as error:
-        response = error
-    except Exception as error:
-        raise BrokerError(f"egress request failed: {type(error).__name__}") from error
-    try:
-        status = int(getattr(response, "status", getattr(response, "code", 0)))
-        raw = response.read(_MAX_HTTP_RESPONSE + 1)
-        response_headers = dict(response.headers.items()) if response.headers else {}
-    finally:
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    last_error = None
+    status = 0
+    raw = b""
+    response_headers = {}
+    for info in addresses:
+        address = info[4][0]
+        connection = None
         try:
-            response.close()
-        except Exception:
-            pass
+            if parsed.scheme == "https":
+                connection = _PinnedHTTPSConnection(host, address, port, timeout)
+            else:
+                connection = _PinnedHTTPConnection(host, address, port, timeout)
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            raw = response.read(_MAX_HTTP_RESPONSE + 1)
+            response_headers = dict(response.getheaders())
+            break
+        except (OSError, http.client.HTTPException) as error:
+            last_error = error
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+    else:
+        raise BrokerError(
+            f"egress request failed: {type(last_error).__name__ if last_error else 'unknown error'}"
+        )
     if len(raw) > _MAX_HTTP_RESPONSE:
         raise BrokerError(f"response exceeds {_MAX_HTTP_RESPONSE} bytes")
     return {

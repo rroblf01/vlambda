@@ -222,6 +222,14 @@ fn add_cors_headers(mut hdr http.Header) {
 	}
 }
 
+fn add_security_headers(mut hdr http.Header) {
+	hdr.add_custom('X-Content-Type-Options', 'nosniff') or {}
+	hdr.add_custom('X-Frame-Options', 'DENY') or {}
+	hdr.add_custom('Referrer-Policy', 'no-referrer') or {}
+	hdr.add_custom('Permissions-Policy', 'camera=(), microphone=(), geolocation=()') or {}
+	hdr.add_custom('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'") or {}
+}
+
 fn cors_response(status int, body string, content_type string) http.Response {
 	mut hdr := http.new_header(http.HeaderConfig{ key: .content_type, value: content_type })
 	add_cors_headers(mut hdr)
@@ -395,7 +403,8 @@ struct LambdaResponse {
 fn request_meta_json(req http.Request) string {
 	mut headers := []string{}
 	for key in req.header.keys() {
-		if key.to_lower() == 'x-admin-token' {
+		lowered := key.to_lower()
+		if lowered in ['x-admin-token', 'authorization', 'proxy-authorization', 'cookie', 'x-api-key'] {
 			continue
 		}
 		if value := req.header.get_custom(key, http.HeaderQueryConfig{}) {
@@ -542,10 +551,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: / (serve UI dashboard)
 	if req.url == '/' || req.url == '' {
+		mut hdr := http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
+		add_security_headers(mut hdr)
 		return http.Response{
 			status_code: 200
 			body: get_ui_html()
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
+			header: hdr
 		}
 	}
 
@@ -859,10 +870,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /ui (serve HTML dashboard)
 	if req.url == '/ui' || req.url == '/' {
+		mut hdr := http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
+		add_security_headers(mut hdr)
 		return http.Response{
 			status_code: 200
 			body: get_ui_html()
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/html' })
+			header: hdr
 		}
 	}
 
@@ -884,10 +897,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if name.ends_with('.css') { ctype = 'text/css' }
 		if name.ends_with('.html') { ctype = 'text/html' }
 		if name.ends_with('.ico') { ctype = 'image/x-icon' }
+		mut hdr := http.new_header(http.HeaderConfig{ key: .content_type, value: ctype })
+		add_security_headers(mut hdr)
 		return http.Response{
 			status_code: 200
 			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: ctype })
+			header: hdr
 		}
 	}
 
@@ -1223,6 +1238,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			201
 		} else if body.contains('user already exists') {
 			409
+		} else if body.contains('password does not meet policy') {
+			400
 		} else {
 			403
 		}
@@ -1251,7 +1268,21 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		uid := auth_register_user(parts[0], parts[1])
+		uid := auth_register_user(parts[0], parts[1], req.remote_addr.all_before(':'))
+		if uid == -2 {
+			return http.Response{
+				status_code: 429
+				body: '{"error": "registration rate limit exceeded"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
+		if uid == -3 {
+			return http.Response{
+				status_code: 400
+				body: '{"error": "password does not meet policy"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		if uid < 0 {
 			return http.Response{
 				status_code: 409
@@ -2772,8 +2803,8 @@ pub fn register_auth_login(cb voidptr) {
 }
 
 @[vc_fn]
-pub fn auth_register_user(username string, password string) int {
-	return call_py_int_strs(vlambda_auth_register, [username, password])
+pub fn auth_register_user(username string, password string, remote_ip string) int {
+	return call_py_int_strs(vlambda_auth_register, [username, password, remote_ip])
 }
 
 @[vc_fn]

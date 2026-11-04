@@ -11,7 +11,9 @@ import os
 import threading
 
 SECRET = os.environ.get("VLAMBDA_SECRET", "change-me-in-production")
-_PBKDF2_ITERATIONS = int(os.environ.get("VLAMBDA_PBKDF2_ITERATIONS", "200000"))
+_PBKDF2_ITERATIONS = int(os.environ.get("VLAMBDA_PBKDF2_ITERATIONS", "600000"))
+_PASSWORD_MIN_LENGTH = int(os.environ.get("VLAMBDA_PASSWORD_MIN_LENGTH", "12"))
+_PASSWORD_MAX_LENGTH = 1024
 
 
 def _b64encode(data: bytes) -> str:
@@ -23,6 +25,35 @@ def _b64decode(s: str) -> bytes:
     if padding != 4:
         s += "=" * padding
     return base64.urlsafe_b64decode(s)
+
+
+_REGISTER_MAX = int(os.environ.get("VLAMBDA_REGISTER_MAX", "5"))
+_REGISTER_WINDOW = float(os.environ.get("VLAMBDA_REGISTER_WINDOW", "600"))
+_register_attempts: dict[str, list] = {}
+_register_lock = threading.Lock()
+
+
+def password_error(password: str) -> str:
+    if len(password) < _PASSWORD_MIN_LENGTH:
+        return f"password must be at least {_PASSWORD_MIN_LENGTH} characters"
+    if len(password) > _PASSWORD_MAX_LENGTH:
+        return "password is too long"
+    return ""
+
+
+def registration_allowed(remote_ip: str = "") -> bool:
+    """Fixed-window registration limit per source IP."""
+    now = time.time()
+    key = str(remote_ip or "unknown")[:64]
+    with _register_lock:
+        entry = _register_attempts.get(key)
+        if entry is None or now >= entry[1]:
+            _register_attempts[key] = [1, now + _REGISTER_WINDOW]
+            return True
+        if entry[0] >= _REGISTER_MAX:
+            return False
+        entry[0] += 1
+        return True
 
 
 _LOGIN_MAX_FAILURES = int(os.environ.get("VLAMBDA_LOGIN_MAX_FAILURES", "5"))

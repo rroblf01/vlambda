@@ -1348,3 +1348,34 @@ def test_code_cache_uses_explicit_key():
     assert "l1:7" in cache._cache
     assert code not in cache._cache
     cache.clear()
+
+
+def test_password_policy_and_registration_limit(monkeypatch):
+    from vlambda import auth
+
+    monkeypatch.setattr(auth, "_PASSWORD_MIN_LENGTH", 12)
+    assert auth.password_error("short")
+    assert auth.password_error("longenough1234") == ""
+
+    auth._register_attempts.clear()
+    monkeypatch.setattr(auth, "_REGISTER_MAX", 2)
+    monkeypatch.setattr(auth, "_REGISTER_WINDOW", 60)
+    assert auth.registration_allowed("192.0.2.20")
+    assert auth.registration_allowed("192.0.2.20")
+    assert not auth.registration_allowed("192.0.2.20")
+    assert auth.registration_allowed("192.0.2.21")
+    auth._register_attempts.clear()
+
+
+def test_server_requires_secret(tmp_path):
+    import subprocess
+    import sys
+
+    db = tmp_path / "fresh.db"
+    env = {k: v for k, v in os.environ.items() if k not in ("VLAMBDA_SECRET", "VLAMBDA_DEV")}
+    result = subprocess.run(
+        [sys.executable, "-m", "vlambda", "--port", "0", "--sqlite_path", str(db)],
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert result.returncode == 1
+    assert "VLAMBDA_SECRET is required" in (result.stderr + result.stdout)

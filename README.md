@@ -66,13 +66,18 @@ The production container image is published as
 ## Usage
 
 ```bash
+export VLAMBDA_SECRET="$(openssl rand -hex 32)"
 python -m vlambda --port 8080 --sqlite_path ./vlambda.db --num_coroutines 10
 ```
 
 Or with environment variables:
 ```bash
+VLAMBDA_SECRET="$(openssl rand -hex 32)" \
 VLAMBDA_PORT=8080 VLAMBDA_DB=./vlambda.db VLAMBDA_COROUTINES=10 python -m vlambda
 ```
+
+For a local development instance without TLS or real users you can set
+`VLAMBDA_DEV=1` instead; the server warns and uses an insecure JWT secret.
 
 Then open http://localhost:8080/ in your browser. `python -m vlambda --version`
 prints the running package version; `/health` and `/ready` return it in JSON.
@@ -155,7 +160,11 @@ See `docker/README.md` for details, limits and the reset command.
 | | `VLAMBDA_LOGIN_MAX_FAILURES` | 5 | Failed logins before a temporary block |
 | | `VLAMBDA_LOGIN_WINDOW` | 300 | Failure window in seconds |
 | | `VLAMBDA_LOGIN_BLOCK` | 300 | Block duration in seconds |
+| | `VLAMBDA_REGISTER_MAX` | 5 | Registrations allowed per IP in the window |
+| | `VLAMBDA_REGISTER_WINDOW` | 600 | Registration window in seconds |
+| | `VLAMBDA_PASSWORD_MIN_LENGTH` | 12 | Minimum password length |
 | | `VLAMBDA_METRICS_STATS_TTL` | 15 | Cache for percentile stats in seconds (`0` disables it) |
+| | `VLAMBDA_DEV` | 0 | Allow local development without `VLAMBDA_SECRET` |
 | | `VLAMBDA_SQLITE_JOURNAL` | auto | `wal` or `delete`; auto falls back to `delete` when CPython and system SQLite versions differ |
 | | `VLAMBDA_RESP_CACHE_TTL` | 0 | GET response cache TTL in seconds (0 disables it) |
 | | `VLAMBDA_CACHE_BACKEND` | memory | `memory`, `file` or `redis` for the optional response cache |
@@ -374,6 +383,10 @@ Secrets are encrypted at rest, masked by the API and decrypted only for that
 lambda's runner. Code lambdas read them from `request.env`; projects also see
 them in `os.environ`. Use a dedicated `VLAMBDA_ENCRYPTION_KEY` so rotating
 `VLAMBDA_SECRET` (JWT signing) does not require re-encrypting secrets.
+
+`request.headers` deliberately hides `Authorization`, `Proxy-Authorization`,
+`Cookie`, `X-Api-Key` and `X-Admin-Token` from lambda code. A handler cannot
+read or forward the caller's credentials.
 
 To rotate the encryption key, stop the server and re-encrypt the stored secrets
 offline:

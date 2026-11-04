@@ -42,6 +42,22 @@ Out of scope for the hosted demo:
 - missing hardening on a deployment that runs without `VLAMBDA_SANDBOX`;
 - multi-host active/active, which 1.0 explicitly does not support.
 
+## Credentials and headers
+
+The server refuses to start without `VLAMBDA_SECRET`; `VLAMBDA_DEV=1` is the
+explicit local-development escape hatch and uses an insecure secret.
+`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` and
+`X-Admin-Token` are removed from `request.headers` before a lambda runs.
+Passwords must be at least 12 characters, and registrations are limited per
+source IP (`VLAMBDA_REGISTER_MAX`/`VLAMBDA_REGISTER_WINDOW`).
+
+## Egress
+
+`request.fetch` resolves the host once, rejects non-public addresses and then
+connects to the validated IP with the original `Host`/TLS SNI. A DNS answer
+that changes between the check and the request cannot redirect the connection
+to a private address. Redirects remain disabled.
+
 ## Secret storage
 
 Lambda secrets are encrypted at rest with a per-value random nonce, an

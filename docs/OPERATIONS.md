@@ -112,6 +112,8 @@ Run these against a staging host before a major release:
 
 ## Troubleshooting
 
+- `VLAMBDA_SECRET is required`: set a random secret, or use `VLAMBDA_DEV=1`
+  only for local development.
 - `Failed to initialize database`: the database is from a pre-1.0 schema or a
   newer build. Use `vlambda reset --yes --wipe` or restore a matching backup.
 - `Startup check failed`: a data directory is not writable or Landlock/seccomp

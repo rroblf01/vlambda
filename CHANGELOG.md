@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compiled code is keyed by `slug:version` instead of hashing the full source on every invocation; project metadata is cached like code metadata.
 - Release images only move the `latest` tag for final versions, and manual release dispatches must match `pyproject.toml`.
 
+### Security
+- The server refuses to start without `VLAMBDA_SECRET`; `VLAMBDA_DEV=1` is the explicit development escape hatch.
+- Lambda code no longer receives `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` or `X-Admin-Token` headers.
+- Egress pins the validated IP with the original Host/SNI, closing the DNS-rebinding window.
+- Passwords require 12 characters by default, PBKDF2 uses 600k iterations, and registration is limited per source IP.
+- The UI sends `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and a CSP.
+
 ### Fixed
 - Concurrent invocations no longer share the native result buffer; under load a request could receive `not started` or another invocation's response.
 - Native callback results are copied under an explicit GIL scope instead of a closure, and helper queries open a lightweight connection. A 2-minute in-process soak (156k requests) stays under 10 MB of RSS growth.

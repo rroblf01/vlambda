@@ -130,11 +130,11 @@ def _unique_user():
 
 def test_register_login():
     u = _unique_user()
-    status, body = req("POST", "/register", f"{u}:testpass")
+    status, body = req("POST", "/register", f"{u}:testpass1234")
     assert status == 201, body
     status, body = req("GET", "/config")
     assert status == 200 and body.get("registration") is True
-    status, body = req("POST", "/login", f"{u}:testpass")
+    status, body = req("POST", "/login", f"{u}:testpass1234")
     assert status == 200 and "token" in body
     return body["token"]
 
@@ -146,18 +146,45 @@ def test_registration_controls():
         status, body = req("GET", "/config")
         assert status == 200 and body.get("registration") is False
 
-        status, body = req("POST", "/register", "closed:testpass")
+        status, body = req("POST", "/register", "closed:testpass1234")
         assert status == 403, body
 
-        status, body = req("POST", "/admin/users", "closed:testpass",
+        status, body = req("POST", "/admin/users", "closed:testpass1234",
                            extra_headers={"X-Admin-Token": "wrong"})
         assert status == 403, body
 
-        status, body = req("POST", "/admin/users", "closed:testpass",
+        status, body = req("POST", "/admin/users", "closed:testpass1234",
                            extra_headers={"X-Admin-Token": "test-admin"})
         assert status == 201, body
-        status, body = req("POST", "/login", "closed:testpass")
+        status, body = req("POST", "/login", "closed:testpass1234")
         assert status == 200 and "token" in body
+    finally:
+        stop_server()
+
+
+def test_password_policy():
+    test_register_login()
+    status, body = req("POST", "/register", f"{_unique_user()}:short")
+    assert status == 400, body
+
+    status, body = req("POST", "/admin/users", f"{_unique_user()}:short",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 400, body
+
+    status, body = req("POST", "/admin/users", f"{_unique_user()}:strongpass1234",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 201, body
+
+
+def test_registration_limit():
+    stop_server()
+    start_server({"VLAMBDA_REGISTER_MAX": "2"})
+    try:
+        for _ in range(2):
+            status, body = req("POST", "/register", f"{_unique_user()}:testpass1234")
+            assert status == 201, body
+        status, body = req("POST", "/register", f"{_unique_user()}:testpass1234")
+        assert status == 429, body
     finally:
         stop_server()
 
@@ -205,6 +232,32 @@ def test_create_invoke():
     status, body = req("GET", f"/f/{slug}")
     assert status == 200 and body["msg"] == "hi"
     return token, slug
+
+def test_sensitive_headers_hidden():
+    import urllib.request
+
+    token = test_register_login()
+    code = "def handler(r): return {'headers': r.headers}"
+    status, body = req("POST", "/vlambda?name=headers", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req(
+        "GET", f"/f/{slug}", token=token,
+        extra_headers={
+            "Cookie": "session=secret",
+            "X-Api-Key": "api-secret",
+            "X-Admin-Token": "test-admin",
+        },
+    )
+    assert status == 200, body
+    headers = {str(k).lower(): v for k, v in body["headers"].items()}
+    for name in ("authorization", "proxy-authorization", "cookie", "x-api-key", "x-admin-token"):
+        assert name not in headers, headers
+    response = urllib.request.urlopen(f"http://localhost:{PORT}/")
+    assert response.headers.get("X-Frame-Options") == "DENY"
+    assert response.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "default-src" in (response.headers.get("Content-Security-Policy") or "")
+
 
 def test_async_handler():
     token = test_register_login()
@@ -1342,9 +1395,9 @@ def test_admin_reset():
     assert status == 401
     # A newly created user gets a new ID/epoch; the old token must stay invalid.
     u = _unique_user()
-    status, body = req("POST", "/register", f"{u}:testpass")
+    status, body = req("POST", "/register", f"{u}:testpass1234")
     assert status == 201, body
-    status, new_token = req("POST", "/login", f"{u}:testpass")
+    status, new_token = req("POST", "/login", f"{u}:testpass1234")
     assert status == 200 and "token" in new_token
     status, body = req("GET", "/vlambda", token=token)
     assert status == 401
@@ -1548,7 +1601,7 @@ def test_fuzz_smoke():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_create_invoke, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_isolated_projects,

@@ -1,8 +1,11 @@
 name: image
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -20,26 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: resolve version
-        id: version
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: wait for PyPI
         shell: bash
         run: |
           for _ in $(seq 1 60); do
-            if curl -fsS "https://pypi.org/pypi/vlambda/${{ steps.version.outputs.value }}/json" >/dev/null; then
+            if curl -fsS "https://pypi.org/pypi/vlambda/${{ inputs.version }}/json" >/dev/null; then
               exit 0
             fi
             sleep 10
           done
-          echo "vlambda ${{ steps.version.outputs.value }} is not on PyPI yet" >&2
+          echo "vlambda ${{ inputs.version }} is not on PyPI yet" >&2
           exit 1
 
       - uses: docker/setup-qemu-action@v3
@@ -57,8 +50,10 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: true
+          sbom: true
           build-args: |
-            VLAMBDA_VERSION=${{ steps.version.outputs.value }}
+            VLAMBDA_VERSION=${{ inputs.version }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository }}:${{ inputs.version }}
             ghcr.io/${{ github.repository }}:latest

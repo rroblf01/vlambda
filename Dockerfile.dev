@@ -5,7 +5,7 @@ FROM ghcr.io/rroblf01/vcraft-manylinux:1.7.2 AS wheel-builder
 WORKDIR /src
 COPY . .
 RUN vcraft build --release --target linux-x86_64-gnu --manylinux 2_28 \
-    --interpreter /opt/python/cp314-cp314t/bin/python --free-threading \
+    --interpreter /opt/python/cp315-cp315t/bin/python --free-threading \
     --out-dir /dist
 
 FROM debian:bookworm-slim AS python-env
@@ -16,8 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=wheel-builder /dist/*.whl /tmp/wheels/
-RUN uv python install 3.14t \
-    && uv venv /opt/venv --python 3.14t \
+RUN uv python install 3.15t \
+    && uv venv /opt/venv --python 3.15t \
     && uv pip install --python /opt/venv/bin/python --no-cache /tmp/wheels/*.whl \
     && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + \
     && find /opt/venv -name '*.pyc' -delete \

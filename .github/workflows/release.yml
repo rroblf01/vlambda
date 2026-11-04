@@ -4,11 +4,35 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (defaults to pyproject.toml)"
+        required: false
 
 permissions:
   contents: read
 
 jobs:
+  version:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        shell: bash
+        run: |
+          value="${{ inputs.version }}"
+          if [ -z "$value" ]; then
+            if [ "${{ github.event_name }}" = "release" ]; then
+              value="${GITHUB_REF_NAME#v}"
+            else
+              value=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+            fi
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -199,3 +223,13 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+  image:
+    name: publish container image
+    needs: [publish, attest, version]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      version: ${{ needs.version.outputs.value }}

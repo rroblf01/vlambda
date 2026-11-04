@@ -117,7 +117,7 @@ token with `DELETE /tokens/<id>`. Tokens do not expire.
 
 The repository includes a production image (`Dockerfile`, installs from PyPI) and
 a development image (`Dockerfile.dev`, builds the local wheel). Both use a
-free-threaded Python 3.14 venv, a pre-warmed fork supervisor and a fresh
+free-threaded Python 3.15 venv, a pre-warmed fork supervisor and a fresh
 Landlock + seccomp child per invocation, and expose plain HTTP on port `8080`;
 Dokploy (or another proxy) handles TLS and the public domain.
 

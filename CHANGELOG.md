@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.
 - The 1.0 schema starts fresh; databases created before 1.0 are not migrated.
 - The production Docker image sets `VLAMBDA_REGISTRATION=0`; create users with the admin token or opt in to public registration.
+- Container images use the latest Python 3.15 free-threaded runtime and are published only after the release workflow and PyPI publish succeed.
 
 ### Removed
 - The bundled `/docs` viewer. `/openapi.json` and `vlambda openapi` remain the supported interface for OpenAPI clients.

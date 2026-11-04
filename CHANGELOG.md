@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SECURITY.md` with the disclosure process and the 1.0 threat model.
 - CycloneDX SBOM generation in CI and a GitHub Container Registry image workflow for `linux/amd64` and `linux/arm64`.
 - `vlambda --version` and the running version in `/health` and `/ready`.
-- API, CLI, compatibility and upgrade references, plus `CONTRIBUTING.md` and the 1.0 roadmap.
+- API, CLI, compatibility, upgrade and operations references, plus `CONTRIBUTING.md` and the 1.0 roadmap.
 
 ### Changed
 - 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.

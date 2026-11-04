@@ -83,6 +83,7 @@ prints the running package version; `/health` and `/ready` return it in JSON.
 - [CLI reference](docs/CLI.md)
 - [Compatibility and versioning](docs/COMPATIBILITY.md)
 - [Upgrading](docs/UPGRADING.md)
+- [Operations](docs/OPERATIONS.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 

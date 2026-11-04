@@ -38,6 +38,8 @@ __global (
 	vlambda_auth_verifier = voidptr(0)
 	vlambda_auth_register = voidptr(0)
 	vlambda_auth_login = voidptr(0)
+	vlambda_auth_change = voidptr(0)
+	vlambda_auth_admin_reset = voidptr(0)
 	vlambda_validate_code = voidptr(0)
 	vlambda_ui_html = voidptr(0)
 	vlambda_favicon = voidptr(0)
@@ -242,6 +244,11 @@ fn add_security_headers(mut hdr http.Header) {
 	hdr.add_custom('Referrer-Policy', 'no-referrer') or {}
 	hdr.add_custom('Permissions-Policy', 'camera=(), microphone=(), geolocation=()') or {}
 	hdr.add_custom('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'") or {}
+	if vlambda_cert_path != '' {
+		// Only meaningful when vlambda terminates TLS itself. Behind a proxy,
+		// the proxy is responsible for HSTS.
+		hdr.add_custom('Strict-Transport-Security', 'max-age=31536000; includeSubDomains') or {}
+	}
 }
 
 fn cors_response(status int, body string, content_type string) http.Response {
@@ -1275,6 +1282,26 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: /admin/password (POST, token protected = reset any user password)
+	if req.url == '/admin/password' && req.method == .post {
+		if !is_admin_request(req) {
+			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		parts := req.data.split(':')
+		if parts.len < 2 {
+			return http.Response{ status_code: 400, body: '{"error": "expected username:password"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		code := auth_admin_reset_password(parts[0], parts[1])
+		if code == -2 {
+			return http.Response{ status_code: 400, body: '{"error": "password does not meet policy"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if code != 0 {
+			return http.Response{ status_code: 404, body: '{"error": "user not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		db_audit(0, 'admin.user.password.reset', parts[0], '', req.remote_addr.all_before(':'))
+		return http.Response{ status_code: 200, body: '{"changed": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+	}
+
 	// Route: /admin/reset (POST, token protected)
 	if req.url == '/admin/reset' && req.method == .post {
 		if !is_admin_request(req) {
@@ -1404,6 +1431,30 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			body: '{"token": "${token}"}'
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
+	}
+
+	// Route: /password (POST, authenticated = change own password)
+	if req.url == '/password' && req.method == .post {
+		if auth_uid < 0 {
+			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		old_password := req.data.all_before(':')
+		new_password := req.data.all_after(':')
+		if old_password == '' || new_password == '' || !req.data.contains(':') {
+			return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		code := auth_change_password(auth_uid, old_password, new_password)
+		if code == -1 {
+			return http.Response{ status_code: 401, body: '{"error": "invalid credentials"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if code == -3 {
+			return http.Response{ status_code: 400, body: '{"error": "new password must differ from the current one"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		if code != 0 {
+			return http.Response{ status_code: 400, body: '{"error": "password does not meet policy"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		}
+		db_audit(auth_uid, 'user.password.change', '', '', req.remote_addr.all_before(':'))
+		return http.Response{ status_code: 200, body: '{"changed": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
 	// Route: /project/<slug> (GET = read files, PUT = save files)
@@ -2734,10 +2785,25 @@ pub fn db_revoke_api_token(user_id int, token_id int) bool {
 	return true
 }
 
+fn audit_retention_days() int {
+	raw := os.getenv('VLAMBDA_AUDIT_RETENTION_DAYS')
+	if raw == '' {
+		return 90
+	}
+	days := raw.int()
+	return if days < 0 { 0 } else { days }
+}
+
 fn db_audit(actor_id int, action string, target string, detail string, remote_ip string) {
 	mut db := db_open() or { return }
+	now := time.now().unix()
 	db.exec_param_many('INSERT INTO audit_log (actor_id, action, target, detail, remote_ip, created_at) VALUES (?, ?, ?, ?, ?, ?);',
-		[actor_id.str(), action, target, detail, remote_ip, f64(time.now().unix()).str()]) or {}
+		[actor_id.str(), action, target, detail, remote_ip, f64(now).str()]) or {}
+	days := audit_retention_days()
+	if days > 0 {
+		cutoff := now - i64(days) * 86400
+		db.exec_param('DELETE FROM audit_log WHERE created_at < ?;', f64(cutoff).str()) or {}
+	}
 	db.close() or {}
 }
 
@@ -2915,6 +2981,16 @@ pub fn register_auth_login(cb voidptr) {
 }
 
 @[vc_fn]
+pub fn register_auth_change(cb voidptr) {
+	vlambda_auth_change = cb
+}
+
+@[vc_fn]
+pub fn register_auth_admin_reset(cb voidptr) {
+	vlambda_auth_admin_reset = cb
+}
+
+@[vc_fn]
 pub fn auth_register_user(username string, password string, remote_ip string) int {
 	return call_py_int_strs(vlambda_auth_register, [username, password, remote_ip])
 }
@@ -2922,6 +2998,16 @@ pub fn auth_register_user(username string, password string, remote_ip string) in
 @[vc_fn]
 pub fn auth_login_user(username string, password string, remote_ip string) string {
 	return call_py_strs(vlambda_auth_login, [username, password, remote_ip])
+}
+
+@[vc_fn]
+pub fn auth_change_password(user_id int, old_password string, new_password string) int {
+	return call_py_int_strs(vlambda_auth_change, [user_id.str(), old_password, new_password])
+}
+
+@[vc_fn]
+pub fn auth_admin_reset_password(username string, password string) int {
+	return call_py_int_strs(vlambda_auth_admin_reset, [username, password])
 }
 
 @[vc_fn]

@@ -1379,3 +1379,42 @@ def test_server_requires_secret(tmp_path):
     )
     assert result.returncode == 1
     assert "VLAMBDA_SECRET is required" in (result.stderr + result.stdout)
+
+
+def test_broker_rejects_malformed_messages(monkeypatch, tmp_path):
+    import json
+    import socket
+
+    from vlambda import broker
+
+    monkeypatch.setenv("VLAMBDA_BROKER_SOCKET", str(tmp_path / "broker.sock"))
+    monkeypatch.setenv("VLAMBDA_DB", str(tmp_path / "broker.db"))
+    assert broker.start()
+    try:
+        meta, token = broker.attach("{}", "fuzz")
+        assert token
+        path = json.loads(meta)["broker_socket"]
+
+        def send(raw: bytes):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(path)
+                client.sendall(raw)
+                data = b""
+                while not data.endswith(b"\n"):
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+                return json.loads(data.decode())
+
+        assert send(b"not json\n")["ok"] is False
+        assert send(b"[]\n")["ok"] is False
+        assert send(b"x" * (1024 * 1024 + 2) + b"\n")["ok"] is False
+        assert send(json.dumps({"op": "kv.get", "key": "a"}).encode() + b"\n")["ok"] is False
+        assert send(json.dumps({"op": "nope", "token": token}).encode() + b"\n")["ok"] is False
+        response = send(json.dumps({"op": "kv.get", "key": "a", "token": token}).encode() + b"\n")
+        assert "invalid capability token" not in response["error"]
+        assert broker.running()
+    finally:
+        broker.stop()

@@ -36,7 +36,8 @@ Theme: stability, safety and operations for a single-host deployment
   - [x] 2-minute in-process soak: 156k requests, 0 errors, ~10 MB RSS growth.
   - [ ] Full 24 h soak on a staging host.
   - [ ] Extended chaos: DB lock, broker down, lease loss, disk full.
-  - [ ] Broker protocol fuzzing.
+  - [x] Broker protocol fuzzing for malformed, oversized and unauthenticated messages.
+  - [x] Fresh install from a release wheel in a clean environment (CI).
 - [ ] Phase 5: 1.0.0 release.
   - Freeze API and schema.
   - Rehearse upgrade/backup/restore on a clean host.
@@ -47,7 +48,7 @@ Theme: stability, safety and operations for a single-host deployment
 
 - [ ] `1.0.0rc1` tag and GitHub pre-release.
 - [ ] Unit + integration + four-interpreter matrix green.
-- [ ] Fresh install from the wheel on x86_64; aarch64 smoke.
+- [x] Fresh install from the wheel on x86_64 (CI `wheel-install`); aarch64 develop smoke in CI.
 - [ ] Backup → wipe → restore → smoke on a clean host.
 - [ ] Secret rotation and login throttle smoke.
 - [ ] Docker image by digest with registration closed.

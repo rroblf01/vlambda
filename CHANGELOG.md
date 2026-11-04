@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API tokens accept an optional `expires_in` (seconds); expired tokens are rejected and listed as `expired`.
 - Administrative actions are recorded in `audit_log` and exposed read-only at `GET /admin/audit` with the admin token.
 - Per-user rate limiting (`VLAMBDA_USER_RATE_LIMIT`) gives each authenticated account its own budget.
+- `POST /password` changes the current password and revokes every existing session; `POST /admin/password` lets an administrator reset a user password.
+- Audit entries expire after `VLAMBDA_AUDIT_RETENTION_DAYS` (default 90).
+- HSTS is sent when vlambda terminates TLS itself.
+- The UI documents the password policy and includes a change-password card.
 
 ### Changed
 - 1.0 targets single-host deployments on Linux x86_64/aarch64. Multi-host active/active is out of scope.
@@ -42,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SECURITY.md` documents the secret encryption construction, backup encryption guidance and the per-user rate limit.
 
 ### Fixed
+- `SIGINT`/`SIGTERM` handlers are reinstalled in the run loop, so `Ctrl+C` and `docker stop` follow the graceful drain path.
+- The Docker smoke test and the release wheel smoke test use a password that satisfies the 1.0 policy.
 - Concurrent invocations no longer share the native result buffer; under load a request could receive `not started` or another invocation's response.
 - Native callback results are copied under an explicit GIL scope instead of a closure, and helper queries open a lightweight connection. A 2-minute in-process soak (156k requests) stays under 10 MB of RSS growth.
 - Every native callback (invocation, auth, projects, KV, env, egress, schedules, logs, metrics, tasks and assets) uses an explicit GIL scope; no `with_gil` closures remain.

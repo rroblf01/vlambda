@@ -164,6 +164,7 @@ See `docker/README.md` for details, limits and the reset command.
 | | `VLAMBDA_REGISTER_WINDOW` | 600 | Registration window in seconds |
 | | `VLAMBDA_PASSWORD_MIN_LENGTH` | 12 | Minimum password length |
 | | `VLAMBDA_USER_RATE_LIMIT` | rate limit | Requests/s per authenticated user (`0` follows the global limit) |
+| | `VLAMBDA_AUDIT_RETENTION_DAYS` | 90 | Days of administrative audit entries to keep (`0` keeps all) |
 | | `VLAMBDA_PIP_INDEX_URL` | PyPI | Index used when installing lambda packages |
 | | `VLAMBDA_PIP_EXTRA_INDEX_URL` | | Additional allowed package index |
 | | `VLAMBDA_PIP_REQUIRE_HASHES` | 0 | Require hashes in `requirements.txt` (`--require-hashes`) |
@@ -190,6 +191,7 @@ stateless, idempotent GET lambdas; handlers that read request context, log,
 - `GET /config` — Public runtime flags (whether registration is open)
 - `POST /register` — Register user (body: `username:password`); returns `403` when registration is disabled
 - `POST /login` — Login (body: `username:password`) → JWT token
+- `POST /password` — Change your password (body: `old:new`); revokes existing sessions
 - `POST /admin/users` — Create a user with `X-Admin-Token` and body `username:password` (for closed registration)
 
 ### Lambdas (requires auth)

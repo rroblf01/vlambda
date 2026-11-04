@@ -35,7 +35,9 @@ server. JSON errors use `{"error": "message"}`.
 |---|---|---|---|
 | POST | `/register` | `username:password` | Create a user when registration is enabled |
 | POST | `/login` | `username:password` | Returns `{"token": "..."}` |
+| POST | `/password` | `old:new` | Change the authenticated user's password; revokes all sessions |
 | POST | `/admin/users` | `username:password` | Create a user with `X-Admin-Token` |
+| POST | `/admin/password` | `username:password` | Reset a user's password with `X-Admin-Token` |
 
 Login attempts are throttled per username and source IP.
 

@@ -1501,6 +1501,52 @@ def test_api_tokens():
     assert status == 401, body
 
 
+def test_password_change():
+    user = _unique_user()
+    status, body = req("POST", "/register", f"{user}:testpass1234")
+    assert status == 201, body
+    status, body = req("POST", "/login", f"{user}:testpass1234")
+    assert status == 200, body
+    token = body["token"]
+
+    status, body = req("POST", "/password", "wrongold:newpass456789", token)
+    assert status == 401, body
+    status, body = req("POST", "/password", f"testpass1234:short", token)
+    assert status == 400, body
+    status, body = req("POST", "/password", f"testpass1234:testpass1234", token)
+    assert status == 400, body
+    status, body = req("POST", "/password", f"testpass1234:newpass456789", token)
+    assert status == 200, body
+
+    status, body = req("GET", "/tokens", token=token)
+    assert status == 401, body
+    status, body = req("POST", "/login", f"{user}:testpass1234")
+    assert status == 401, body
+    status, body = req("POST", "/login", f"{user}:newpass456789")
+    assert status == 200, body
+
+    status, body = req("POST", "/admin/password", "nouser:adminpass12345",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 404, body
+    status, body = req("POST", "/admin/password", f"{user}:short",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 400, body
+    status, body = req("POST", "/admin/password", f"{user}:adminpass12345",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200, body
+    status, body = req("POST", "/login", f"{user}:newpass456789")
+    assert status == 401, body
+    status, body = req("POST", "/login", f"{user}:adminpass12345")
+    assert status == 200, body
+
+    status, body = req("GET", "/admin/audit?limit=20",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200, body
+    actions = [item["action"] for item in body["entries"]]
+    assert "user.password.change" in actions, actions
+    assert "admin.user.password.reset" in actions, actions
+
+
 def test_audit_log():
     token = test_register_login()
     status, body = req("POST", "/tokens", json.dumps({"name": "audited", "scopes": ["read"]}), token)
@@ -1517,6 +1563,21 @@ def test_audit_log():
     assert "token.create" in actions, actions
     entry = body["entries"][0]
     assert "actor_id" in entry and "created_at" in entry and "remote_ip" in entry
+
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    conn.execute(
+        "INSERT INTO audit_log (actor_id, action, target, detail, remote_ip, created_at)"
+        " VALUES (0, 'old.action', '', '', '', 0)"
+    )
+    conn.commit()
+    conn.close()
+    status, body = req("POST", "/tokens", json.dumps({"name": "trigger", "scopes": ["read"]}), token)
+    assert status == 201, body
+    status, body = req("GET", "/admin/audit?limit=50",
+                       extra_headers={"X-Admin-Token": "test-admin"})
+    assert status == 200, body
+    assert "old.action" not in [item["action"] for item in body["entries"]]
 
 
 def test_project_static_files():
@@ -1644,7 +1705,7 @@ if __name__ == "__main__":
              test_fork_sandbox,
              test_async_task, test_task_recovery, test_shutdown_drains, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
-             test_cors_headers, test_json_listing, test_api_tokens, test_audit_log, test_project_static_files,
+             test_cors_headers, test_json_listing, test_api_tokens, test_password_change, test_audit_log, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_failure_isolation, test_fuzz_smoke, test_rate_limit]
     failed = 0

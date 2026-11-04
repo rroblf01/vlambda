@@ -133,6 +133,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
       <div id="login-alert"></div>
       <div class="form-group"><label>Username</label><input type="text" id="username" placeholder="username"></div>
       <div class="form-group"><label>Password</label><input type="password" id="password" placeholder="password"></div>
+      <p class="muted" style="margin-bottom:10px;">Passwords need at least 12 characters.</p>
       <div class="flex"><button class="btn btn-primary" onclick="doLogin()">Login</button><button id="register-btn" class="btn" onclick="doRegister()">Register</button></div>
       <p id="registration-closed" class="muted hidden" style="margin-top:10px;">Registration is closed. Ask the administrator for an account.</p>
     </div>
@@ -529,6 +530,15 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
       </table>
     </div>
     <div class="card"><h3>DLQ</h3><pre id="sys-dlq">—</pre></div>
+    <div class="card">
+      <h3>Change password</h3>
+      <p class="muted" style="margin-bottom:8px;">Changing your password signs out every existing session.</p>
+      <div class="flex">
+        <input type="password" id="pw-old" placeholder="current password" style="width:200px;">
+        <input type="password" id="pw-new" placeholder="new password (12+ characters)" style="width:240px;">
+        <button class="btn btn-primary btn-sm" onclick="changePassword()">Change password</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -717,7 +727,7 @@ async function api(path, opts = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = text; }
   if (!resp.ok) {
-    if (resp.status === 401 && path !== '/login' && path !== '/register') {
+    if (resp.status === 401 && path !== '/login' && path !== '/register' && path !== '/password') {
       // Only invalidate the session if this request used the current token.
       // An old request finishing after a new login must not log the user out.
       if (requestToken && token === requestToken) {
@@ -1695,6 +1705,27 @@ async function revokeToken(id) {
     await api('/tokens/' + id, { method: 'DELETE' });
     showAlert('system-alert', 'Token revoked', 'success');
     await loadTokens();
+  } catch (e) { reportError('system-alert', e); }
+}
+async function changePassword() {
+  const oldPassword = document.getElementById('pw-old').value;
+  const newPassword = document.getElementById('pw-new').value;
+  if (!oldPassword || !newPassword) {
+    showAlert('system-alert', 'Enter the current and new password', 'error');
+    return;
+  }
+  if (newPassword.length < 12) {
+    showAlert('system-alert', 'The new password must be at least 12 characters', 'error');
+    return;
+  }
+  try {
+    await api('/password', { method: 'POST', body: oldPassword + ':' + newPassword });
+    document.getElementById('pw-old').value = '';
+    document.getElementById('pw-new').value = '';
+    token = null;
+    localStorage.removeItem('vlambda_token');
+    checkAuth();
+    showAlert('login-alert', 'Password changed. Please login again.', 'success');
   } catch (e) { reportError('system-alert', e); }
 }
 

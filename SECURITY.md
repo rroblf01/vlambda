@@ -51,6 +51,11 @@ explicit local-development escape hatch and uses an insecure secret.
 Passwords must be at least 12 characters, and registrations are limited per
 source IP (`VLAMBDA_REGISTER_MAX`/`VLAMBDA_REGISTER_WINDOW`).
 
+Users can change their own password at `POST /password`; a change rotates the
+per-user authentication epoch, so every existing JWT is rejected immediately.
+Administrators can reset a password with `POST /admin/password` and the admin
+token.
+
 API tokens can carry an expiry (`expires_in` seconds); expired tokens are
 rejected at authentication time. Rate limiting is applied per source IP and,
 for authenticated requests, per user (`VLAMBDA_USER_RATE_LIMIT`), so one

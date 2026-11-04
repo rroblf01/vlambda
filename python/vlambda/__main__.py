@@ -338,10 +338,59 @@ def main() -> None:
                 conn.commit()
             return create_token(uid, username, epoch)
 
+    # Auth: change own password
+    def _auth_change_password(user_id, old_password, new_password):
+        from vlambda.auth import check_password, hash_password, new_auth_epoch, password_error
+        from vlambda.dbpool import get as db_get
+
+        if password_error(new_password):
+            return -2
+        try:
+            uid = int(user_id)
+        except (ValueError, TypeError):
+            return -1
+        with db_get(args.sqlite_path) as conn:
+            row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (uid,)).fetchone()
+            if row is None or not check_password(old_password, row[0]):
+                return -1
+            if check_password(new_password, row[0]):
+                return -3
+            conn.execute(
+                "UPDATE users SET password_hash = ?, auth_epoch = ? WHERE id = ?",
+                (hash_password(new_password), new_auth_epoch(), uid),
+            )
+            conn.commit()
+        return 0
+
+    # Auth: admin password reset
+    def _auth_admin_reset_password(username, password):
+        from vlambda.auth import hash_password, new_auth_epoch, password_error
+        from vlambda.dbpool import get as db_get
+
+        if password_error(password):
+            return -2
+        with db_get(args.sqlite_path) as conn:
+            row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+            if row is None:
+                return -1
+            conn.execute(
+                "UPDATE users SET password_hash = ?, auth_epoch = ? WHERE id = ?",
+                (hash_password(password), new_auth_epoch(), row[0]),
+            )
+            conn.commit()
+        return 0
+
     # Register V bridges
-    from vlambda_native import register_auth_register, register_auth_login
+    from vlambda_native import (
+        register_auth_register,
+        register_auth_login,
+        register_auth_change,
+        register_auth_admin_reset,
+    )
     register_auth_register(_auth_register)
     register_auth_login(_auth_login)
+    register_auth_change(_auth_change_password)
+    register_auth_admin_reset(_auth_admin_reset_password)
 
     register_validate_code(_validate_code)
 
@@ -804,11 +853,13 @@ def main() -> None:
     print(f"Starting vlambda on port {args.port} (db={args.sqlite_path}, coroutines={args.num_coroutines})")
     print(f"  max_body={args.max_body_size}, rate_limit={args.rate_limit}/s, timeout={args.invoke_timeout}s, max_mem={args.max_memory_mb}MB")
     print("Press Ctrl+C to stop.")
-    # Note: Ctrl+C may not work due to V's blocking listen_and_serve().
-    # Use 'kill <pid>' or the /shutdown endpoint to stop.
     import time
     while True:
         time.sleep(1)
+        # Keep the handlers installed even if an imported library or a parent
+        # process changes the disposition; Ctrl+C/SIGTERM must stay graceful.
+        signal.signal(signal.SIGTERM, _shutdown)
+        signal.signal(signal.SIGINT, _shutdown)
 
 
 if __name__ == "__main__":

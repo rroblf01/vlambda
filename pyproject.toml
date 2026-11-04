@@ -1,6 +1,6 @@
 [project]
 name = "vlambda"
-version = "1.0.0.dev0"
+version = "1.0.0rc1"
 authors = [{name = "Ricardo Robles Fernández"}]
 license = {text = "MIT"}
 

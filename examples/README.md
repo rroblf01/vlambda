@@ -1,6 +1,6 @@
 # vlambda examples
 
-Small proofs of concept that run on vlambda 0.4.0 without extra state,
+Small proofs of concept that run on vlambda 1.0.0 without extra state,
 databases or external services.
 
 | Example | What it shows | How to deploy |

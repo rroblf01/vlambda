@@ -31,7 +31,9 @@ Theme: stability, safety and operations for a single-host deployment
   - [x] Coverage threshold (55%) and unit CI job.
   - [x] aarch64 integration job, not only wheel build.
   - [x] Failure-isolation and HTTP/JSON fuzz smoke tests.
+  - [x] Native callback result leak fixed under sustained load.
   - [x] Soak and throughput tooling (`scripts/soak.py`, `VLAMBDA_MIN_RPS`).
+  - [x] 2-minute in-process soak: 156k requests, 0 errors, ~10 MB RSS growth.
   - [ ] Full 24 h soak on a staging host.
   - [ ] Extended chaos: DB lock, broker down, lease loss, disk full.
   - [ ] Broker protocol fuzzing.

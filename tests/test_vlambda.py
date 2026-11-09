@@ -1658,8 +1658,12 @@ def test_admin_reset():
 
 def test_rate_limit():
     stop_server()
-    start_server({"VLAMBDA_RATE_LIMIT": "5"})
+    # Create the lambda first so the low-rate server does not spend its small
+    # budget on registration and login.
+    start_server({"VLAMBDA_RATE_LIMIT": "100000"})
     token, slug = test_create_invoke()
+    stop_server()
+    start_server({"VLAMBDA_RATE_LIMIT": "1"}, keep_db=True)
     codes = []
     for _ in range(30):
         status, body = req("GET", f"/f/{slug}")

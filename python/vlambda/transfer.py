@@ -154,6 +154,9 @@ def import_lambda(body_json: str, owner_id: str) -> str:
                 os.makedirs(os.path.dirname(full) or project_dir, exist_ok=True)
                 with open(full, "w", encoding="utf-8") as handle:
                     handle.write(content)
+            from vlambda.project import _install_dependencies
+
+            _install_dependencies(project_dir)
             ok = vlambda_native.db_create_project(slug, name, method, entrypoint, project_dir, user_id)
             if not ok:
                 raise RuntimeError("failed to store project")

@@ -285,6 +285,48 @@ fn has_scope(scopes string, want string) bool {
 	return false
 }
 
+fn client_ip(remote_addr string) string {
+	addr := remote_addr.trim_space()
+	if addr == '' {
+		return ''
+	}
+	// IPv6 with a port is usually bracketed: [::1]:1234.
+	if addr.starts_with('[') {
+		if end := addr.index(']') {
+			return addr[1..end]
+		}
+	}
+	// A bare IPv6 address has more than one colon and no port to strip.
+	if addr.split(':').len > 2 {
+		return addr
+	}
+	return addr.all_before(':')
+}
+
+fn request_client_ip(req http.Request) string {
+	if os.getenv('VLAMBDA_TRUST_PROXY').to_lower() in ['1', 'true', 'yes', 'on'] {
+		if raw := req.header.get_custom('X-Forwarded-For', http.HeaderQueryConfig{}) {
+			first := raw.all_before(',').trim_space()
+			if first != '' {
+				return client_ip(first)
+			}
+		}
+	}
+	return client_ip(req.remote_addr)
+}
+
+fn is_uint(value string) bool {
+	if value == '' {
+		return false
+	}
+	for c in value {
+		if c < `0` || c > `9` {
+			return false
+		}
+	}
+	return true
+}
+
 fn hex_digit(c u8) int {
 	if c >= `0` && c <= `9` {
 		return int(c - `0`)
@@ -298,6 +340,14 @@ fn hex_digit(c u8) int {
 	return -1
 }
 
+
+fn split_credentials(data string) (string, string) {
+	idx := data.index(':') or { return '', '' }
+	if idx <= 0 {
+		return '', ''
+	}
+	return data[..idx], data[idx + 1..]
+}
 
 fn is_admin_request(req http.Request) bool {
 	token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
@@ -436,7 +486,7 @@ fn request_meta_json(req http.Request) string {
 		}
 	}
 	scheme := req.header.get_custom('X-Forwarded-Proto', http.HeaderQueryConfig{}) or { 'http' }
-	return '{"headers":{' + headers.join(',') + '},"remote_ip":' + json_str(req.remote_ip()) + ',"host":' + json_str(req.host) + ',"scheme":' + json_str(scheme) + '}'
+	return '{"headers":{' + headers.join(',') + '},"remote_ip":' + json_str(request_client_ip(req)) + ',"host":' + json_str(req.host) + ',"scheme":' + json_str(scheme) + '}'
 }
 
 fn error_envelope(message string) string {
@@ -479,12 +529,83 @@ struct TokenCreateRequest {
 	name       string
 	scopes     []string
 	expires_in int
+	has_scopes bool
 }
 
-struct TokenCreateRequestString {
-	name       string
-	scopes     string
-	expires_in int
+fn parse_token_create(body string) (TokenCreateRequest, string) {
+	if body.trim_space() == '' {
+		return TokenCreateRequest{}, ''
+	}
+	if body.trim_space() == 'null' {
+		return TokenCreateRequest{}, 'body must be a JSON object'
+	}
+	obj := json2.decode[map[string]json2.Any](body) or {
+		return TokenCreateRequest{}, 'body must be a JSON object'
+	}
+	mut name := ''
+	name_value := obj['name'] or { json2.Null{} }
+	match name_value {
+		string { name = name_value }
+		json2.Null {}
+		else { return TokenCreateRequest{}, 'name must be a string' }
+	}
+	mut scopes := []string{}
+	mut has_scopes := false
+	scopes_value := obj['scopes'] or { json2.Null{} }
+	match scopes_value {
+		string {
+			scopes = scopes_value.split(',')
+			has_scopes = true
+		}
+		[]json2.Any {
+			for item in scopes_value {
+				if item is string {
+					scopes << item
+				} else {
+					return TokenCreateRequest{}, 'scopes must be a string or an array of strings'
+				}
+			}
+			has_scopes = true
+		}
+		json2.Null {}
+		else { return TokenCreateRequest{}, 'scopes must be a string or an array of strings' }
+	}
+	mut expires_in := 0
+	expires_value := obj['expires_in'] or { json2.Null{} }
+	match expires_value {
+		int {
+			value := i64(expires_value)
+			if value < 0 || value > 315360000 {
+				expires_in = 315360001
+			} else {
+				expires_in = int(value)
+			}
+		}
+		i64 {
+			value := i64(expires_value)
+			if value < 0 || value > 315360000 {
+				expires_in = 315360001
+			} else {
+				expires_in = int(value)
+			}
+		}
+		f64 {
+			value := f64(expires_value)
+			if value < 0 || value > 315360000 || value != f64(int(value)) {
+				expires_in = 315360001
+			} else {
+				expires_in = int(value)
+			}
+		}
+		json2.Null {}
+		else { return TokenCreateRequest{}, 'expires_in must be an integer' }
+	}
+	return TokenCreateRequest{
+		name: name
+		scopes: scopes
+		expires_in: expires_in
+		has_scopes: has_scopes
+	}, ''
 }
 
 
@@ -515,7 +636,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	start_time := time.now()
 	// Rate limiting: token bucket per IP (skip health/metrics endpoints).
 	if vlambda_rate_limit > 0 && req.url != '/health' && req.url != '/metrics' && req.url != '/metrics/json' && req.url != '/favicon.ico' {
-		ip := req.remote_addr.all_before(':')
+		ip := request_client_ip(req)
 		now := f64(time.now().unix())
 		mut bucket := vlambda_rate_buckets[ip] or { TokenBucket{ tokens: f64(vlambda_rate_limit), last: now } }
 		elapsed := now - bucket.last
@@ -621,7 +742,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		is_write := req.method == .post || req.method == .put || req.method == .patch
 			|| req.method == .delete
-		if is_write && !has_scope(auth_scopes, 'write') && !req.url.starts_with('/tokens') {
+		if is_write && !has_scope(auth_scopes, 'write') && !has_scope(auth_scopes, 'admin') && !req.url.starts_with('/tokens') {
 			return http.Response{
 				status_code: 403
 				body: '{"error": "write scope required"}'
@@ -693,9 +814,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if qi2 := req.url.index('?') {
 			q = req.url[qi2+1..]
 		}
-		task_id := create_task_async(code, method, req.url, q, req.data, auth_uid, slug, request_meta_json(req))
+		task_id := create_task_async(code, method, url_path, q, req.data, auth_uid, slug, request_meta_json(req))
+		status := if task_id.starts_with('{"error"') { 503 } else { 202 }
 		return http.Response{
-			status_code: 202
+			status_code: status
 			body: task_id
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
@@ -712,8 +834,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		owner_id := request_owner(req, auth_uid)
 		result := get_task_status(task_id, owner_id)
+		status := if result == '' || result.starts_with('{"error": "task not found"') {
+			404
+		} else if result.starts_with('{"error"') {
+			500
+		} else {
+			200
+		}
 		return http.Response{
-			status_code: 200
+			status_code: status
 			body: result
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
@@ -733,24 +862,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			mut token_scopes := 'read,write'
 			mut token_expires := 0
 			if req.data.len > 0 {
-				parsed := json2.decode[TokenCreateRequest](req.data, json2.DecoderOptions{}) or {
-					TokenCreateRequest{}
+				parsed, parse_error := parse_token_create(req.data)
+				if parse_error != '' {
+					return http.Response{ status_code: 400, body: '{"error": ' + json_str(parse_error) + '}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 				}
 				token_name = parsed.name
 				token_expires = parsed.expires_in
-				if parsed.scopes.len > 0 {
+				if parsed.has_scopes {
 					token_scopes = parsed.scopes.join(',')
-				} else {
-					// Also accept "scopes": "read,write".
-					str_parsed := json2.decode[TokenCreateRequestString](req.data, json2.DecoderOptions{}) or {
-						TokenCreateRequestString{}
-					}
-					if str_parsed.scopes != '' && !str_parsed.scopes.starts_with('[') {
-						token_scopes = str_parsed.scopes
-					}
-				}
-				if parsed.expires_in == 0 {
-					token_expires = parsed.expires_in
 				}
 			}
 			if req.url.contains('?') {
@@ -787,7 +906,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if result.starts_with('{"error"') {
 				return http.Response{ status_code: 500, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
-			db_audit(auth_uid, 'token.create', token_name, 'scopes=' + valid_scopes.join(',') + ' expires_at=' + expires_at, req.remote_addr.all_before(':'))
+			db_audit(auth_uid, 'token.create', token_name, 'scopes=' + valid_scopes.join(',') + ' expires_at=' + expires_at, request_client_ip(req))
 			return http.Response{ status_code: 201, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		if req.method == .get {
@@ -814,7 +933,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				return http.Response{ status_code: 400, body: '{"error": "invalid token id"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
 			if db_revoke_api_token(auth_uid, id) {
-				db_audit(auth_uid, 'token.revoke', id.str(), '', req.remote_addr.all_before(':'))
+				db_audit(auth_uid, 'token.revoke', id.str(), '', request_client_ip(req))
 				return http.Response{ status_code: 200, body: '{"revoked": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 			}
 			return http.Response{ status_code: 404, body: '{"error": "token not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
@@ -1012,7 +1131,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
-				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('days=') {
+					raw := part.all_after('=')
+					if !is_uint(raw) {
+						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					}
+					days = raw.int()
+				}
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
@@ -1102,7 +1227,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
 				if part.starts_with('days=') {
-					days = part.all_after('=').int()
+					raw := part.all_after('=')
+					if !is_uint(raw) {
+						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					}
+					days = raw.int()
 				}
 				if part.starts_with('slug=') {
 					slug = decode_query_value(part.all_after('='))
@@ -1117,7 +1246,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
-		mut body := call_py_strs(vlambda_query_metrics, [days.str(), owner_id.str()])
+		mut body := call_py_strs(vlambda_query_metrics, [days.str(), slug, owner_id.str()])
 		if body == '' {
 			body = '{"days": ${days}, "items": []}'
 		}
@@ -1143,7 +1272,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
-				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('days=') {
+					raw := part.all_after('=')
+					if !is_uint(raw) {
+						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					}
+					days = raw.int()
+				}
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
@@ -1174,7 +1309,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
-				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('days=') {
+					raw := part.all_after('=')
+					if !is_uint(raw) {
+						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					}
+					days = raw.int()
+				}
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
@@ -1200,7 +1341,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
-				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('days=') {
+					raw := part.all_after('=')
+					if !is_uint(raw) {
+						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					}
+					days = raw.int()
+				}
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
@@ -1230,7 +1377,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if req.url.contains('?') {
 			qs := req.url.all_after('?')
 			for part in qs.split('&') {
-				if part.starts_with('days=') { days = part.all_after('=').int() }
+				if part.starts_with('days=') {
+					raw := part.all_after('=')
+					if !is_uint(raw) {
+						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					}
+					days = raw.int()
+				}
 				if part.starts_with('slug=') { slug = decode_query_value(part.all_after('=')) }
 			}
 		}
@@ -1290,18 +1443,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if !is_admin_request(req) {
 			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
-		parts := req.data.split(':')
-		if parts.len < 2 {
+		username, password := split_credentials(req.data)
+		if username == '' {
 			return http.Response{ status_code: 400, body: '{"error": "expected username:password"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
-		code := auth_admin_reset_password(parts[0], parts[1])
+		code := auth_admin_reset_password(username, password)
 		if code == -2 {
 			return http.Response{ status_code: 400, body: '{"error": "password does not meet policy"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		if code != 0 {
 			return http.Response{ status_code: 404, body: '{"error": "user not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
-		db_audit(0, 'admin.user.password.reset', parts[0], '', req.remote_addr.all_before(':'))
+		db_audit(0, 'admin.user.password.reset', username, '', request_client_ip(req))
 		return http.Response{ status_code: 200, body: '{"changed": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
@@ -1314,13 +1467,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		vlambda_resetting = true
 		mut body := call_py_strs(vlambda_admin_reset, [token])
 		if body == '' {
-			body = '{}'
+			body = '{"error": "reset failed"}'
 		}
-		db_audit(0, 'admin.reset', '', body, req.remote_addr.all_before(':'))
+		db_audit(0, 'admin.reset', '', body, request_client_ip(req))
 		vlambda_resetting = false
-	vlambda_draining = false
+		status := if body.starts_with('{"error"') { 500 } else { 200 }
 		return http.Response{
-			status_code: 200
+			status_code: status
 			body: body
 			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 		}
@@ -1332,15 +1485,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
-		parts := req.data.split(':')
-		if parts.len < 2 {
+		username, password := split_credentials(req.data)
+		if username == '' {
 			return http.Response{
 				status_code: 400
 				body: '{"error": "expected username:password"}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		mut body := call_py_strs(vlambda_admin_create_user, [token, parts[0], parts[1]])
+		mut body := call_py_strs(vlambda_admin_create_user, [token, username, password])
 		if body == '' {
 			body = '{"error": "failed"}'
 		}
@@ -1350,11 +1503,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			409
 		} else if body.contains('password does not meet policy') {
 			400
+		} else if body.contains('invalid username') {
+			400
 		} else {
 			403
 		}
 		if status == 201 {
-			db_audit(0, 'admin.user.create', parts[0], 'user_id=' + body.all_after('"user_id": ').all_before('}'), req.remote_addr.all_before(':'))
+			db_audit(0, 'admin.user.create', username, 'user_id=' + body.all_after('"user_id": ').all_before('}'), request_client_ip(req))
 		}
 		return http.Response{
 			status_code: status
@@ -1373,15 +1528,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 		}
 		// Parse username:password from body
-		parts := req.data.split(':')
-		if parts.len < 2 {
+		username, password := split_credentials(req.data)
+		if username == '' {
 			return http.Response{
 				status_code: 400
 				body: '{"error": "expected username:password"}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		uid := auth_register_user(parts[0], parts[1], req.remote_addr.all_before(':'))
+		uid := auth_register_user(username, password, request_client_ip(req))
 		if uid == -2 {
 			return http.Response{
 				status_code: 429
@@ -1396,6 +1551,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
+		if uid == -4 {
+			return http.Response{
+				status_code: 400
+				body: '{"error": "invalid username"}'
+				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+			}
+		}
 		if uid < 0 {
 			return http.Response{
 				status_code: 409
@@ -1403,7 +1565,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		db_audit(uid, 'user.register', parts[0], '', req.remote_addr.all_before(':'))
+		db_audit(uid, 'user.register', username, '', request_client_ip(req))
 		return http.Response{
 			status_code: 201
 			body: '{"user_id": ${uid}}'
@@ -1413,15 +1575,15 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Route: /login (POST)
 	if req.url == '/login' && req.method == .post {
-		parts := req.data.split(':')
-		if parts.len < 2 {
+		username, password := split_credentials(req.data)
+		if username == '' {
 			return http.Response{
 				status_code: 400
 				body: '{"error": "expected username:password"}'
 				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 			}
 		}
-		token := auth_login_user(parts[0], parts[1], req.remote_addr.all_before(':'))
+		token := auth_login_user(username, password, request_client_ip(req))
 		if token == '' {
 			return http.Response{
 				status_code: 401
@@ -1441,9 +1603,32 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if auth_uid < 0 {
 			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
-		old_password := req.data.all_before(':')
-		new_password := req.data.all_after(':')
-		if old_password == '' || new_password == '' || !req.data.contains(':') {
+		mut old_password := ''
+		mut new_password := ''
+		if req.data.trim_space().starts_with('{') {
+			obj := json2.decode[map[string]json2.Any](req.data) or {
+				return http.Response{ status_code: 400, body: '{"error": "invalid json"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			old_value := obj['old'] or { json2.Null{} }
+			new_value := obj['new'] or { json2.Null{} }
+			if old_value is string {
+				if new_value is string {
+					old_password = old_value
+					new_password = new_value
+				} else {
+					return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				}
+			} else {
+				return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+		} else {
+			if !req.data.contains(':') {
+				return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			}
+			old_password = req.data.all_before(':')
+			new_password = req.data.all_after(':')
+		}
+		if old_password == '' || new_password == '' {
 			return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		code := auth_change_password(auth_uid, old_password, new_password)
@@ -1456,7 +1641,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if code != 0 {
 			return http.Response{ status_code: 400, body: '{"error": "password does not meet policy"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
-		db_audit(auth_uid, 'user.password.change', '', '', req.remote_addr.all_before(':'))
+		db_audit(auth_uid, 'user.password.change', '', '', request_client_ip(req))
 		return http.Response{ status_code: 200, body: '{"changed": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
 
@@ -1503,7 +1688,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if body == '' {
 				body = '{}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			status := if body.starts_with('{"error"') { 400 } else { 200 }
+			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
@@ -1562,8 +1748,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					vcraft.clear_error()
 				}
 				vcraft.gil_release(state)
+				status := if result.starts_with('{"error"') { 400 } else { 201 }
 				return http.Response{
-					status_code: 201
+					status_code: status
 					body: result
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
@@ -1745,6 +1932,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		memory_mb := if parts.len > 3 { parts[3].int() } else { 0 }
 		version := if parts.len > 4 { parts[4] } else { '0' }
 		kind := if parts.len > 5 { parts[5] } else { 'code' }
+		mut effective_timeout := timeout
+		mut effective_memory := memory_mb
+		if alias != '' && kind == 'code' {
+			// Version rows do not store per-lambda limits; keep the current ones.
+			current_parts := db_get_lambda_code(slug).split('|')
+			if current_parts.len > 2 {
+				effective_timeout = current_parts[2].int()
+			}
+			if current_parts.len > 3 {
+				effective_memory = current_parts[3].int()
+			}
+		}
 		// Only projects need the project lookup.
 		project_info := if kind == 'project' || code == '' { db_get_project(slug) } else { '' }
 		if code == '' && project_info == '' {
@@ -1784,7 +1983,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			vlambda_request_counter++
 			request_id := 'req-${vlambda_request_counter}'
-			result := run_project(project_dir, entrypoint, project_method, req.url, q, req.data, request_id, slug, request_meta_json(req))
+			result := run_project(project_dir, entrypoint, project_method, url_path, q, req.data, request_id, slug, request_meta_json(req))
 			elapsed := time.since(start_time).microseconds()
 			vlambda_latency_sum += f64(elapsed) / 1000.0
 			vlambda_latency_count++
@@ -1811,7 +2010,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		vlambda_request_counter++
 		request_id := 'req-${vlambda_request_counter}'
 		code_key := slug + ':' + version
-		result := run_lambda(request_id, slug, code, method, req.url, q, req.data, timeout, memory_mb, request_meta_json(req), code_key)
+		result := run_lambda(request_id, slug, code, method, url_path, q, req.data, effective_timeout, effective_memory, request_meta_json(req), code_key)
 		elapsed := time.since(start_time).microseconds()
 		vlambda_latency_sum += f64(elapsed) / 1000.0
 		vlambda_latency_count++
@@ -2122,7 +2321,8 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if body == '' {
 				body = '{"error": "install failed"}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			status := if body.starts_with('{"error"') { 400 } else { 200 }
+			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 		}
 		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
 	}
@@ -2233,8 +2433,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			code := code_info.all_before('|')
 			rest_info := code_info.all_after('|')
 			method := rest_info.all_before('|')
-			timeout := 0
-			memory_mb := 0
+			mut timeout := 0
+			mut memory_mb := 0
+			current_info := db_get_lambda_code(slug)
+			current_parts := current_info.split('|')
+			if current_parts.len > 2 {
+				timeout = current_parts[2].int()
+			}
+			if current_parts.len > 3 {
+				memory_mb = current_parts[3].int()
+			}
 			name := db_get_lambda_name(slug)
 			ok := db_update_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
 			if ok {
@@ -2263,7 +2471,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 						alias = decode_query_value(part.all_after('='))
 					}
 					if part.starts_with('version=') {
-						version = part.all_after('=').int()
+						raw := part.all_after('=')
+						if !is_uint(raw) {
+							return http.Response{ status_code: 400, body: '{"error": "version must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						}
+						version = raw.int()
 					}
 				}
 			}
@@ -2318,7 +2530,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		if req.method == .delete {
 			owner := db_get_lambda_owner(slug)
-			if owner >= 0 && owner != auth_uid {
+			if owner < 0 {
+				return http.Response{
+					status_code: 404
+					body: '{"error": "lambda not found"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			if owner != auth_uid {
 				return http.Response{
 					status_code: 403
 					body: '{"error": "forbidden"}'
@@ -2349,6 +2568,21 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
 				}
 			}
+			owner := db_get_lambda_owner(slug)
+			if owner < 0 {
+				return http.Response{
+					status_code: 404
+					body: '{"error": "lambda not found"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
+			if owner != auth_uid {
+				return http.Response{
+					status_code: 403
+					body: '{"error": "forbidden"}'
+					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+				}
+			}
 			code := req.data
 			if code.len == 0 {
 				return http.Response{
@@ -2361,6 +2595,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			mut name := db_get_lambda_name(slug)
 			mut timeout := 0
 			mut memory_mb := 0
+			current_info := db_get_lambda_code(slug)
+			current_parts := current_info.split('|')
+			if current_parts.len > 2 {
+				timeout = current_parts[2].int()
+			}
+			if current_parts.len > 3 {
+				memory_mb = current_parts[3].int()
+			}
 			if req.url.contains('?') {
 				qs := req.url.all_after('?')
 				for part in qs.split('&') {
@@ -2481,9 +2723,10 @@ pub fn db_update_lambda(slug string, name string, code string, method string, ow
 	// Bump version and store the previous version.
 	mut version := 1
 	current_rows := db.exec_param_many('SELECT version FROM lambdas WHERE slug = ? AND owner_id = ?;', [slug, owner_id.str()]) or { [] }
-	if current_rows.len > 0 {
-		version = (current_rows[0].vals[0] or { '1' }).int() + 1
+	if current_rows.len == 0 {
+		return false
 	}
+	version = (current_rows[0].vals[0] or { '1' }).int() + 1
 	db.exec_param_many('INSERT INTO lambda_versions (slug, version, code, method, entrypoint, project_dir, kind, created_at) SELECT slug, version, code, method, entrypoint, project_dir, kind, created_at FROM lambdas WHERE slug = ? AND owner_id = ? AND NOT EXISTS (SELECT 1 FROM lambda_versions WHERE slug = ? AND version = (SELECT version FROM lambdas WHERE slug = ? AND owner_id = ?));', [slug, owner_id.str(), slug, slug, owner_id.str()]) or {}
 	db.exec_param_many('UPDATE lambdas SET name = ?, code = ?, method = ?, timeout = ?, memory_mb = ?, version = ? WHERE slug = ? AND owner_id = ?;', [name, code, method, timeout.str(), memory_mb.str(), version.str(), slug, owner_id.str()]) or { return false }
 	// Invalidate cache
@@ -2618,6 +2861,10 @@ pub fn db_create_alias(alias string, slug string, version int, owner_id int) boo
 		r := db.exec_param('SELECT version FROM lambdas WHERE slug = ?;', slug) or { return false }
 		if r.len == 0 { return false }
 		(r[0].vals[0] or { '1' }).int()
+	}
+	if version > 0 {
+		exists := db.exec_param_many('SELECT 1 FROM lambda_versions WHERE slug = ? AND version = ?;', [slug, ver.str()]) or { [] }
+		if exists.len == 0 { return false }
 	}
 	db.exec_param_many('INSERT OR REPLACE INTO lambda_aliases (alias, slug, version, owner_id) VALUES (?, ?, ?, ?);',
 		[slug + ':' + alias, slug, ver.str(), owner_id.str()]) or { return false }
@@ -2783,6 +3030,8 @@ pub fn db_list_api_tokens(user_id int) string {
 pub fn db_revoke_api_token(user_id int, token_id int) bool {
 	mut db := db_open() or { return false }
 	defer { db.close() or {} }
+	rows := db.exec_param_many('SELECT 1 FROM api_tokens WHERE id = ? AND user_id = ?;', [token_id.str(), user_id.str()]) or { return false }
+	if rows.len == 0 { return false }
 	db.exec_param_many('UPDATE api_tokens SET revoked = 1 WHERE id = ? AND user_id = ?;',
 		[token_id.str(), user_id.str()]) or { return false }
 	return true
@@ -2834,7 +3083,7 @@ pub fn db_verify_api_token(raw string) string {
 	hash := sha256.sum256(raw.bytes()).hex()
 	mut db := db_open() or { return '' }
 	defer { db.close() or {} }
-	rows := db.exec_param_many('SELECT t.user_id, t.scopes FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.revoked = 0 AND (t.expires_at = "" OR t.expires_at > ?);',
+	rows := db.exec_param_many('SELECT t.user_id, t.scopes FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.revoked = 0 AND (t.expires_at = "" OR CAST(t.expires_at AS INTEGER) > ?);',
 		[hash, time.now().unix().str()]) or { return '' }
 	if rows.len == 0 {
 		return ''

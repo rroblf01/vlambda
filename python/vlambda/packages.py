@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import uuid
 
 _LOCK = threading.Lock()
 _PACKAGES_DIR = os.environ.get("VLAMBDA_PACKAGES_DIR", "/tmp/opencode/vlambda_packages")
@@ -18,7 +19,7 @@ _SPEC = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9_,.-]+\])?([<>=!~][
 
 def _validate(package: str) -> str:
     package = package.strip()
-    if not package or package.startswith("-") or "://" in package or package.startswith("git+"):
+    if not package or len(package) > 200 or package.startswith("-") or "://" in package or package.startswith("git+"):
         raise ValueError(f"invalid package: {package}")
     if "/" in package or "\\" in package or package.startswith("."):
         raise ValueError(f"invalid package: {package}")
@@ -82,17 +83,54 @@ def _run_install(target_dir: str):
         raise RuntimeError((result.stderr or result.stdout).strip()[-2000:])
 
 
+def _materialize_symlink(target_dir: str):
+    """Replace a shared vendor symlink with a private copy.
+
+    Project uploads share one vendor directory per dependency set. Installing
+    extra packages must not modify that shared directory, because other tenants
+    may use it.
+    """
+    if not os.path.islink(target_dir):
+        return
+    real = os.path.realpath(target_dir)
+    tmp = target_dir + ".tmp-" + uuid.uuid4().hex
+    try:
+        if os.path.isdir(real):
+            shutil.copytree(real, tmp, symlinks=True)
+        else:
+            os.makedirs(tmp, exist_ok=True)
+        os.unlink(target_dir)
+        try:
+            os.rename(tmp, target_dir)
+        except Exception:
+            try:
+                os.symlink(real, target_dir)
+            except Exception:
+                pass
+            raise
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
 def install(target_dir: str, packages: list[str]) -> str:
     if not packages:
         return json.dumps({"error": "no packages provided"})
     with _LOCK:
         try:
-            existing = read_requirements(target_dir)
-            merged = list(dict.fromkeys(existing + [_validate(p) for p in packages]))
+            _materialize_symlink(target_dir)
+            previous = read_requirements(target_dir)
+            merged = list(dict.fromkeys(previous + [_validate(p) for p in packages]))
             if len(merged) > _MAX_PACKAGES:
                 return json.dumps({"error": f"too many packages (max {_MAX_PACKAGES})"})
-            _write_requirements(target_dir, merged)
-            _run_install(target_dir)
+            try:
+                _write_requirements(target_dir, merged)
+                _run_install(target_dir)
+            except Exception:
+                # Keep the recorded requirements consistent with what is
+                # actually installed.
+                _write_requirements(target_dir, previous)
+                raise
             return json.dumps({"installed": merged, "target": target_dir})
         except Exception as e:
             return json.dumps({"error": str(e)})

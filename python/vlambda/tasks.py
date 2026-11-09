@@ -11,7 +11,8 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-_MAX_TASKS = 10000
+_MAX_TASKS = int(os.environ.get("VLAMBDA_MAX_TASKS", "10000"))
+_MAX_TASKS_PER_OWNER = int(os.environ.get("VLAMBDA_MAX_TASKS_PER_OWNER", "100"))
 _DLQ_MAX = 1000
 _EXECUTOR = None
 _EXECUTOR_LOCK = threading.Lock()
@@ -236,6 +237,7 @@ def _clear_claim(task_id: str):
 def create_task(code: str, method: str, path: str, query: str, body: bytes, pool,
                 owner_id: int = 0, slug: str = "", request_meta: str = "") -> str:
     task_id = str(uuid.uuid4())
+    owner = int(owner_id or 0)
     cleanup_old(3600)
     try:
         conn = _connect()
@@ -246,12 +248,35 @@ def create_task(code: str, method: str, path: str, query: str, body: bytes, pool
                 "SELECT task_id FROM tasks WHERE status IN ('completed','failed') ORDER BY created ASC LIMIT ?)",
                 (max(1, count - _MAX_TASKS + 1),),
             )
+            count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            if count >= _MAX_TASKS:
+                conn.rollback()
+                conn.close()
+                return ""
+        if owner > 0 and _MAX_TASKS_PER_OWNER > 0:
+            own = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE owner_id = ?", (owner,)
+            ).fetchone()[0]
+            if own >= _MAX_TASKS_PER_OWNER:
+                conn.execute(
+                    "DELETE FROM tasks WHERE task_id IN ("
+                    "SELECT task_id FROM tasks WHERE owner_id = ? AND status IN ('completed','failed')"
+                    " ORDER BY created ASC LIMIT ?)",
+                    (owner, max(1, own - _MAX_TASKS_PER_OWNER + 1)),
+                )
+                own = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE owner_id = ?", (owner,)
+                ).fetchone()[0]
+                if own >= _MAX_TASKS_PER_OWNER:
+                    conn.rollback()
+                    conn.close()
+                    return ""
         conn.execute(
             "INSERT INTO tasks (task_id, status, result, error, created, completed,"
             " owner_id, slug, code, method, path, query, body_b64, request_meta)"
             " VALUES (?, 'pending', NULL, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                task_id, time.time(), int(owner_id or 0), slug or "", code or "",
+                task_id, time.time(), owner, slug or "", code or "",
                 method or "GET", path or "/", query or "",
                 base64.b64encode(body or b"").decode("ascii"), request_meta or "{}",
             ),
@@ -259,7 +284,11 @@ def create_task(code: str, method: str, path: str, query: str, body: bytes, pool
         conn.commit()
         conn.close()
     except Exception:
-        return task_id
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return ""
     _ensure_worker(pool).wake()
     return task_id
 
@@ -283,8 +312,21 @@ def _run(task_id: str, code: str, method: str, path: str, query: str, body: byte
             except Exception:
                 pass
             enriched_meta, broker_token = broker.attach(request_meta, slug, task_id)
+            timeout = 0
+            memory_mb = 0
             try:
-                result = pool.execute(code, method, path, query, body,
+                import vlambda_native
+
+                info = vlambda_native.db_get_lambda_code(slug) if slug else ""
+                parts = info.split("|") if info else []
+                if len(parts) > 2 and parts[2]:
+                    timeout = int(parts[2])
+                if len(parts) > 3 and parts[3]:
+                    memory_mb = int(parts[3])
+            except Exception:
+                pass
+            try:
+                result = pool.execute(code, method, path, query, body, timeout, memory_mb,
                                       request_id=task_id, slug=slug,
                                       request_meta=enriched_meta)
             finally:

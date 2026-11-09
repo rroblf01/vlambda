@@ -57,6 +57,12 @@ With Dokploy, create an application from the image, point the domain to the
 container port `8080`, and set `VLAMBDA_SECRET` and `VLAMBDA_ADMIN_TOKEN` in the
 environment. Dokploy handles TLS certificates.
 
+Behind a reverse proxy every request arrives from the proxy address, so per-IP
+rate limits, login throttling and `request.remote_ip` see the proxy. Set
+`VLAMBDA_TRUST_PROXY=1` only when the proxy overwrites `X-Forwarded-For`; vlambda
+then uses the first address in that header. Do not enable it when port `8080` is
+reachable directly, because clients could spoof their IP.
+
 The sandbox runs unprivileged inside the container and needs no special Docker
 flags or host sysctl changes. It requires a Linux kernel with Landlock (5.13+;
 Ubuntu 22.04+, Debian 12+). If Landlock is unavailable, invocations fail closed
@@ -100,6 +106,9 @@ throttle state, and invalidates existing JWT sessions. With `--online-only` it
 fails without touching SQLite if the server is unreachable or the admin token is
 rejected. Without that flag, the CLI falls back to an offline reset only when the
 server cannot be reached, never after an HTTP error.
+
+A reset removes every user. With registration closed, recreate the accounts with
+`POST /admin/users` and `X-Admin-Token` after the reset.
 
 ## Verified
 

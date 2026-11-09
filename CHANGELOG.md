@@ -5,17 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-11-09
+
+### Added
+- Username validation (1-64 characters, letters, digits and `_ . @ + -`).
+- `VLAMBDA_TRUST_PROXY` so deployments behind a reverse proxy use `X-Forwarded-For` for rate limits, login throttling and `request.remote_ip`.
+- `VLAMBDA_MAX_RESPONSE` (10 MiB default) caps lambda response bodies; responses with more than 100 headers are rejected.
+- `VLAMBDA_MAX_TASKS` and `VLAMBDA_MAX_TASKS_PER_OWNER` make the async queue limits configurable; new tasks are rejected instead of growing the queue past the limit.
 
 ### Changed
-- The example Compose deployments default to `VLAMBDA_REGISTRATION=0` and build `VLAMBDA_VERSION=1.0.0rc1`, matching the production image.
-- README, Docker and upgrade documentation describe 1.0 as the current line, opt-in CORS and the `--online-only` reset mode.
+- The example Compose deployments default to `VLAMBDA_REGISTRATION=0` and build `VLAMBDA_VERSION=1.0.0`, matching the production image.
+- Documentation describes 1.0 as the current line, opt-in CORS, the `--online-only` reset mode, `VLAMBDA_TRUST_PROXY`, response and task limits, and JSON password changes.
+- `request.path` no longer includes the query string; `request.query_string` and `request.query` carry it separately.
+- `PUT /vlambda/<slug>` and the rollback/alias flows preserve the lambda's timeout and memory settings when the query omits them.
+- A token with the `admin` scope now also grants write access; admin tokens can still create and revoke tokens.
+- `POST /password` accepts `{"old": "...", "new": "..."}` in addition to `old:new`, so passwords may contain colons.
+
+### Fixed
+- `PUT /vlambda/<slug>` returns `404` for a missing lambda and `403` for another user's lambda instead of a misleading `200`; `DELETE` follows the same rules.
+- Alias creation rejects versions that do not exist, and invalid `version`/`days` query values return `400` instead of being silently coerced.
+- `/metrics/history` honors the `slug` filter.
+- Invalid or wrongly typed token-creation bodies return `400` instead of silently creating a read/write token.
+- Project uploads reject absolute paths, path traversal, URLs and local paths in `requirements.txt`/`pyproject.toml`; dependencies are installed with `--only-binary :all:` and never by building the uploaded project.
+- Project dependencies are copied into each project instead of being symlinked to a shared vendor tree, so the fork/Landlock allow-list can read them and one tenant cannot modify another tenant's packages.
+- Package installs for projects materialize a private vendor tree, failed installs no longer leave a poisoned requirements file, and the package cache no longer deletes per-lambda package directories or vendor trees in use.
+- Deleting a lambda eventually removes its package directory, and dependency installs are serialized so pruning cannot race a copy.
+- Backup restore checks every destination before moving anything, so a conflict cannot leave a new database next to old metrics or project files.
+- The Docker images include `uv`, without which package and project dependency installs failed, and keep uv/pip caches and `HOME` on the writable `/data` volume when the root filesystem is read-only.
+- `POST /admin/reset` returns `500` when the reset fails instead of reporting success.
+- `/task/<id>` returns `404` for unknown tasks and `500` for configuration errors.
+- Schedule `enabled` must be a boolean instead of coercing arbitrary strings to true.
+- Environment variables reject nested objects and lists instead of stringifying them.
+- Egress host patterns must be strings, and OpenAPI metadata rejects wrong types.
+- A stray `vlambda_draining = false` in `/admin/reset` could cancel a concurrent graceful shutdown; it has been removed.
+- CSV metric exports escape cells that start with spreadsheet formula characters.
+- Handler `print()` output no longer corrupts the subprocess runner protocol; stdout/stderr are redirected while user code runs.
 
 ### Security
 - A data reset now deletes `api_tokens`, `auth_throttle` and `audit_log`; previously an API token issued before a reset could authenticate as the recreated user with the same numeric ID, and old login blocks survived.
 - The reset CLI no longer falls back to direct SQLite deletes after an HTTP error (for example a rejected admin token). It falls back only when the server is unreachable, and `--online-only` disables the fallback entirely.
 - Fork sandbox children no longer inherit a Landlock rule for the whole `/data/projects` and `/data/packages` trees, so one tenant cannot read another tenant's project files.
 - seccomp now allows `prlimit64` only for the calling process and blocks `fcntl(F_SETOWN|F_SETSIG|F_SETOWN_EX)`, closing cross-process signal and limit manipulation paths.
+- Project and package installs no longer accept direct URLs, git references, local paths or pip options, preventing server-side code execution during upload.
+- Client IP parsing handles IPv6 addresses instead of collapsing them to an empty bucket.
+- Log messages are capped at 64 KiB to limit disk growth.
 
 ## [1.0.0rc1] - 2026-11-04
 
@@ -346,7 +379,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
-[Unreleased]: https://github.com/rroblf01/vlambda/compare/v0.3.0...HEAD
+[1.0.0]: https://github.com/rroblf01/vlambda/compare/v0.4.0...v1.0.0
+[1.0.0rc1]: https://github.com/rroblf01/vlambda/compare/v0.4.0...v1.0.0rc1
 [0.3.0]: https://github.com/rroblf01/vlambda/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/rroblf01/vlambda/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/rroblf01/vlambda/compare/v0.2.2...v0.2.3

@@ -20,6 +20,17 @@ from typing import Any
 _PROJECTS_DIR = os.environ.get("VLAMBDA_PROJECTS_DIR", "/tmp/opencode/vlambda_projects")
 _cache: dict[tuple, Any] = {}
 _lock = threading.Lock()
+_install_lock = threading.Lock()
+
+
+def _safe_relative(path: str) -> bool:
+    """Reject absolute paths, traversal and empty components."""
+    if not isinstance(path, str) or path == "" or os.path.isabs(path) or "\\" in path:
+        return False
+    parts = path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    return True
 
 
 def _safe_extract(zf: zipfile.ZipFile, dest: str):
@@ -46,6 +57,23 @@ def _safe_extract(zf: zipfile.ZipFile, dest: str):
             shutil.copyfileobj(src, dst)
 
 
+def _validated_dependency(line: str) -> str:
+    """Accept PEP 508 requirements but never URLs, paths or pip options.
+
+    The project upload runs outside the sandbox, so a direct reference or a
+    local build could execute tenant code (or fetch an arbitrary URL) as the
+    server.
+    """
+    value = line.strip()
+    if not value or len(value) > 200 or value.startswith(("#", "-", ".", "/", "~")):
+        raise RuntimeError(f"invalid package: {line}")
+    if any(char in value for char in ("/", "\\", ":", "@")):
+        raise RuntimeError(f"invalid package: {line}")
+    if " -" in value:
+        raise RuntimeError(f"invalid package: {line}")
+    return value
+
+
 def _collect_dependencies(project_dir: str) -> list[str]:
     deps: list[str] = []
     req = os.path.join(project_dir, "requirements.txt")
@@ -54,7 +82,7 @@ def _collect_dependencies(project_dir: str) -> list[str]:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    deps.append(line)
+                    deps.append(_validated_dependency(line))
     pyproject = os.path.join(project_dir, "pyproject.toml")
     if os.path.exists(pyproject):
         try:
@@ -62,14 +90,23 @@ def _collect_dependencies(project_dir: str) -> list[str]:
             with open(pyproject, "rb") as f:
                 data = tomllib.load(f)
             project = data.get("project", {})
-            deps.extend(project.get("dependencies", []) or [])
+            for dep in project.get("dependencies", []) or []:
+                deps.append(_validated_dependency(str(dep)))
             optional = project.get("optional-dependencies", {}) or {}
             for group in optional.values():
-                deps.extend(group or [])
-        except Exception:
-            # Fall back to installing the project itself if parsing fails.
-            deps.append(".")
-    return deps
+                for dep in group or []:
+                    deps.append(_validated_dependency(str(dep)))
+        except RuntimeError:
+            raise
+        except Exception as error:
+            # Never fall back to installing the project itself: a build
+            # backend would run tenant code on the server during upload.
+            raise RuntimeError(f"invalid pyproject.toml: {error}") from error
+    unique = list(dict.fromkeys(deps))
+    if len(unique) > 100:
+        raise RuntimeError("too many project dependencies (max 100)")
+    return unique
+
 
 
 _PACKAGES_DIR = os.environ.get("VLAMBDA_PACKAGES_DIR", "/tmp/opencode/vlambda_packages")
@@ -78,11 +115,23 @@ _PACKAGES_MAX_MB = int(os.environ.get("VLAMBDA_PACKAGES_MAX_MB", "1024"))
 
 def _prune_packages():
     try:
+        active = set()
+        try:
+            for name in os.listdir(_PROJECTS_DIR):
+                vendor = os.path.join(_PROJECTS_DIR, name, "vendor")
+                if os.path.islink(vendor):
+                    active.add(os.path.realpath(vendor))
+        except FileNotFoundError:
+            pass
         total = 0
         entries = []
         for name in os.listdir(_PACKAGES_DIR):
             p = os.path.join(_PACKAGES_DIR, name)
-            if not os.path.isdir(p):
+            # Per-lambda targets and project-private vendors are not a cache:
+            # deleting them would silently break a deployed lambda or project.
+            if name == "lambdas" or not os.path.isdir(p):
+                continue
+            if os.path.islink(p):
                 continue
             size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(p) for f in fs)
             total += size
@@ -94,10 +143,30 @@ def _prune_packages():
         for _, p, size in entries:
             if total <= limit:
                 break
+            if os.path.realpath(p) in active:
+                continue
             shutil.rmtree(p, ignore_errors=True)
             total -= size
     except Exception:
         pass
+
+
+def _pip_install(target: str, deps: list[str]):
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [uv, "pip", "install", "--target", target, "--only-binary", ":all:", *deps]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--target", target,
+               "--only-binary", ":all:", *deps]
+    index_url = os.environ.get("VLAMBDA_PIP_INDEX_URL", "").strip()
+    if index_url:
+        cmd.extend(["--index-url", index_url])
+    extra_index = os.environ.get("VLAMBDA_PIP_EXTRA_INDEX_URL", "").strip()
+    if extra_index:
+        cmd.extend(["--extra-index-url", extra_index])
+    result = subprocess.run(cmd, timeout=300, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout).strip()[-2000:])
 
 
 def _install_dependencies(project_dir: str):
@@ -111,22 +180,36 @@ def _install_dependencies(project_dir: str):
     if not deps:
         os.makedirs(vendor, exist_ok=True)
         return
-    os.makedirs(_PACKAGES_DIR, exist_ok=True)
-    key = hashlib.sha256("\n".join(sorted(deps)).encode()).hexdigest()[:16]
-    shared = os.path.join(_PACKAGES_DIR, key)
-    if not os.path.exists(shared):
-        os.makedirs(shared, exist_ok=True)
-        uv = shutil.which("uv")
-        if uv:
-            cmd = [uv, "pip", "install", "--target", shared, *deps]
-        else:
-            cmd = [sys.executable, "-m", "pip", "install", "--target", shared, *deps]
-        subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
-    try:
-        os.symlink(shared, vendor)
-    except OSError:
+    with _install_lock:
+        os.makedirs(_PACKAGES_DIR, exist_ok=True)
+        key = hashlib.sha256("\n".join(sorted(deps)).encode()).hexdigest()[:16]
+        shared = os.path.join(_PACKAGES_DIR, key)
+        if not os.path.exists(shared):
+            # Install into a private directory first so a failed install never
+            # leaves a partial tree that later uploads would reuse.
+            tmp = shared + ".tmp-" + uuid.uuid4().hex
+            os.makedirs(tmp, exist_ok=True)
+            try:
+                _pip_install(tmp, deps)
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+            try:
+                os.rename(tmp, shared)
+            except OSError:
+                shutil.rmtree(tmp, ignore_errors=True)
+                if not os.path.isdir(shared):
+                    raise
+        # Copy rather than symlink: the sandbox allow-list only includes the
+        # project directory, and a shared vendor symlink would point outside it.
+        # A private copy also keeps one tenant's package edits away from others.
         shutil.copytree(shared, vendor)
-    _prune_packages()
+        # Keep the project's dependency list next to the private vendor tree so
+        # the packages API can list and extend it consistently.
+        with open(os.path.join(vendor, "requirements.txt"), "w", encoding="utf-8") as handle:
+            for dep in deps:
+                handle.write(dep + "\n")
+        _prune_packages()
 
 
 def _module_name(project_dir: str, entrypoint: str) -> str:
@@ -174,6 +257,8 @@ def create_project(zip_b64: str, entrypoint: str, name: str, method: str, owner_
     if not entrypoint:
         entrypoint = "main.py"
     entrypoint = entrypoint.lstrip("/")
+    if not _safe_relative(entrypoint):
+        return json.dumps({"error": f"unsafe entrypoint: {entrypoint}"})
 
     slug = "p" + hashlib.sha256(data + str(owner_id).encode() + os.urandom(16)).hexdigest()[:15]
     project_dir = os.path.join(_PROJECTS_DIR, slug)
@@ -269,9 +354,13 @@ def save_project_json(project_dir: str, body_json: str, default_entrypoint: str 
     if not isinstance(files, dict):
         return json.dumps({"error": "missing files"})
     for rel, content in files.items():
-        if not isinstance(rel, str) or os.path.isabs(rel) or ".." in rel.split("/"):
+        if not _safe_relative(rel):
             return json.dumps({"error": f"unsafe path: {rel}"})
         full = os.path.join(project_dir, rel)
+        root = os.path.realpath(project_dir)
+        resolved = os.path.realpath(full)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            return json.dumps({"error": f"unsafe path: {rel}"})
         os.makedirs(os.path.dirname(full) or project_dir, exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content if isinstance(content, str) else "")
@@ -326,15 +415,21 @@ def gc_orphans() -> int:
     from vlambda.dbpool import get as db_get
     db_path = os.environ.get("VLAMBDA_DB", "./vlambda.db")
     grace = int(os.environ.get("VLAMBDA_PROJECT_GC_GRACE", "300"))
-    referenced = set()
+    reference_dirs = set()
+    referenced_slugs = set()
     try:
         with db_get(db_path) as conn:
             rows = conn.execute(
-                "SELECT project_dir FROM lambdas WHERE kind = 'project' AND project_dir != ''"
+                "SELECT slug, kind, project_dir FROM lambdas"
             ).fetchall()
-        referenced = {os.path.abspath(r[0]) for r in rows if r[0]}
+        for slug, kind, project_dir in rows:
+            if slug:
+                referenced_slugs.add(str(slug))
+            if kind == 'project' and project_dir:
+                reference_dirs.add(os.path.abspath(project_dir))
     except Exception:
         return 0
+    referenced = reference_dirs
     removed = 0
     now = time.time()
     try:
@@ -342,6 +437,23 @@ def gc_orphans() -> int:
             path = os.path.abspath(os.path.join(_PROJECTS_DIR, name))
             if path in referenced:
                 continue
+            try:
+                if now - os.path.getmtime(path) < grace:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+    except FileNotFoundError:
+        pass
+    # Per-lambda package directories are independent of project directories;
+    # remove them after the lambda row disappears.
+    lambda_packages = os.path.join(_PACKAGES_DIR, "lambdas")
+    try:
+        for name in os.listdir(lambda_packages):
+            if name in referenced_slugs:
+                continue
+            path = os.path.join(lambda_packages, name)
             try:
                 if now - os.path.getmtime(path) < grace:
                     continue

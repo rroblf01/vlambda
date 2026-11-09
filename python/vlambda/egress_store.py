@@ -25,7 +25,9 @@ def _db_path() -> str:
 
 
 def _normalize(pattern: str) -> str:
-    value = str(pattern or "").strip().lower().rstrip(".")
+    if not isinstance(pattern, str):
+        raise EgressError(f"invalid host pattern: {pattern!r}")
+    value = pattern.strip().lower().rstrip(".")
     if not value or len(value) > 253 or not _HOST_RE.match(value):
         raise EgressError(f"invalid host pattern: {pattern!r}")
     return value

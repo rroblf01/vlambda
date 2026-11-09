@@ -417,6 +417,21 @@ def restore_backup(
         has_projects = src_projects.exists()
         has_packages = src_packages.exists()
 
+        # Check every destination before moving anything so a conflict cannot
+        # leave the deployment with a restored database but old metrics or
+        # project files.
+        if not force:
+            targets = [db_path]
+            if has_metrics:
+                targets.append(metrics_db)
+            if has_projects:
+                targets.append(projects_dir)
+            if has_packages:
+                targets.append(packages_dir)
+            for target in targets:
+                if os.path.exists(target):
+                    raise BackupError(f"{target} already exists; pass --force to replace it")
+
         moved: list[str] = []
         moved_db = _require_target(db_path, force)
         if moved_db:

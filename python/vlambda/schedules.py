@@ -116,6 +116,17 @@ def _validate(data: dict) -> dict:
         payload = json.dumps(payload)
     if len(payload.encode("utf-8")) > _MAX_PAYLOAD:
         raise ScheduleError("payload is too large")
+    enabled_raw = data.get("enabled", True)
+    if isinstance(enabled_raw, bool):
+        enabled = enabled_raw
+    elif isinstance(enabled_raw, int) and enabled_raw in (0, 1):
+        enabled = bool(enabled_raw)
+    elif isinstance(enabled_raw, str) and enabled_raw.strip().lower() in ("1", "true", "yes", "on"):
+        enabled = True
+    elif isinstance(enabled_raw, str) and enabled_raw.strip().lower() in ("0", "false", "no", "off"):
+        enabled = False
+    else:
+        raise ScheduleError("enabled must be a boolean")
     return {
         "name": name,
         "cron": cron.expression,
@@ -123,7 +134,7 @@ def _validate(data: dict) -> dict:
         "method": method,
         "path": path,
         "payload": payload,
-        "enabled": bool(data.get("enabled", True)),
+        "enabled": enabled,
     }
 
 

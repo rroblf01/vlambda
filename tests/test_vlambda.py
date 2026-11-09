@@ -136,7 +136,16 @@ def test_register_login():
     assert status == 200 and body.get("registration") is True
     status, body = req("POST", "/login", f"{u}:testpass1234")
     assert status == 200 and "token" in body
-    return body["token"]
+    # Passwords may contain colons; only the first colon separates user and password.
+    u2 = _unique_user()
+    status, body = req("POST", "/register", f"{u2}:testpass:1234")
+    assert status == 201, body
+    status, body = req("POST", "/login", f"{u2}:testpass:1234")
+    assert status == 200 and "token" in body, body
+    token = body["token"]
+    status, body = req("POST", "/login", f"{u2}:testpass")
+    assert status == 401, body
+    return token
 
 
 def test_registration_controls():
@@ -174,6 +183,13 @@ def test_password_policy():
     status, body = req("POST", "/admin/users", f"{_unique_user()}:strongpass1234",
                        extra_headers={"X-Admin-Token": "test-admin"})
     assert status == 201, body
+
+    status, body = req("POST", "/register", f"bad user:testpass1234")
+    assert status == 400, body
+    for bad in ("-bad", "a" * 65, ".hidden", "bad!user"):
+        status, body = req("POST", "/admin/users", f"{bad}:testpass1234",
+                           extra_headers={"X-Admin-Token": "test-admin"})
+        assert status == 400, (bad, body)
 
 
 def test_registration_limit():
@@ -232,6 +248,42 @@ def test_create_invoke():
     status, body = req("GET", f"/f/{slug}")
     assert status == 200 and body["msg"] == "hi"
     return token, slug
+
+def test_trust_proxy_client_ip():
+    token = test_register_login()
+    code = "def handler(r): return {'ip': r.remote_ip}"
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}", extra_headers={"X-Forwarded-For": "203.0.113.9"})
+    assert status == 200 and body["ip"] == "127.0.0.1", body
+
+    stop_server()
+    start_server({"VLAMBDA_TRUST_PROXY": "1"})
+    try:
+        token = test_register_login()
+        status, body = req("POST", "/vlambda", code, token)
+        assert status == 201, body
+        slug = body["slug"]
+        status, body = req("GET", f"/f/{slug}",
+                           extra_headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"})
+        assert status == 200 and body["ip"] == "203.0.113.9", body
+    finally:
+        stop_server()
+
+
+def test_request_path_excludes_query():
+    token = test_register_login()
+    code = "def handler(r): return {'path': r.path, 'query_string': r.query_string, 'query': r.query}"
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}?a=1&b=two")
+    assert status == 200, body
+    assert body["path"] == f"/f/{slug}", body
+    assert body["query_string"] == "a=1&b=two", body
+    assert body["query"] == {"a": "1", "b": "two"}, body
+
 
 def test_sensitive_headers_hidden():
     import urllib.request
@@ -369,6 +421,13 @@ def test_lambda_env():
     assert status == 200, body
     assert body["env"] == {"PLAIN": "bye", "TOKEN": "s3cret"}, body
 
+    for payload in ({"vars": {"BAD": {"nested": 1}}},
+                    {"secrets": {"BAD": ["list"]}},
+                    {"vars": {"BAD": None}}):
+        status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps(payload),
+                           token, extra_headers={"Content-Type": "application/json"})
+        assert status == 400, (payload, body)
+
     # Partial save: only secrets, masked, keeps vars and the previous value.
     status, body = req("PUT", f"/vlambda/{slug}/env", json.dumps({"secrets": {"TOKEN": "********"}}),
                        token, extra_headers={"Content-Type": "application/json"})
@@ -497,6 +556,11 @@ def test_schedules():
         schedule_id = schedule["id"]
         assert schedule["name"] == "nightly" and schedule["next_run"], body
 
+        status, body = req("POST", f"/vlambda/{slug}/schedules",
+                           json.dumps({"name": "invalid", "cron": "0 0 * * *", "enabled": "maybe"}),
+                           token, extra_headers={"Content-Type": "application/json"})
+        assert status == 400, body
+
         status, body = req("GET", f"/vlambda/{slug}/schedules", token=token)
         assert status == 200 and body["schedules"][0]["id"] == schedule_id, body
         status, body = req("GET", f"/vlambda/{slug}/schedules")
@@ -566,6 +630,15 @@ def test_openapi():
     assert status == 200, body
     operation = body["paths"][f"/f/{slug}"]["get"]
     assert operation["summary"] == "Demo" and operation["tags"] == ["api", "demo"], operation
+
+    status, body = req("PUT", f"/vlambda/{slug}/meta",
+                       json.dumps({"summary": {"bad": 1}}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 400, body
+    status, body = req("PUT", f"/vlambda/{slug}/meta",
+                       json.dumps({"tags": ["one", "two"]}),
+                       token, extra_headers={"Content-Type": "application/json"})
+    assert status == 200 and body["tags"] == "one,two", body
 
     status, body = req("GET", "/openapi.json")
     assert status == 401, body
@@ -731,6 +804,24 @@ def test_update():
     status, body = req("GET", f"/f/{slug}")
     assert body["msg"] == "updated"
 
+def test_update_preserves_limits():
+    import sqlite3
+
+    token = test_register_login()
+    status, body = req("POST", "/vlambda?timeout=7&memory_mb=32",
+                       "def handler(request): return {'v': 1}", token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("PUT", f"/vlambda/{slug}", "def handler(request): return {'v': 2}", token)
+    assert status == 200, body
+    conn = sqlite3.connect(DB)
+    try:
+        row = conn.execute("SELECT timeout, memory_mb FROM lambdas WHERE slug = ?", (slug,)).fetchone()
+    finally:
+        conn.close()
+    assert row == (7, 32), row
+
+
 def test_delete():
     token, slug = test_create_invoke()
     status, body = req("DELETE", f"/vlambda/{slug}", token=token)
@@ -806,9 +897,18 @@ def test_ownership():
     slug = body["slug"]
     # second user cannot get/update/delete
     status, body = req("GET", f"/vlambda/{slug}", token=t2)
-    assert status in (401, 403, 404)
+    assert status == 403, body
     status, body = req("DELETE", f"/vlambda/{slug}", token=t2)
-    assert status in (401, 403, 404, 500)
+    assert status == 403, body
+    status, body = req("PUT", f"/vlambda/{slug}", "def handler(request): return {'v': 'hijack'}", t2)
+    assert status == 403, body
+    status, body = req("GET", f"/f/{slug}")
+    assert body == {}, body
+    # Updating a slug that does not exist is a 404, not a silent no-op.
+    status, body = req("PUT", "/vlambda/no-such-lambda", "def handler(request): return {}", t2)
+    assert status == 404, body
+    status, body = req("DELETE", "/vlambda/no-such-lambda", token=t2)
+    assert status == 404, body
     # Versions, aliases and version code are owner-only too.
     status, body = req("PUT", f"/vlambda/{slug}", "def handler(request): return {'v': 2}", t1)
     assert status == 200, body
@@ -851,11 +951,33 @@ def test_project_zip():
     payload = '{"files":{"main.py":"def handler(request): return {\\"msg\\": \\"edited\\"}"},"entrypoint":"main.py"}'
     status, body = req("PUT", f"/project/{slug}", payload, token)
     assert status == 200
+    status, body = req("PUT", f"/project/{slug}", '{"files":{"../escape.py":"x"}}', token)
+    assert status == 400, body
     time.sleep(0.2)
     status, body = req("GET", f"/f/{slug}")
     assert body.get("msg") == "edited"
     status, body = req("DELETE", f"/vlambda/{slug}", token=token)
     assert status == 200
+
+def test_project_rejects_dependency_urls():
+    import base64, io, zipfile
+
+    token = test_register_login()
+    for requirement in ("https://evil.example/pkg.whl", "-r other.txt", "./local", "."):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("main.py", "def handler(request): return {'ok': 1}\n")
+            z.writestr("requirements.txt", requirement + "\n")
+        status, body = req("POST", "/vlambda?project=1&entry=main.py",
+                           base64.b64encode(buf.getvalue()).decode(), token)
+        assert status == 400, (requirement, status, body)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("main.py", "def handler(request): return {'ok': 1}\n")
+    status, body = req("POST", "/vlambda?project=1&entry=../escape.py",
+                       base64.b64encode(buf.getvalue()).decode(), token)
+    assert status == 400, body
+
 
 def test_nsjail_sandbox():
     import shutil
@@ -940,6 +1062,7 @@ def test_landlock_sandbox():
                 "    thread.start(); thread.join()\n"
                 "    out['thread'] = values\n"
                 "    out['env'] = [k for k in os.environ if k.startswith('VLAMBDA_')]\n"
+                "    print('sandbox noise on stdout')\n"
                 "    return out\n"
             ),
         })
@@ -1108,7 +1231,9 @@ def test_async_task():
     status, body = req("GET", f"/task/{task_id}")
     assert status == 401, body
     status, body = req("GET", f"/task/{task_id}", token=other)
-    assert status == 200 and body.get("error") == "task not found", body
+    assert status == 404 and body.get("error") == "task not found", body
+    status, body = req("GET", "/task/does-not-exist", token=token)
+    assert status == 404, body
     # poll
     for _ in range(20):
         status, body = req("GET", f"/task/{task_id}", token=token)
@@ -1208,11 +1333,19 @@ def test_shutdown_drains():
 
 def test_metrics_history():
     token, slug = test_create_invoke()
+    other_token, other_slug = test_create_invoke()
     req("GET", f"/f/{slug}")
+    req("GET", f"/f/{other_slug}")
     time.sleep(1.2)
     status, body = req("GET", "/metrics/history?days=1", token=token)
     assert status == 200
     assert "items" in body
+    status, body = req("GET", f"/metrics/history?days=1&slug={slug}", token=token)
+    assert status == 200
+    assert body["items"], body
+    assert {item["slug"] for item in body["items"]} == {slug}, body
+    status, body = req("GET", "/metrics/history?days=-1", token=token)
+    assert status == 400, body
 
 def test_concurrency():
     import threading
@@ -1252,6 +1385,10 @@ def test_alias_version():
     assert status == 200
     status, body = req("POST", f"/vlambda/{slug}/alias?name=prod&version=1", token=token)
     assert status == 201
+    status, body = req("POST", f"/vlambda/{slug}/alias?name=missing&version=999", token=token)
+    assert status == 400, body
+    status, body = req("POST", f"/vlambda/{slug}/alias?name=missing&version=abc", token=token)
+    assert status == 400, body
     status, body = req("GET", f"/f/{slug}")
     assert body["msg"] == "v2"
     status, body = req("GET", f"/f/{slug}?alias=prod")
@@ -1337,6 +1474,38 @@ def test_packages():
     assert status == 200 and "six" in body.get("installed", []), body
     status, body = req("GET", f"/f/{slug}")
     assert status == 200 and body.get("six"), (status, body)
+
+
+def test_project_dependencies_are_private():
+    import base64, io, zipfile
+
+    token = test_register_login()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("main.py", "import six\ndef handler(request): return {'six': six.__version__}\n")
+        z.writestr("requirements.txt", "six\n")
+    status, body = 0, {}
+    for attempt in range(3):
+        status, body = req("POST", "/vlambda?project=1&entry=main.py",
+                           base64.b64encode(buf.getvalue()).decode(), token)
+        if status == 201:
+            break
+        if attempt < 2:
+            time.sleep(2)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body.get("six"), (status, body)
+    project_dir = None
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    try:
+        project_dir = conn.execute("SELECT project_dir FROM lambdas WHERE slug = ?", (slug,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert project_dir and os.path.islink(os.path.join(project_dir, "vendor")) is False
+    status, body = req("DELETE", f"/vlambda/{slug}", token=token)
+    assert status == 200, body
 
 
 def test_metrics_aggregate_endpoint():
@@ -1428,6 +1597,10 @@ def test_delete_metrics_and_logs():
 
     status, body = req("DELETE", f"/logs/history?days=1&slug={slug}", token=token)
     assert status == 200 and body.get("deleted") == 0, body
+    status, body = req("DELETE", "/logs/history?days=abc", token=token)
+    assert status == 400, body
+    status, body = req("DELETE", "/metrics/history?days=abc", token=token)
+    assert status == 400, body
     status, body = req("DELETE", f"/logs/history?days=0&slug={slug}", token=token)
     assert status == 200 and body.get("deleted", 0) >= 1, body
     status, body = req("GET", f"/logs/history?days=1&slug={slug}", token=token)
@@ -1548,6 +1721,8 @@ def test_api_tokens():
     assert status == 200
     status, body = req("GET", "/vlambda", token=pat)
     assert status == 401
+    status, body = req("DELETE", "/tokens/999999", token=token)
+    assert status == 404, body
 
     status, body = req("POST", "/tokens", json.dumps({"name": "ro", "scopes": ["read"]}), token)
     assert status == 201, body
@@ -1555,8 +1730,23 @@ def test_api_tokens():
     status, body = req("POST", "/vlambda", "def handler(request): return {}", readonly)
     assert status == 403
 
+    status, body = req("POST", "/tokens", json.dumps({"name": "admin", "scopes": ["admin"]}), token)
+    assert status == 201, body
+    admin = body["token"]
+    status, body = req("POST", "/vlambda", "def handler(request): return {}", admin)
+    assert status == 201, body
+    status, body = req("GET", "/vlambda", token=admin)
+    assert status == 200
+
     status, body = req("POST", "/tokens", json.dumps({"name": "bad", "scopes": ["read"], "expires_in": -1}), token)
     assert status == 400, body
+    # Malformed bodies and wrong types must be rejected, not silently turned
+    # into a read/write token.
+    for bad in ("{", '{"scopes": 1}', '{"scopes": [123]}', '{"scopes": []}',
+                '{"scopes": ""}', '{"expires_in": "x"}', '{"expires_in": 5.5}',
+                '{"name": {}}'):
+        status, body = req("POST", "/tokens", bad, token)
+        assert status == 400, (bad, body)
 
     status, body = req("POST", "/tokens", json.dumps({"name": "short", "scopes": ["read"], "expires_in": 1}), token)
     assert status == 201, body
@@ -1616,6 +1806,19 @@ def test_password_change():
     actions = [item["action"] for item in body["entries"]]
     assert "user.password.change" in actions, actions
     assert "admin.user.password.reset" in actions, actions
+
+    colon = _unique_user()
+    status, body = req("POST", "/register", f"{colon}:colonpass:1234")
+    assert status == 201, body
+    status, body = req("POST", "/login", f"{colon}:colonpass:1234")
+    assert status == 200, body
+    ctoken = body["token"]
+    status, body = req("POST", "/password",
+                       json.dumps({"old": "colonpass:1234", "new": "newcolon:5678"}),
+                       ctoken)
+    assert status == 200, body
+    status, body = req("POST", "/login", f"{colon}:newcolon:5678")
+    assert status == 200, body
 
 
 def test_sandbox_runtime_coverage():
@@ -1840,9 +2043,10 @@ def test_fuzz_smoke():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
-             test_update, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
+    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_trust_proxy_client_ip, test_request_path_excludes_query, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
+             test_update, test_update_preserves_limits, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
+             test_project_rejects_dependency_urls,
              test_isolated_projects,
              test_nsjail_sandbox,
              test_landlock_sandbox,
@@ -1850,6 +2054,7 @@ if __name__ == "__main__":
              test_fork_cross_tenant_reads,
              test_async_task, test_task_recovery, test_shutdown_drains, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
+             test_project_dependencies_are_private,
              test_cors_headers, test_json_listing, test_api_tokens, test_password_change, test_audit_log, test_security_regressions, test_sandbox_runtime_coverage, test_project_static_files,
              test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_failure_isolation, test_fuzz_smoke, test_rate_limit]

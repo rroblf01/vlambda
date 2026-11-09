@@ -47,17 +47,33 @@ def get_meta(slug: str, owner_id: str) -> str:
         return json.dumps({"error": f"{type(error).__name__}: {error}"})
 
 
+def _text_field(data: dict, key: str, limit: int) -> str:
+    value = data.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, tuple, set)) or value is True or value is False:
+        raise ValueError(f"{key} must be a string")
+    return str(value)[:limit]
+
+
 def set_meta(slug: str, owner_id: str, body: str) -> str:
     try:
         owner = int(owner_id)
         data = json.loads(body or "{}")
         if not isinstance(data, dict):
             return json.dumps({"error": "body must be an object"})
-        summary = str(data.get("summary") or "")[:200]
-        description = str(data.get("description") or "")[:4000]
+        summary = _text_field(data, "summary", 200)
+        description = _text_field(data, "description", 4000)
+        raw_tags = data.get("tags")
+        if isinstance(raw_tags, list):
+            if not all(isinstance(tag, str) for tag in raw_tags):
+                return json.dumps({"error": "tags must be a string or a list of strings"})
+            raw_tags = ",".join(raw_tags)
+        elif raw_tags is not None and not isinstance(raw_tags, str):
+            return json.dumps({"error": "tags must be a string or a list of strings"})
         tags = ",".join(
             part.strip()[:40]
-            for part in str(data.get("tags") or "").split(",")
+            for part in str(raw_tags or "").split(",")
             if part.strip()
         )[:500]
         with db_get(_db_path()) as conn:

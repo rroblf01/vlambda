@@ -48,6 +48,7 @@ def init(db_path: str | None = None, retention_days: int | None = None):
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with _stats_lock:
         _stats_cache.clear()
+    _seen_slugs.clear()
     with _lock:
         if _conn is not None and _CONN_PATH != target:
             try:
@@ -133,7 +134,7 @@ def record(request_id: str, slug: str, method: str, path: str, latency_ms: float
 
 def record_log(request_id: str, slug: str, level: str, message: str):
     try:
-        _logs_queue.put_nowait((time.time(), request_id, slug, level, str(message)))
+        _logs_queue.put_nowait((time.time(), request_id, slug, level, str(message)[:65536]))
     except queue.Full:
         pass
 
@@ -371,6 +372,13 @@ def summary(days: int = 1, slug: str | None = None, owner_id: int = 0) -> dict[s
     return {"days": days, "count": len(items), "items": items}
 
 
+def _csv_cell(value) -> str:
+    text = "" if value is None else str(value)
+    if text.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + text
+    return text
+
+
 def export_csv(days: int = 1, slug: str | None = None, owner_id: int = 0) -> str:
     data = query(days, slug, owner_id)
     out = io.StringIO()
@@ -380,13 +388,13 @@ def export_csv(days: int = 1, slug: str | None = None, owner_id: int = 0) -> str
         writer.writerow(
             [
                 item["ts"],
-                item["request_id"],
-                item["slug"],
-                item["method"],
-                item["path"],
+                _csv_cell(item["request_id"]),
+                _csv_cell(item["slug"]),
+                _csv_cell(item["method"]),
+                _csv_cell(item["path"]),
                 item["latency_ms"],
-                item["error"],
-                item["error_type"],
+                _csv_cell(item["error"]),
+                _csv_cell(item["error_type"]),
                 int(item["cold_start"]),
             ]
         )
@@ -536,6 +544,8 @@ def delete_metrics(days: int = 0, slug: str | None = None, owner_id: int = 0) ->
     now = time.time()
     cutoff = now - days * 86400
     cutoff_day = time.strftime("%Y-%m-%d", time.gmtime(cutoff))
+    with _stats_lock:
+        _stats_cache.clear()
     with _lock:
         _metrics_purge_before = max(_metrics_purge_before, cutoff)
         if days > 0:

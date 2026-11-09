@@ -9,12 +9,14 @@ import base64
 import sqlite3
 import time
 import os
+import re
 import threading
 
 SECRET = os.environ.get("VLAMBDA_SECRET", "change-me-in-production")
 _PBKDF2_ITERATIONS = int(os.environ.get("VLAMBDA_PBKDF2_ITERATIONS", "600000"))
 _PASSWORD_MIN_LENGTH = int(os.environ.get("VLAMBDA_PASSWORD_MIN_LENGTH", "12"))
 _PASSWORD_MAX_LENGTH = 1024
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,63}$")
 
 
 def _b64encode(data: bytes) -> str:
@@ -39,6 +41,12 @@ def password_error(password: str) -> str:
         return f"password must be at least {_PASSWORD_MIN_LENGTH} characters"
     if len(password) > _PASSWORD_MAX_LENGTH:
         return "password is too long"
+    return ""
+
+
+def username_error(username: str) -> str:
+    if not isinstance(username, str) or not _USERNAME_RE.match(username):
+        return "username must be 1-64 characters (letters, digits, _ . @ + -) and start with a letter or digit"
     return ""
 
 

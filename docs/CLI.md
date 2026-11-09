@@ -132,8 +132,13 @@ The command is idempotent and does not require the server.
 ## reset
 
 ```bash
-python -m vlambda reset --yes [--url URL --token ADMIN_TOKEN]
+python -m vlambda reset --yes [--url URL --token ADMIN_TOKEN] [--online-only]
 ```
+
+With `--url` and `--token` the command calls `/admin/reset` on the running
+server. If the server is unreachable it falls back to editing SQLite directly;
+`--online-only` disables that fallback. An HTTP error (for example a rejected
+admin token) never triggers an offline fallback.
 
 Add `--wipe` to delete the SQLite database files instead of only their rows.
 This is the supported way to start a 1.0 deployment from a pre-1.0 database.

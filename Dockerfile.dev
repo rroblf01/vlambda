@@ -30,8 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=python-env /opt/python /opt/python
 COPY --from=python-env /opt/venv /opt/venv
+COPY --from=python-env /bin/uv /usr/local/bin/uv
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENV PATH=/opt/venv/bin:$PATH \
+    HOME=/data/tmp \
     LD_LIBRARY_PATH=/opt/python/lib \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -41,6 +43,8 @@ ENV PATH=/opt/venv/bin:$PATH \
     VLAMBDA_PROJECTS_DIR=/data/projects \
     VLAMBDA_PACKAGES_DIR=/data/packages \
     VLAMBDA_CACHE_DIR=/data/cache \
+    UV_CACHE_DIR=/data/cache/uv \
+    PIP_CACHE_DIR=/data/cache/pip \
     VLAMBDA_SANDBOX=fork \
     VLAMBDA_REGISTRATION=1 \
     VLAMBDA_COROUTINES=4 \

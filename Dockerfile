@@ -2,7 +2,7 @@
 # Production image: installs vlambda from PyPI and listens on port 8080.
 # TLS and the public reverse proxy are handled by Dokploy.
 # The release workflow overrides this with the version being published.
-ARG VLAMBDA_VERSION=1.0.0rc1
+ARG VLAMBDA_VERSION=1.0.0
 ARG PYTHON_VERSION=3.15t
 
 FROM debian:bookworm-slim AS python-env
@@ -29,8 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=python-env /opt/python /opt/python
 COPY --from=python-env /opt/venv /opt/venv
+COPY --from=python-env /bin/uv /usr/local/bin/uv
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENV PATH=/opt/venv/bin:$PATH \
+    HOME=/data/tmp \
     LD_LIBRARY_PATH=/opt/python/lib \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -40,6 +42,8 @@ ENV PATH=/opt/venv/bin:$PATH \
     VLAMBDA_PROJECTS_DIR=/data/projects \
     VLAMBDA_PACKAGES_DIR=/data/packages \
     VLAMBDA_CACHE_DIR=/data/cache \
+    UV_CACHE_DIR=/data/cache/uv \
+    PIP_CACHE_DIR=/data/cache/pip \
     VLAMBDA_SANDBOX=fork \
     VLAMBDA_REGISTRATION=0 \
     VLAMBDA_COROUTINES=4 \

@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import zipfile
 import io
+import json
 import time
 
 import pytest
@@ -174,27 +175,43 @@ def test_gc_orphans_respects_grace(tmp_path, monkeypatch):
 
     db = tmp_path / "vlambda.db"
     conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE lambdas (kind TEXT, project_dir TEXT)")
+    conn.execute("CREATE TABLE lambdas (slug TEXT, kind TEXT, project_dir TEXT)")
     conn.commit()
     conn.close()
 
     projects = tmp_path / "projects"
+    packages = tmp_path / "packages"
     projects.mkdir()
+    packages.mkdir()
     fresh = projects / "fresh"
     old = projects / "old"
     fresh.mkdir()
     old.mkdir()
     (fresh / "main.py").write_text("x = 1")
     (old / "main.py").write_text("x = 1")
+    lambda_packages = packages / "lambdas"
+    lambda_packages.mkdir()
+    referenced_pkg = lambda_packages / "live"
+    orphan_pkg = lambda_packages / "gone"
+    referenced_pkg.mkdir()
+    orphan_pkg.mkdir()
     stale = time.time() - 3600
     os.utime(old, (stale, stale))
+    os.utime(orphan_pkg, (stale, stale))
 
     monkeypatch.setenv("VLAMBDA_DB", str(db))
     monkeypatch.setattr(project, "_PROJECTS_DIR", str(projects))
+    monkeypatch.setattr(project, "_PACKAGES_DIR", str(packages))
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO lambdas (slug, kind) VALUES ('live', 'code')")
+    conn.commit()
+    conn.close()
     removed = project.gc_orphans()
-    assert removed == 1
+    assert removed == 2
     assert fresh.exists()
     assert not old.exists()
+    assert referenced_pkg.exists()
+    assert not orphan_pkg.exists()
 
 
 def test_env_encryption_roundtrip(monkeypatch):
@@ -205,6 +222,14 @@ def test_env_encryption_roundtrip(monkeypatch):
     assert decrypt(token) == "super-secret-value"
     with pytest.raises(Exception):
         decrypt(token[:-1] + ("A" if token[-1] != "A" else "B"))
+
+
+def test_csv_export_escapes_formulas():
+    from vlambda.metrics import _csv_cell
+
+    assert _csv_cell("=cmd|' /C calc'!A0").startswith("'=")
+    assert _csv_cell("+1") == "'+1"
+    assert _csv_cell("normal") == "normal"
 
 
 def test_response_header_validation():
@@ -236,6 +261,20 @@ def test_response_header_validation():
     clean = serialize(Response.text("ok", headers={"X-Ok": "yes"}))
     assert {"name": "X-Ok", "value": "yes"} in clean["headers"]
     assert clean["body"] == "ok"
+
+
+def test_response_size_and_header_limits(monkeypatch):
+    from vlambda import response as response_module
+    from vlambda.response import Response, serialize
+
+    monkeypatch.setattr(response_module, "_MAX_RESPONSE_BYTES", 32)
+    with pytest.raises(ValueError):
+        serialize(Response.text("x" * 64))
+    with pytest.raises(ValueError):
+        serialize(Response(b"x" * 64))
+    monkeypatch.setattr(response_module, "_MAX_HEADERS", 2)
+    with pytest.raises(ValueError):
+        serialize(Response.text("ok", headers={f"X-{i}": "v" for i in range(3)}))
 
 
 def test_env_partial_update(tmp_path, monkeypatch):
@@ -798,6 +837,53 @@ def test_tasks_create_and_get():
     assert task["status"] == "completed"
 
 
+def test_tasks_reject_when_queue_is_full(tmp_path, monkeypatch):
+    import sqlite3
+    from vlambda import tasks
+
+    db = tmp_path / "vlambda.db"
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    monkeypatch.setattr(tasks, "_MAX_TASKS", 1)
+    tasks._init()
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO tasks (task_id, status, created, owner_id) VALUES ('pending', 'pending', ?, 1)",
+        (time.time(),),
+    )
+    conn.commit()
+    conn.close()
+
+    class DummyPool:
+        def execute(self, *a, **k):
+            return {}
+
+    assert tasks.create_task("code", "GET", "/", "", b"", DummyPool()) == ""
+
+
+def test_tasks_reject_per_owner_quota(tmp_path, monkeypatch):
+    import sqlite3
+    from vlambda import tasks
+
+    db = tmp_path / "vlambda.db"
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    monkeypatch.setattr(tasks, "_MAX_TASKS", 100)
+    monkeypatch.setattr(tasks, "_MAX_TASKS_PER_OWNER", 1)
+    tasks._init()
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO tasks (task_id, status, created, owner_id) VALUES ('pending', 'pending', ?, 7)",
+        (time.time(),),
+    )
+    conn.commit()
+    conn.close()
+
+    class DummyPool:
+        def execute(self, *a, **k):
+            return {}
+
+    assert tasks.create_task("code", "GET", "/", "", b"", DummyPool(), owner_id=7) == ""
+
+
 def test_task_ownership_filtering(monkeypatch):
     monkeypatch.setenv("VLAMBDA_TASK_RETRIES", "0")
     monkeypatch.setenv("VLAMBDA_TASK_RETRY_DELAY", "0.01")
@@ -845,6 +931,86 @@ def test_project_archive_size_limit(tmp_path, monkeypatch):
     with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
         with pytest.raises(ValueError):
             _safe_extract(zf, str(tmp_path / "out"))
+
+
+def test_project_dependency_validation(tmp_path):
+    from vlambda.project import _collect_dependencies
+
+    (tmp_path / "requirements.txt").write_text(
+        "requests>=2\nclick; python_version < '3.12'\n", encoding="utf-8"
+    )
+    assert _collect_dependencies(str(tmp_path)) == [
+        "requests>=2",
+        "click; python_version < '3.12'",
+    ]
+    for bad in ("https://example.com/x.whl", "git+https://example.com/x",
+                "/tmp/x", "./local", "-r other.txt", "pkg @ file:x", "x" * 300):
+        (tmp_path / "requirements.txt").write_text(bad + "\n", encoding="utf-8")
+        with pytest.raises(RuntimeError):
+            _collect_dependencies(str(tmp_path))
+
+
+def test_project_save_cannot_escape_vendor(tmp_path):
+    from vlambda.project import save_project_json
+
+    project = tmp_path / "project"
+    project.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "keep.py").write_text("original", encoding="utf-8")
+    (project / "vendor").symlink_to(shared)
+    result = save_project_json(str(project), '{"files": {"vendor/keep.py": "changed"}}')
+    assert "error" in json.loads(result)
+    assert (shared / "keep.py").read_text(encoding="utf-8") == "original"
+
+
+def test_prune_packages_keeps_active_and_lambda_targets(tmp_path, monkeypatch):
+    from vlambda import project
+
+    packages = tmp_path / "packages"
+    projects = tmp_path / "projects"
+    packages.mkdir()
+    projects.mkdir()
+    monkeypatch.setattr(project, "_PACKAGES_DIR", str(packages))
+    monkeypatch.setattr(project, "_PROJECTS_DIR", str(projects))
+    monkeypatch.setattr(project, "_PACKAGES_MAX_MB", 0)
+
+    active = packages / "active"
+    stale = packages / "stale"
+    lambda_dir = packages / "lambdas" / "slug"
+    for directory in (active, stale, lambda_dir):
+        directory.mkdir(parents=True)
+        (directory / "payload.bin").write_bytes(b"x" * 1024)
+    tenant = projects / "one"
+    tenant.mkdir()
+    (tenant / "vendor").symlink_to(active)
+
+    project._prune_packages()
+    assert active.exists()
+    assert lambda_dir.exists()
+    assert not stale.exists()
+
+
+def test_package_install_does_not_write_shared_vendor(tmp_path, monkeypatch):
+    from vlambda import packages
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "requirements.txt").write_text("requests\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    vendor = project / "vendor"
+    vendor.symlink_to(shared)
+
+    def fake_install(target):
+        (project / "marker").write_text("installed", encoding="utf-8")
+
+    monkeypatch.setattr(packages, "_run_install", fake_install)
+    result = json.loads(packages.install(str(vendor), ["click"]))
+    assert "error" not in result, result
+    assert not vendor.is_symlink()
+    assert (vendor / "requirements.txt").read_text(encoding="utf-8") == "requests\nclick\n"
+    assert (shared / "requirements.txt").read_text(encoding="utf-8") == "requests\n"
 
 
 def test_dlq_records_failed_task(monkeypatch):
@@ -1223,6 +1389,32 @@ def test_restore_refuses_overwrite_without_force(tmp_path):
         restore_backup(str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"),
                        projects_dir=str(tmp_path / "missing-projects"),
                        packages_dir=str(tmp_path / "missing-packages"))
+
+
+def test_restore_conflict_does_not_partially_replace(tmp_path):
+    from vlambda.backup import BackupError, create_backup, restore_backup
+
+    db = tmp_path / "vlambda.db"
+    metrics = tmp_path / "metrics.db"
+    _make_db(db)
+    _make_db(metrics)
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(str(archive), db_path=str(db), metrics_db=str(metrics),
+                  projects_dir=str(tmp_path / "missing-projects"),
+                  packages_dir=str(tmp_path / "missing-packages"))
+
+    target = tmp_path / "target"
+    target.mkdir()
+    target_db = target / "vlambda.db"
+    target_metrics = target / "metrics.db"
+    target_metrics.write_bytes(b"occupied")
+    with pytest.raises(BackupError):
+        restore_backup(str(archive), db_path=str(target_db), metrics_db=str(target_metrics),
+                       projects_dir=str(target / "projects"),
+                       packages_dir=str(target / "packages"))
+    # The database must not be restored when the metrics target conflicts.
+    assert not target_db.exists()
+    assert target_metrics.read_bytes() == b"occupied"
 
 
 def test_restore_checks_encryption_key(tmp_path, monkeypatch):

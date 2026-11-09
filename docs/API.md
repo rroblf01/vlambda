@@ -35,11 +35,14 @@ server. JSON errors use `{"error": "message"}`.
 |---|---|---|---|
 | POST | `/register` | `username:password` | Create a user when registration is enabled |
 | POST | `/login` | `username:password` | Returns `{"token": "..."}` |
-| POST | `/password` | `old:new` | Change the authenticated user's password; revokes all sessions |
+| POST | `/password` | `old:new` or `{"old":"...","new":"..."}` | Change the authenticated user's password; revokes all sessions |
 | POST | `/admin/users` | `username:password` | Create a user with `X-Admin-Token` |
 | POST | `/admin/password` | `username:password` | Reset a user's password with `X-Admin-Token` |
 
-Login attempts are throttled per username and source IP.
+Login attempts are throttled per username and source IP. Usernames are 1-64
+characters and may contain letters, digits and `_ . @ + -`, starting with a
+letter or digit. The first colon separates the username from the password, so
+passwords may contain colons.
 
 ## Lambdas
 
@@ -63,7 +66,7 @@ Optional create/update query parameters: `timeout`, `memory_mb`.
 | OPTIONS | `/f/<slug>` | CORS preflight (`204`) |
 | `GET/...` | `/f/<slug>/<path>` | Project static file, or handler fallback |
 | POST | `/async/<slug>` | Queue an async invocation; returns `task_id` |
-| GET | `/task/<id>` | Read an async task |
+| GET | `/task/<id>` | Read an async task (`404` when it does not exist or belongs to another user) |
 | GET | `/dlq` | Dead-letter queue for the caller |
 
 Use `?alias=prod` to invoke a version alias.
@@ -156,7 +159,7 @@ addresses are blocked.
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/tokens` | Create `{"name": "ci", "scopes": ["read","write"], "expires_in": 2592000}`; `expires_in` is optional, in seconds, `0` means never |
+| POST | `/tokens` | Create `{"name": "ci", "scopes": ["read","write"], "expires_in": 2592000}`; `expires_in` is optional, in seconds, `0` means never; `admin` implies read/write and allows token management |
 | GET | `/tokens` | List tokens with `created_at`, `last_used_at`, `expires_at`, `expired` and `revoked` |
 | DELETE | `/tokens/<id>` | Revoke a token |
 | GET | `/admin/audit?limit=100` | Admin token only; recent administrative actions |

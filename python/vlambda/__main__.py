@@ -18,9 +18,11 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from vlambda.reset import main as reset_main
         raise SystemExit(reset_main(sys.argv[2:]))
-    if any(arg in ("invoke", "deploy", "logs", "env", "task", "kv", "egress", "schedule", "openapi", "backup", "restore", "secrets") for arg in sys.argv[1:]):
+    args = sys.argv[1:]
+    commands = ("invoke", "deploy", "logs", "env", "task", "kv", "egress", "schedule", "openapi", "backup", "restore", "secrets")
+    if (args and args[0] in commands) or "--url" in args or "--token" in args:
         from vlambda.cli import main as cli_main
-        raise SystemExit(cli_main(sys.argv[1:]))
+        raise SystemExit(cli_main(args))
 
     parser = argparse.ArgumentParser(prog="vlambda", description="vlambda server")
     parser.add_argument("--port", type=int, default=int(os.environ.get("VLAMBDA_PORT", "8080")))
@@ -171,6 +173,8 @@ def main() -> None:
         task_id = create_task(code, method, path, query, body, pool,
                               owner_id=_task_owner(owner_id), slug=slug,
                               request_meta=request_meta)
+        if not task_id:
+            return json.dumps({"error": "task queue is full"})
         return json.dumps({"task_id": task_id, "status": "pending"})
 
     def _get_task(task_id, owner_id="0"):
@@ -310,9 +314,11 @@ def main() -> None:
 
     # Auth: register user
     def _auth_register(username, password, remote_ip="", enforce_rate_limit=True):
-        from vlambda.auth import password_error, registration_allowed
+        from vlambda.auth import password_error, registration_allowed, username_error
         from vlambda.dbpool import get as db_get
 
+        if username_error(username):
+            return -4
         problem = password_error(password)
         if problem:
             return -3
@@ -448,6 +454,8 @@ def main() -> None:
         uid = _auth_register(username, password, enforce_rate_limit=False)
         if uid == -3:
             return json.dumps({"error": "password does not meet policy"})
+        if uid == -4:
+            return json.dumps({"error": "invalid username"})
         if uid < 0:
             return json.dumps({"error": "user already exists"})
         return json.dumps({"user_id": uid})
@@ -566,12 +574,12 @@ def main() -> None:
         except (ValueError, TypeError):
             return 0
 
-    def _query_metrics(days, owner_id="0"):
+    def _query_metrics(days, slug="", owner_id="0"):
         try:
             d = int(days)
         except (ValueError, TypeError):
             d = 7
-        return _json.dumps(_metrics_query(d, owner_id=_owner(owner_id)))
+        return _json.dumps(_metrics_query(d, slug or None, owner_id=_owner(owner_id)))
 
     register_record_metric(_record_metric)
     register_query_metrics(_query_metrics)
@@ -757,6 +765,18 @@ def main() -> None:
         _lifecycle.drain()
         import vlambda.tasks as _drain_tasks
         _drain_tasks.stop()
+        pool.stop()
+        _broker.stop()
+        try:
+            from vlambda import metrics as _metrics
+            _metrics.close()
+        except Exception:
+            pass
+        try:
+            from vlambda.dbpool import close_all as _close_pools
+            _close_pools()
+        except Exception:
+            pass
         return "{}"
 
     register_shutdown(_drain_and_stop)
@@ -857,6 +877,11 @@ def main() -> None:
         _tasks.stop()
         pool.stop()
         _broker.stop()
+        try:
+            from vlambda import metrics as _metrics
+            _metrics.close()
+        except Exception:
+            pass
         from vlambda.dbpool import close_all
         close_all()
         gc.collect()

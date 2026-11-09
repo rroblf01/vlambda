@@ -151,6 +151,10 @@ See `docker/README.md` for details, limits and the reset command.
 | `--sqlite_path` | `VLAMBDA_DB` | ./vlambda.db | SQLite database path |
 | `--num_coroutines` | `VLAMBDA_COROUTINES` | 10 | Worker pool size |
 | `--max_body_size` | `VLAMBDA_MAX_BODY` | 1048576 | Max request body (bytes) |
+| | `VLAMBDA_MAX_RESPONSE` | 10485760 | Max lambda response body (bytes) |
+| | `VLAMBDA_MAX_TASKS` | 10000 | Queued async tasks before new tasks are rejected |
+| | `VLAMBDA_MAX_TASKS_PER_OWNER` | 100 | Queued async tasks per user before new tasks are rejected |
+| | `VLAMBDA_TRUST_PROXY` | 0 | Trust `X-Forwarded-For` for the client IP (enable only behind a proxy that overwrites it) |
 | `--rate_limit` | `VLAMBDA_RATE_LIMIT` | 100 | Requests/sec per IP |
 | `--invoke_timeout` | `VLAMBDA_TIMEOUT` | 30 | Lambda invocation timeout (s) |
 | `--max_memory_mb` | `VLAMBDA_MAX_MEMORY_MB` | 0 | RAM limit (0=unlimited) |
@@ -196,7 +200,7 @@ stateless, idempotent GET lambdas; handlers that read request context, log,
 - `GET /config` — Public runtime flags (whether registration is open)
 - `POST /register` — Register user (body: `username:password`); returns `403` when registration is disabled
 - `POST /login` — Login (body: `username:password`) → JWT token
-- `POST /password` — Change your password (body: `old:new`); revokes existing sessions
+- `POST /password` — Change your password (body: `old:new`, or JSON `{"old":"...","new":"..."}` when the old password contains a colon); revokes existing sessions
 - `POST /admin/users` — Create a user with `X-Admin-Token` and body `username:password` (for closed registration)
 
 ### Lambdas (requires auth)
@@ -210,7 +214,7 @@ stateless, idempotent GET lambdas; handlers that read request context, log,
 - `PUT /vlambda/<slug>/env` — Replace vars/secrets: `{"vars": {...}, "secrets": {...}}`
 
 ### API tokens (requires auth)
-- `POST /tokens` — Create a token: `{"name":"ci","scopes":["read","write"]}`
+- `POST /tokens` — Create a token: `{"name":"ci","scopes":["read","write"]}`; `admin` implies read/write and allows token management
 - `GET /tokens` — List tokens (never returns the secret)
 - `DELETE /tokens/<id>` — Revoke a token
 
@@ -324,9 +328,10 @@ def handler(request):
     )
 ```
 
-The `request` object has: `method`, `path`, `query_string`, `query`, `headers`,
-`cookies`, `body`, `remote_ip`, `host`, `scheme`, `request_id`, `slug`, `env`,
-and helpers `header()`, `json()`, `form()` and `log()`.
+The `request` object has: `method`, `path` (without the query string),
+`query_string`, `query`, `headers`, `cookies`, `body`, `remote_ip`, `host`,
+`scheme`, `request_id`, `slug`, `env`, and helpers `header()`, `json()`,
+`form()` and `log()`.
 
 `Response` supports `json()`, `text()`, `html()`, `redirect()`, `no_content()`,
 status codes, headers, cookies and binary bodies.

@@ -48,7 +48,7 @@ Theme: stability, safety and operations for a single-host deployment
 
 ## Release checklist
 
-- [ ] `1.0.0rc1` tag and GitHub pre-release.
+- [ ] `1.0.0` tag and GitHub release.
 - [ ] Unit + integration + four-interpreter matrix green.
 - [x] Fresh install from the wheel on x86_64 (CI `wheel-install`); aarch64 develop smoke in CI.
 - [ ] Backup → wipe → restore → smoke on a clean host.

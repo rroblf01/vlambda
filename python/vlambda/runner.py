@@ -178,7 +178,33 @@ def main() -> None:
         except Exception as e:
             print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "logs": []}), flush=True)
             continue
-        print(json.dumps(handle_payload(req)), flush=True)
+        # User code may print for debugging; keep stdout reserved for the
+        # protocol envelope. Redirect both descriptors while the handler runs.
+        protocol_out = sys.stdout
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, 1)
+            os.dup2(devnull, 2)
+            result = handle_payload(req)
+        finally:
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except Exception:
+                pass
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            os.close(devnull)
+        print(json.dumps(result), file=protocol_out, flush=True)
 
 
 if __name__ == "__main__":

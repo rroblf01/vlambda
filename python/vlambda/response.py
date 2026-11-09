@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 
 _HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -17,6 +18,9 @@ _HOP_BY_HOP = {
     "transfer-encoding",
     "upgrade",
 }
+
+_MAX_RESPONSE_BYTES = int(os.environ.get("VLAMBDA_MAX_RESPONSE", str(10 * 1024 * 1024)))
+_MAX_HEADERS = 100
 
 
 def _check_header(name, value) -> tuple[str, str]:
@@ -121,18 +125,25 @@ def serialize(result):
         if "\r" in cookie or "\n" in cookie:
             raise ValueError("invalid cookie value")
         headers.append(("Set-Cookie", cookie))
+    if len(headers) > _MAX_HEADERS:
+        raise ValueError(f"too many response headers (max {_MAX_HEADERS})")
     body = response.body
     if isinstance(body, (bytes, bytearray)):
+        if len(body) > _MAX_RESPONSE_BYTES:
+            raise ValueError(f"response exceeds {_MAX_RESPONSE_BYTES} bytes")
         return {
             "status": response.status,
             "headers": [{"name": k, "value": v} for k, v in headers],
             "body": "",
             "body_b64": base64.b64encode(bytes(body)).decode("ascii"),
         }
+    text = str(body)
+    if len(text.encode("utf-8", "replace")) > _MAX_RESPONSE_BYTES:
+        raise ValueError(f"response exceeds {_MAX_RESPONSE_BYTES} bytes")
     return {
         "status": response.status,
         "headers": [{"name": k, "value": v} for k, v in headers],
-        "body": str(body),
+        "body": text,
         "body_b64": "",
     }
 

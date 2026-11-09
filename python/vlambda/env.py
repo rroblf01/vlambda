@@ -218,7 +218,9 @@ def save_env(slug: str, owner_id: str, body: str) -> str:
                 key = str(key)
                 if not _valid_key(key):
                     raise ValueError(f"invalid or reserved environment name: {key}")
-                merged[key] = (False, str(value))
+                if isinstance(value, (dict, list, tuple, set)) or value is None:
+                    raise ValueError(f"environment value must be a string or number: {key}")
+                merged[key] = (False, value if isinstance(value, str) else str(value))
             for key, value in secret.items():
                 key = str(key)
                 if not _valid_key(key):
@@ -227,7 +229,9 @@ def save_env(slug: str, owner_id: str, body: str) -> str:
                     if key in existing_secrets:
                         merged[key] = (True, existing_secrets[key])
                     continue
-                merged[key] = (True, encrypt(str(value)))
+                if isinstance(value, (dict, list, tuple, set)) or value is None:
+                    raise ValueError(f"secret value must be a string: {key}")
+                merged[key] = (True, encrypt(value if isinstance(value, str) else str(value)))
             if len(merged) > _MAX_VARS:
                 raise ValueError(f"too many environment variables (max {_MAX_VARS})")
             if sum(len(k) + len(v) for k, (_, v) in merged.items()) > _MAX_BYTES:

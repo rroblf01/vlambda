@@ -651,6 +651,17 @@ def test_sandbox_allows_unix_blocks_inet(tmp_path):
         "    print('inet-ok')\n"
         "except PermissionError:\n"
         "    print('inet-blocked')\n"
+        "import fcntl, resource, os\n"
+        "try:\n"
+        "    fcntl.fcntl(1, fcntl.F_SETOWN, os.getpid())\n"
+        "    print('setown-ok')\n"
+        "except PermissionError:\n"
+        "    print('setown-blocked')\n"
+        "try:\n"
+        "    resource.prlimit(0, resource.RLIMIT_CORE)\n"
+        "    print('prlimit-self-ok')\n"
+        "except PermissionError:\n"
+        "    print('prlimit-self-blocked')\n"
     )
     sandbox_dir = tmp_path / "rw"
     sandbox_dir.mkdir()
@@ -663,6 +674,8 @@ def test_sandbox_allows_unix_blocks_inet(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "unix-ok" in proc.stdout
     assert "inet-blocked" in proc.stdout
+    assert "setown-blocked" in proc.stdout
+    assert "prlimit-self-ok" in proc.stdout
 
 
 def test_apply_env_replaces_previous_values(monkeypatch):
@@ -860,6 +873,9 @@ def test_offline_reset(tmp_path):
     db = tmp_path / "vlambda.db"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE api_tokens (id INTEGER PRIMARY KEY, user_id INTEGER)")
+    conn.execute("CREATE TABLE auth_throttle (key TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE lambdas (id INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE lambda_versions (id INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE lambda_aliases (alias TEXT PRIMARY KEY)")
@@ -867,6 +883,9 @@ def test_offline_reset(tmp_path):
     conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY)")
     conn.execute("CREATE TABLE dlq (id INTEGER PRIMARY KEY)")
     conn.execute("INSERT INTO users (id) VALUES (1)")
+    conn.execute("INSERT INTO api_tokens (id, user_id) VALUES (1, 1)")
+    conn.execute("INSERT INTO auth_throttle VALUES ('login:alice')")
+    conn.execute("INSERT INTO audit_log (id) VALUES (1)")
     conn.execute("INSERT INTO lambdas (id) VALUES (1)")
     conn.execute("INSERT INTO lambda_versions (id) VALUES (1)")
     conn.execute("INSERT INTO lambda_env VALUES ('l1', 'A')")
@@ -888,6 +907,9 @@ def test_offline_reset(tmp_path):
     m.close()
     result = offline_reset(str(db), str(metrics), str(tmp_path / "projects"), str(tmp_path / "packages"))
     assert result["rows"]["users"] == 1
+    assert result["rows"]["api_tokens"] == 1
+    assert result["rows"]["auth_throttle"] == 1
+    assert result["rows"]["audit_log"] == 1
     assert result["rows"]["lambda_env"] == 1
     assert result["rows"]["tasks"] == 1
     assert result["rows"]["dlq"] == 1
@@ -895,10 +917,74 @@ def test_offline_reset(tmp_path):
     assert not (tmp_path / "packages" / "dep").exists()
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM lambdas").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM api_tokens").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM auth_throttle").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM lambda_env").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM dlq").fetchone()[0] == 0
     conn.close()
+
+
+def test_reset_cli_does_not_fall_back_on_http_error(monkeypatch):
+    import urllib.error
+    from vlambda import reset
+
+    offline_calls = []
+
+    def online(url, token):
+        raise urllib.error.HTTPError(url + "/admin/reset", 403, "Forbidden", None, None)
+
+    monkeypatch.setattr(reset, "online_reset", online)
+    monkeypatch.setattr(reset, "offline_reset", lambda *a, **k: offline_calls.append(a) or {})
+
+    rc = reset.main(["--yes", "--url", "http://127.0.0.1:1", "--token", "wrong"])
+    assert rc == 1
+    assert offline_calls == []
+
+
+def test_reset_cli_online_only_never_falls_back(monkeypatch):
+    import urllib.error
+    from vlambda import reset
+
+    offline_calls = []
+
+    def online(url, token):
+        raise urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+
+    monkeypatch.setattr(reset, "online_reset", online)
+    monkeypatch.setattr(reset, "offline_reset", lambda *a, **k: offline_calls.append(a) or {})
+
+    rc = reset.main(["--yes", "--online-only", "--url", "http://127.0.0.1:1", "--token", "t"])
+    assert rc == 1
+    assert offline_calls == []
+
+
+def test_reset_cli_falls_back_only_when_unreachable(monkeypatch):
+    import urllib.error
+    from vlambda import reset
+
+    offline_calls = []
+
+    def online(url, token):
+        raise urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+
+    monkeypatch.setattr(reset, "online_reset", online)
+    monkeypatch.setattr(
+        reset, "offline_reset", lambda *a, **k: offline_calls.append(a) or {"offline": True}
+    )
+
+    rc = reset.main(["--yes", "--url", "http://127.0.0.1:1", "--token", "t"])
+    assert rc == 0
+    assert len(offline_calls) == 1
+
+
+def test_reset_cli_online_only_requires_url_and_token(monkeypatch):
+    from vlambda import reset
+
+    monkeypatch.delenv("VLAMBDA_URL", raising=False)
+    monkeypatch.delenv("VLAMBDA_ADMIN_TOKEN", raising=False)
+    assert reset.main(["--yes", "--online-only"]) == 2
 
 
 def test_package_spec_validation():

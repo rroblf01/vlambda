@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The example Compose deployments default to `VLAMBDA_REGISTRATION=0` and build `VLAMBDA_VERSION=1.0.0rc1`, matching the production image.
+- README, Docker and upgrade documentation describe 1.0 as the current line, opt-in CORS and the `--online-only` reset mode.
+
+### Security
+- A data reset now deletes `api_tokens`, `auth_throttle` and `audit_log`; previously an API token issued before a reset could authenticate as the recreated user with the same numeric ID, and old login blocks survived.
+- The reset CLI no longer falls back to direct SQLite deletes after an HTTP error (for example a rejected admin token). It falls back only when the server is unreachable, and `--online-only` disables the fallback entirely.
+- Fork sandbox children no longer inherit a Landlock rule for the whole `/data/projects` and `/data/packages` trees, so one tenant cannot read another tenant's project files.
+- seccomp now allows `prlimit64` only for the calling process and blocks `fcntl(F_SETOWN|F_SETSIG|F_SETOWN_EX)`, closing cross-process signal and limit manipulation paths.
+
 ## [1.0.0rc1] - 2026-11-04
 
 ### Added

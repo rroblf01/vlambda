@@ -2,6 +2,9 @@
 
 ## Before any upgrade
 
+These steps apply to 1.x. Version 0.4 has no `vlambda backup` command; copy the
+data volume or use the 0.4 export endpoint instead.
+
 1. Stop writes or stop the server.
 2. Create a backup and copy it outside the host:
 
@@ -36,9 +39,17 @@ python -m vlambda reset --yes --wipe
 ```
 
 Start 1.0 with the same data paths. It creates the 1.0 schema. Create users with
-`POST /admin/users` and `X-Admin-Token`, then re-import lambdas:
+`POST /admin/users` and `X-Admin-Token`, log in to obtain a 1.0 token, then
+re-import lambdas:
 
 ```bash
+curl -X POST "https://your-host/admin/users" \
+  -H "X-Admin-Token: $VLAMBDA_ADMIN_TOKEN" \
+  -d "alice:change-me-please-123"
+
+VLAMBDA_TOKEN=$(curl -s -X POST "https://your-host/login" \
+  -d "alice:change-me-please-123" | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
 curl -X POST "https://your-host/vlambda/import" \
   -H "Authorization: Bearer $VLAMBDA_TOKEN" \
   -H "Content-Type: application/json" \

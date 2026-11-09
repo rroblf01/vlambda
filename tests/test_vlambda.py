@@ -1045,6 +1045,55 @@ def test_fork_sandbox():
         stop_server()
 
 
+def test_fork_cross_tenant_reads():
+    try:
+        from vlambda.sandbox_os import sandbox_supported
+        import ctypes.util
+        if not sandbox_supported() or not ctypes.util.find_library("seccomp"):
+            return
+    except Exception:
+        return
+    import tempfile
+    import shutil
+    projects_dir = tempfile.mkdtemp(prefix="vlambda-tenants-")
+    stop_server()
+    start_server({
+        "VLAMBDA_SANDBOX": "fork",
+        "VLAMBDA_SECRET": "test-secret",
+        "VLAMBDA_COROUTINES": "2",
+        "VLAMBDA_TIMEOUT": "5",
+        "VLAMBDA_PROJECTS_DIR": projects_dir,
+    })
+    try:
+        _token_b, other_slug = _upload_project("tenant-b", {
+            "main.py": "def handler(request):\n    return {'secret': 'tenant-b'}\n",
+        })
+        other_dir = os.path.join(projects_dir, other_slug)
+        code = (
+            "import os\n"
+            f"OTHER = {other_dir!r}\n"
+            "def handler(request):\n"
+            "    out = {}\n"
+            "    try:\n"
+            "        out['file'] = open(os.path.join(OTHER, 'main.py')).read()\n"
+            "    except Exception as e:\n"
+            "        out['file'] = type(e).__name__\n"
+            "    try:\n"
+            "        out['listing'] = os.listdir(os.path.dirname(OTHER))\n"
+            "    except Exception as e:\n"
+            "        out['listing'] = type(e).__name__\n"
+            "    return out\n"
+        )
+        _token_a, slug_a = _upload_project("tenant-a", {"main.py": code})
+        status, body = req("GET", f"/f/{slug_a}")
+        assert status == 200, body
+        assert body["file"] in ("PermissionError", "FileNotFoundError"), body
+        assert body["listing"] in ("PermissionError", "FileNotFoundError"), body
+    finally:
+        stop_server()
+        shutil.rmtree(projects_dir, ignore_errors=True)
+
+
 def test_async_task():
     token, slug = test_create_invoke()
     status, body = req("POST", f"/async/{slug}")
@@ -1388,11 +1437,19 @@ def test_delete_metrics_and_logs():
 def test_admin_reset():
     token = test_register_login()
     req("POST", "/vlambda", "def handler(request): return {'ok': 1}", token)
+    status, body = req("POST", "/tokens", json.dumps({"name": "pre-reset", "scopes": ["read", "write"]}), token)
+    assert status == 201, body
+    old_pat = body["token"]
+    status, body = req("GET", "/vlambda", token=old_pat)
+    assert status == 200
     status, body = req("POST", "/admin/reset", extra_headers={"X-Admin-Token": "test-admin"})
     assert status == 200
     assert "rows" in body
     status, body = req("GET", "/vlambda", token=token)
     assert status == 401
+    # API tokens are deleted, not just detached from the recreated user IDs.
+    status, body = req("GET", "/vlambda", token=old_pat)
+    assert status == 401, body
     # A newly created user gets a new ID/epoch; the old token must stay invalid.
     u = _unique_user()
     status, body = req("POST", "/register", f"{u}:testpass1234")
@@ -1401,8 +1458,12 @@ def test_admin_reset():
     assert status == 200 and "token" in new_token
     status, body = req("GET", "/vlambda", token=token)
     assert status == 401
+    status, body = req("GET", "/vlambda", token=old_pat)
+    assert status == 401, body
     status, body = req("GET", "/vlambda", token=new_token["token"])
     assert status == 200 and body.get("count") == 0
+    status, body = req("GET", "/tokens", token=new_token["token"])
+    assert status == 200 and body.get("tokens") == [], body
     # Wrong token must not reset.
     status, body = req("POST", "/admin/reset", extra_headers={"X-Admin-Token": "wrong"})
     assert body.get("error") == "forbidden"
@@ -1786,6 +1847,7 @@ if __name__ == "__main__":
              test_nsjail_sandbox,
              test_landlock_sandbox,
              test_fork_sandbox,
+             test_fork_cross_tenant_reads,
              test_async_task, test_task_recovery, test_shutdown_drains, test_metrics_history, test_alias_version, test_metrics_stats,
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_cors_headers, test_json_listing, test_api_tokens, test_password_change, test_audit_log, test_security_regressions, test_sandbox_runtime_coverage, test_project_static_files,

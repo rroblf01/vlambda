@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import urllib.error
 import urllib.request
 
 
@@ -65,7 +66,7 @@ def offline_reset(
     packages_dir: str,
     cache_dir: str | None = None,
 ) -> dict:
-    groups = _delete_rows(db_path, ["users", "lambdas", "lambda_versions", "lambda_aliases", "lambda_env", "lambda_kv", "lambda_egress", "schedules", "schedule_runs", "scheduler_lease", "tasks", "dlq"])
+    groups = _delete_rows(db_path, ["api_tokens", "auth_throttle", "audit_log", "users", "lambdas", "lambda_versions", "lambda_aliases", "lambda_env", "lambda_kv", "lambda_egress", "schedules", "schedule_runs", "scheduler_lease", "tasks", "dlq"])
     metrics = _delete_rows(metrics_db, ["metrics", "metrics_daily", "logs"])
     removed_projects = _clear_dir(projects_dir)
     removed_packages = _clear_dir(packages_dir)
@@ -125,6 +126,19 @@ def online_reset(url: str, token: str) -> dict:
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.loads(resp.read())
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """True only when the server could not be reached.
+
+    HTTP errors (wrong token, 5xx) and malformed responses mean the server is
+    running, so falling back to a direct database reset would race with it.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    if isinstance(exc, urllib.error.URLError):
+        return True
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
 
 
 def _admin_token_ok(token: str) -> bool:
@@ -218,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yes", action="store_true", help="skip confirmation")
     parser.add_argument("--url", default=os.environ.get("VLAMBDA_URL", ""))
     parser.add_argument("--token", default=os.environ.get("VLAMBDA_ADMIN_TOKEN", ""))
+    parser.add_argument(
+        "--online-only",
+        action="store_true",
+        help="never fall back to editing the database directly; fail if the server is unreachable",
+    )
     parser.add_argument("--db", default=os.environ.get("VLAMBDA_DB", "./vlambda.db"))
     parser.add_argument("--metrics-db", default=os.environ.get("VLAMBDA_METRICS_DB", ""))
     parser.add_argument(
@@ -256,13 +275,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0
 
+    if args.online_only and not (args.url and args.token):
+        print("--online-only requires --url and --token", file=sys.stderr)
+        return 2
+
     if args.url and args.token:
         try:
             result = online_reset(args.url, args.token)
             print(json.dumps(result, indent=2))
             return 0
         except Exception as exc:
-            print(f"Online reset failed ({exc}); falling back to offline", file=sys.stderr)
+            if args.online_only or not _is_connection_error(exc):
+                print(f"Online reset failed ({exc})", file=sys.stderr)
+                return 1
+            print(f"Server unreachable ({exc}); falling back to offline", file=sys.stderr)
 
     result = offline_reset(
         args.db, metrics_db, args.projects_dir, args.packages_dir, args.cache_dir

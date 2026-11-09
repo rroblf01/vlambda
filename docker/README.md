@@ -82,22 +82,24 @@ common choice:
 
 ```bash
 docker exec -e VLAMBDA_ADMIN_TOKEN="$VLAMBDA_ADMIN_TOKEN" <container> \
-  /opt/venv/bin/python -m vlambda reset --yes \
+  /opt/venv/bin/python -m vlambda reset --yes --online-only \
   --url http://127.0.0.1:8080
 ```
 
 Or add it to the host crontab:
 
 ```cron
-0 3 * * * docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> \
-  /opt/venv/bin/python -m vlambda reset --yes \
-  --url http://127.0.0.1:8080
+0 3 * * * flock -n /run/vlambda-reset.lock docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> \
+  /opt/venv/bin/python -m vlambda reset --yes --online-only \
+  --url http://127.0.0.1:8080 >> /var/log/vlambda-reset.log 2>&1
 ```
 
 The command calls the running server's `/admin/reset` endpoint, which wipes users,
-lambdas, projects, packages, metrics, versions, aliases and caches. It also
-invalidates existing JWT sessions and API tokens. If the server is not reachable,
-it falls back to deleting the data directly.
+lambdas, projects, packages, metrics, versions, aliases, API tokens and login
+throttle state, and invalidates existing JWT sessions. With `--online-only` it
+fails without touching SQLite if the server is unreachable or the admin token is
+rejected. Without that flag, the CLI falls back to an offline reset only when the
+server cannot be reached, never after an HTTP error.
 
 ## Verified
 

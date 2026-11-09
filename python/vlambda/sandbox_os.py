@@ -61,6 +61,20 @@ _SCMP_CMP_NE = 1
 _SCMP_CMP_EQ = 4
 _SCMP_CMP_MASKED_EQ = 7
 
+# fcntl commands that redirect SIGIO/SIGURG to another process.
+_F_SETOWN = 8
+_F_SETSIG = 10
+_F_SETOWN_EX = 15
+# Safe fcntl commands whose numeric value has bit 3 set, so the masked allow
+# rule below would otherwise hide them.
+_F_GETPIPE_SZ = 1032
+_F_ADD_SEALS = 1033
+_F_GET_SEALS = 1034
+_F_GET_RW_HINT = 1035
+_F_SET_RW_HINT = 1036
+_F_GET_FILE_RW_HINT = 1037
+_F_SET_FILE_RW_HINT = 1038
+
 # Allow-list for the default seccomp mode. It covers CPython startup, SQLite,
 # SSL, threads, asyncio, the Unix-socket broker client and normal file I/O.
 # Network syscalls that could create AF_INET sockets, process creation,
@@ -71,7 +85,7 @@ _ALLOW_SYSCALLS = (
     "read", "write", "readv", "writev", "pread64", "pwrite64",
     "exit", "exit_group",
     "preadv", "pwritev", "preadv2", "pwritev2", "lseek", "llseek",
-    "close", "close_range", "dup", "dup2", "dup3", "fcntl", "ioctl", "flock",
+    "close", "close_range", "dup", "dup2", "dup3", "ioctl", "flock",
     "fstat", "newfstatat", "statx", "stat", "lstat", "statfs", "fstatfs",
     "access", "faccessat", "faccessat2", "readlink", "readlinkat",
     "getcwd", "chdir", "fchdir", "getdents", "getdents64",
@@ -106,7 +120,7 @@ _ALLOW_SYSCALLS = (
     "connect", "getsockname", "getpeername", "getsockopt", "setsockopt",
     "shutdown", "sendto", "recvfrom",
     "prctl", "arch_prctl", "uname", "sysinfo",
-    "getrlimit", "setrlimit", "prlimit64", "getrusage", "times",
+    "getrlimit", "setrlimit", "getrusage", "times",
     "fadvise64", "fadvise64_64",
     "inotify_init", "inotify_init1", "inotify_add_watch", "inotify_rm_watch",
 )
@@ -326,6 +340,9 @@ def _load_seccomp():
             add(ctx, deny, "socketpair", [_ScmpArgCmp(0, _SCMP_CMP_NE, 1, 0)])
             # Threads are allowed (CLONE_THREAD); fork-like clone calls are denied.
             add(ctx, deny, "clone", [_ScmpArgCmp(0, _SCMP_CMP_MASKED_EQ, 0x00010000, 0)])
+            # Signal redirection to another process through fcntl.
+            for cmd in (_F_SETOWN, _F_SETSIG, _F_SETOWN_EX):
+                add(ctx, deny, "fcntl", [_ScmpArgCmp(1, _SCMP_CMP_EQ, cmd, 0)])
         else:
             for name in _ALLOW_SYSCALLS:
                 add(ctx, allow, name)
@@ -335,6 +352,19 @@ def _load_seccomp():
             add(ctx, allow, "socketpair", [_ScmpArgCmp(0, _SCMP_CMP_EQ, 1, 0)])
             # Threads only; fork/vfork/clone-without-CLONE_THREAD stay denied.
             add(ctx, allow, "clone", [_ScmpArgCmp(0, _SCMP_CMP_MASKED_EQ, 0x00010000, 0x00010000)])
+            # Only the calling process may adjust its limits; otherwise user
+            # code could change another tenant's process limits.
+            add(ctx, allow, "prlimit64", [_ScmpArgCmp(0, _SCMP_CMP_EQ, 0, 0)])
+            # fcntl is allowed for descriptor flags and file locks. Commands
+            # 8-15 (F_SETOWN/F_GETOWN/F_SETSIG/F_SETOWN_EX) can deliver signals
+            # to other same-uid processes, so they are left to the default deny.
+            add(ctx, allow, "fcntl", [_ScmpArgCmp(1, _SCMP_CMP_MASKED_EQ, 0x8, 0)])
+            for cmd in (
+                _F_GETPIPE_SZ, _F_ADD_SEALS, _F_GET_SEALS,
+                _F_GET_RW_HINT, _F_SET_RW_HINT,
+                _F_GET_FILE_RW_HINT, _F_SET_FILE_RW_HINT,
+            ):
+                add(ctx, allow, "fcntl", [_ScmpArgCmp(1, _SCMP_CMP_EQ, cmd, 0)])
         # glibc falls back to clone() when clone3() reports ENOSYS.
         add(ctx, _SCMP_ACT_ERRNO | errno.ENOSYS, "clone3")
         rc = lib.seccomp_load(ctx)

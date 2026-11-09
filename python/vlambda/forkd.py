@@ -17,7 +17,6 @@ import time
 
 from vlambda.pool import _landlock_read_paths
 from vlambda.runner import handle_payload
-from vlambda.sandbox_os import _apply_landlock
 
 
 def _write_envelope(fd: int, envelope: dict):
@@ -44,6 +43,7 @@ def _child(payload: dict, read_fd: int, write_fd: int, read_paths: list[str], tm
     os.environ["HOME"] = tmp_dir
     os.environ["TMPDIR"] = tmp_dir
     try:
+        os.chdir(tmp_dir)
         from vlambda.sandbox_os import apply_sandbox
         apply_sandbox(read_paths, [tmp_dir], cpu_sec)
         envelope = handle_payload(payload)
@@ -128,19 +128,13 @@ def _run_one(payload: dict) -> dict:
         return {"ok": False, "error": "invalid runner response", "logs": []}
 
 
-# The supervisor itself is trusted and never executes user code, but keeping it
-# away from the database gives the fork child an extra boundary.
+# The supervisor is trusted and never executes user code, so it is not sandboxed
+# itself: applying Landlock here would have to allow the whole projects tree,
+# which every forked child would inherit (a cross-tenant read leak). Each child
+# receives exactly its own project/vendor directory and applies its own ruleset.
 BASE_READ_PATHS = _landlock_read_paths()
-for extra in ("/data/projects", "/data/packages"):
-    if os.path.isdir(extra):
-        BASE_READ_PATHS.append(extra)
 # Only the supervisor needs this path; do not leak it into user code.
 os.environ.pop("VLRUN_BROKER_DIR", None)
-try:
-    _apply_landlock(BASE_READ_PATHS, ["/tmp"])
-except Exception as e:
-    print(f"forkd: parent sandbox failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-    raise SystemExit(1)
 
 
 def main() -> None:

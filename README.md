@@ -34,7 +34,7 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 - **Versions and aliases** — rollback and `prod`/`staging` aliases
 - **PyPI packages** — install per lambda/project from the UI
 - **Persistent metrics and logs** — survive restarts, queryable by slug/name
-- **CORS** — applied to every `/f/` response, with `OPTIONS` preflight
+- **CORS** — opt-in per-origin CORS for `/f/` responses, with `OPTIONS` preflight
 - **Static files** — projects serve `index.html`, CSS, JS and assets at `/f/<slug>/<path>`
 - **API tokens** — long-lived tokens with scopes and revocation
 - **Export / import / duplicate** — move lambdas and projects as JSON
@@ -43,11 +43,12 @@ POST that code to `/vlambda` and it becomes `GET /f/<slug>` instantly.
 
 ## Roadmap
 
-0.4.0 is released. The next release is 1.0: single-host deployments on Linux,
-data lifecycle (backup/restore and schema versions), security hardening,
+1.0 is the current release line: single-host deployments on Linux, data
+lifecycle (backup/restore and schema versions), security hardening,
 operational tooling and complete documentation. Multi-host active/active is out
-of scope. See [docs/ROADMAP-1.0.0.md](docs/ROADMAP-1.0.0.md); the 0.4.0 design
-notes remain in [docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md).
+of scope, and Firecracker/microVM-per-invocation isolation is not part of 1.0.
+See [docs/ROADMAP-1.0.0.md](docs/ROADMAP-1.0.0.md); the 0.4.0 design notes
+remain in [docs/ROADMAP-0.4.0.md](docs/ROADMAP-0.4.0.md).
 
 ## Installation
 
@@ -515,11 +516,11 @@ docker compose -f docker/compose.yml -f docker/compose.gvisor.yml up -d
 Kubernetes uses `runtimeClassName: gvisor` on the pod. The internal fork +
 Landlock + seccomp sandbox remains active. `scripts/gvisor-smoke.sh` builds the
 image, runs the health check under `runsc` and skips cleanly when gVisor is not
-installed. Firecracker/microVM-per-invocation is deferred to 0.5.0.
+installed. Firecracker/microVM-per-invocation is not part of 1.0.
 
 ## High availability (single host)
 
-0.4.0 supports multiple replicas on one host sharing a local `/data` volume.
+1.0 supports multiple replicas on one host sharing a local `/data` volume.
 SQLite WAL, a scheduler lease, task claiming and graceful drain keep scheduled
 runs and tasks single-execution across replicas.
 
@@ -529,7 +530,7 @@ docker compose -f docker/compose.ha.yml up -d --build --scale vlambda=2
 
 The sample puts nginx in front of two replicas. Do not place SQLite on NFS; use
 a local volume on the same host. Multi-host HA needs an external database and is
-deferred to 0.5.0.
+not part of 1.0.
 
 Relevant settings:
 
@@ -611,10 +612,11 @@ Install 1.0 first so this command exists. It removes the main and metrics
 databases plus project, package and cache data. Copy the data volume first if
 you need to keep anything; the old schema is not migrated automatically.
 
-For a disposable demo, run it from cron every day:
+For a disposable demo, run it from cron every day. `--online-only` prevents the
+CLI from touching SQLite directly if the server is down or rejects the request:
 
 ```cron
-0 3 * * * docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> /opt/venv/bin/python -m vlambda reset --yes --url http://127.0.0.1:8080
+0 3 * * * flock -n /run/vlambda-reset.lock docker exec -e VLAMBDA_ADMIN_TOKEN="..." <container> /opt/venv/bin/python -m vlambda reset --yes --online-only --url http://127.0.0.1:8080 >> /var/log/vlambda-reset.log 2>&1
 ```
 
 ## Backup and restore

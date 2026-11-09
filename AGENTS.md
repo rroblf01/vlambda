@@ -1,9 +1,9 @@
 # AGENTS.md
 
 ## Layout
-- Repo root holds tests/, bench.py, docs. Buildable project is vlambda/ (inner); run commands from there.
-- V source: vlambda/src/vlambda_native.v. Python package: vlambda/python/vlambda/.
-- Generated (gitignored): src/_vcraft_generated.v, python/vlambda_native.pyi, .vcraft/, dist/, build/, *.so.
+- Repository root is the buildable project: `src/`, `python/vlambda/`, `tests/`, `docs/`.
+- V source: `src/vlambda_native.v`. Python package: `python/vlambda/`.
+- Generated (gitignored): `src/_vcraft_generated.v`, `python/vlambda_native.pyi`, `.vcraft/`, `dist/`, `build/`, `*.so`.
 
 ## Requirements
 - Python >=3.14; V compiler pinned to commit 36be92642c49a8fe9213ea4b96c6bf56b67b668c; vcraft 1.7.2.
@@ -20,7 +20,7 @@ vcraft develop regenerates native extension and installs editable wheel. Set VCR
 Release build: vcraft build --release (and --free-threading for t builds). Release uses V -prod, stricter than develop; unchecked !void results fail compilation.
 
 ## Type checking
-vlambda/pyproject.toml configures pyright, mypy, ty with python/ as extra import path. Run from vlambda/.
+pyproject.toml configures pyright, mypy, ty with python/ as extra import path. Run from the repository root.
 
 ## UI
 - Source: `python/vlambda/ui.html`.
@@ -37,10 +37,11 @@ python -m vlambda --port 8080 --sqlite_path ./vlambda.db --num_coroutines 10
 Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon thread; main thread sleeps. Ctrl+C unreliable; use /shutdown or kill.
 
 ## Tests
-- Integration only: cd vlambda && . .venv/bin/activate && python ../tests/test_vlambda.py
-- Harness self-starts server (port 9799, DB /tmp/test_vlambda.db, max body 100).
-- No pytest suite. Set VLAMBDA_BASE if project root not auto-detected.
-- To run one case, call start_server() then test function manually, or trim test list.
+- Unit: `python -m pytest tests/test_unit.py -q`
+- Integration: `python tests/test_vlambda.py`
+- The integration harness self-starts the server (port 9799, temporary DB, max body 100).
+- Set `VLAMBDA_BASE` if the repository root is not auto-detected.
+- To run one case, call `start_server()` then the test function manually, or trim the test list.
 
 ## CI
 - .github/workflows/ci.yml runs in manylinux container (preinstalled V/vcraft) for Python 3.14 and 3.15: create venv -> vcraft develop -> integration tests.
@@ -55,7 +56,7 @@ Env vars mirror flags (VLAMBDA_PORT, VLAMBDA_DB, ...). Server runs V in daemon t
 - Both use uv to create a free-threaded venv and run vlambda directly on port 8080 (no gofly; Dokploy handles TLS and the proxy).
 - Each invocation runs in a fresh Landlock + seccomp child forked from a pre-warmed supervisor (`VLAMBDA_SANDBOX=fork`): filesystem allow-list, hidden `/data` and `/proc`, no network or cross-process signals, rlimits. No Docker security flags or host sysctl changes are required (kernel >= 5.13).
 - The container speaks HTTP on port 8080; TLS is terminated by Dokploy or another proxy.
-- Registration is open by default for the toy deployment; set `VLAMBDA_REGISTRATION=0` to close it, then create users with `POST /admin/users` and `X-Admin-Token`.
+- Registration is closed by default in the production image; set `VLAMBDA_REGISTRATION=1` to open it, or create users with `POST /admin/users` and `X-Admin-Token`.
 - `VLAMBDA_SANDBOX=fork` (Docker default) forks a fresh Landlock + seccomp child from a pre-warmed supervisor. `landlock`, `nsjail` and `process` are optional modes.
 - Reset: `python -m vlambda reset --yes --url http://127.0.0.1:8080 --token $VLAMBDA_ADMIN_TOKEN`.
 - See `docker/README.md`.

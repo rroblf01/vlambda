@@ -96,7 +96,7 @@ prints the running package version; `/health` and `/ready` return it in JSON.
 ## Build a POC in five minutes
 
 1. Open the UI and log in.
-2. Pick a template in **New lambda** (`JSON API + CORS`, `Webhook receiver`,
+2. Pick a template in **New lambda** (`JSON API`, `Webhook receiver`,
    `Form receiver`, `HTML page`…) and create it.
 3. Open the invoke URL `https://your-host/f/<slug>`.
 4. Need files? Upload a ZIP in **Upload project**; anything in the project is
@@ -684,7 +684,8 @@ escape or authentication bypass.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details. Third-party browser libraries
+bundled into the UI are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Author
 

@@ -1,3 +1,8 @@
+/*!
+ * CodeMirror 6 (codemirror, @codemirror/*)
+ * Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
+ * Released under the MIT License.
+ */
 import { EditorView, basicSetup } from 'codemirror';
 import { python } from '@codemirror/lang-python';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';

@@ -1,5 +1,8 @@
 # vlambda — findings about vcraft
 
+> Historical notes from early development. Current architecture, performance and
+> limitations are documented in `README.md` and `docs/`.
+
 ASGI-like server for Python lambdas, written in V. Uses vcraft 1.7.0-dev for the V↔Python bridge.
 
 ## What works (Iteration 1)

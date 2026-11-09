@@ -1,5 +1,8 @@
 # Proposal: Cambios en el lenguaje V para mejorar vlambda y vcraft
 
+> Nota histórica: propuesta de diseño de las primeras iteraciones. No es un
+> compromiso de roadmap ni parte de la API de vlambda.
+
 ## Motivación
 
 vlambda es un servidor ASGI-like para lambdas Python escrito en V, usando vcraft para el

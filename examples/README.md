@@ -6,7 +6,7 @@ databases or external services.
 | Example | What it shows | How to deploy |
 |---|---|---|
 | [`hello`](hello/) | Minimal JSON lambda | Create a lambda and paste `main.py` |
-| [`json-api`](json-api/) | JSON API with automatic CORS | Create a `GET` lambda |
+| [`json-api`](json-api/) | JSON API (enable `VLAMBDA_CORS` for cross-origin browser calls) | Create a `GET` lambda |
 | [`webhook`](webhook/) | Receive and log a webhook | Create a `POST` lambda |
 | [`html-fetch`](html-fetch/) | HTML page plus `fetch()` to its own API | Create a `GET` lambda |
 | [`static-site`](static-site/) | Static files served by a project | Upload the folder as a ZIP |

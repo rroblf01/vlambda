@@ -186,7 +186,7 @@ body.light .ide-tabs .tab:hover { background: rgba(0,0,0,.04); }
         <select id="template-select" onchange="applyTemplate()">
           <option value="hello">Hello world</option>
           <option value="json">JSON API</option>
-          <option value="cors">JSON API + CORS</option>
+          <option value="cors">JSON API (enable CORS)</option>
           <option value="webhook">Webhook receiver</option>
           <option value="form">Form receiver</option>
           <option value="echo">Echo request</option>
@@ -1733,7 +1733,7 @@ async function changePassword() {
 const TEMPLATES = {
   hello: 'def handler(request):\n    return {"msg": "hello", "path": request.path}\n',
   json: 'def handler(request):\n    return {\n        "method": request.method,\n        "path": request.path,\n        "query": request.query_string,\n        "body": request.body.decode("utf-8", "replace"),\n    }\n',
-  cors: 'def handler(request):\n    # vlambda adds CORS headers automatically for /f/<slug>.\n    return {\n        "ok": True,\n        "method": request.method,\n        "items": [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}],\n    }\n',
+  cors: 'def handler(request):\n    # Set VLAMBDA_CORS=* (or an explicit origin) to enable CORS for /f/<slug>.\n    return {\n        "ok": True,\n        "method": request.method,\n        "items": [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}],\n    }\n',
   webhook: 'import json\n\ndef handler(request):\n    try:\n        payload = json.loads(request.body or b"{}")\n    except ValueError:\n        payload = {"raw": request.body.decode("utf-8", "replace")}\n    request.log("webhook received: " + json.dumps(payload)[:200])\n    return {"received": True, "payload": payload}\n',
   form: 'from urllib.parse import parse_qs\n\ndef handler(request):\n    form = parse_qs(request.body.decode("utf-8", "replace"))\n    return {"fields": {k: v[0] for k, v in form.items()}}\n',
   echo: 'def handler(request):\n    return {"echo": request.body, "headers": request.headers}\n',

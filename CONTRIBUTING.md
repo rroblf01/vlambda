@@ -20,16 +20,16 @@ editable wheel. Set `VCRAFT_BIN` to use another vcraft binary.
 
 ## Layout
 
-- `vlambda/src/` — V sources, including the native HTTP server.
-- `vlambda/python/vlambda/` — Python package (server, sandbox, CLI, UI assets).
-- `vlambda/python/vlambda/ui.html` — UI source.
-- `vlambda/ui/` — editor/Chart.js bundle source; build with `npm run build` and
+- `src/` — V sources, including the native HTTP server.
+- `python/vlambda/` — Python package (server, sandbox, CLI, UI assets).
+- `python/vlambda/ui.html` — UI source.
+- `ui/` — editor/Chart.js bundle source; build with `npm run build` and
   regenerate `python/vlambda/static/app.js`.
 - `tests/test_unit.py` — unit tests.
 - `tests/test_vlambda.py` — integration harness (starts a real server).
 - `docs/` — API, CLI, compatibility and upgrade references.
 
-Run build commands from `vlambda/`, not from the repository root.
+Run build and test commands from the repository root.
 
 ## Tests
 
@@ -38,8 +38,7 @@ Run build commands from `vlambda/`, not from the repository root.
 python -m pytest tests/test_unit.py -q
 
 # Integration (self-starts a server on port 9799)
-cd vlambda
-python ../tests/test_vlambda.py
+python tests/test_vlambda.py
 ```
 
 `VLAMBDA_PYTHON` overrides the interpreter used by the integration harness.

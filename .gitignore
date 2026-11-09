@@ -1,4 +1,5 @@
 .venv/
+.venv-*/
 dist/
 build/
 *.so
@@ -12,6 +13,16 @@ __pycache__/
 /src/_vcraft_generated.v
 python/vlambda_native.pyi
 .pytest_cache/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+secrets/
 
 ui/node_modules/
 .coverage

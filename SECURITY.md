@@ -12,8 +12,9 @@ private vulnerability reporting:
 
 <https://github.com/rroblf01/vlambda/security/advisories/new>
 
-If that is not available, contact the maintainer at
-<ricardo.r.f@hotmail.com> with:
+If that is not available, open a minimal public issue asking for a private
+contact channel; do not include exploit details in the issue. Include in the
+private report:
 
 - affected version and commit;
 - a minimal reproduction or proof of concept;

@@ -11,6 +11,13 @@ __pycache__
 *.pyc
 *.db
 *.db-*
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets
 .pytest_cache
 tests
 bench.py

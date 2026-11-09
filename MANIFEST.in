@@ -4,5 +4,6 @@ include README.md
 include CHANGELOG.md
 include SECURITY.md
 include CONTRIBUTING.md
+include THIRD_PARTY_NOTICES.md
 recursive-include python/vlambda/static *
 recursive-include docs *.md

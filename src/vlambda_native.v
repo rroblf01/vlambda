@@ -268,6 +268,22 @@ fn cors_json(status int, body string) http.Response {
 	return cors_response(status, body, 'application/json')
 }
 
+fn json_response(status int, body string) http.Response {
+	return http.Response{
+		status_code: status
+		body: body
+		header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
+	}
+}
+
+fn text_response(status int, body string, content_type string) http.Response {
+	return http.Response{
+		status_code: status
+		body: body
+		header: http.new_header(http.HeaderConfig{ key: .content_type, value: content_type })
+	}
+}
+
 fn normalize_method(value string) string {
 	m := value.trim_space().to_upper()
 	return match m {
@@ -649,11 +665,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		bucket.last = now
 		if bucket.tokens < 1 {
 			vlambda_rate_buckets[ip] = bucket
-			return http.Response{
-				status_code: 429
-				body: '{"error": "rate limit exceeded"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(429, '{"error": "rate limit exceeded"}')
 		}
 		bucket.tokens -= 1
 		vlambda_rate_buckets[ip] = bucket
@@ -664,29 +676,17 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 
 	// Reject oversized bodies before any route buffers or parses them.
 	if req.data.len > vlambda_max_body_size * 100 {
-		return http.Response{
-			status_code: 413
-			body: '{"error": "request body too large"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(413, '{"error": "request body too large"}')
 	}
 
 	// A reset is in progress: reject new work briefly.
 	if vlambda_resetting {
-		return http.Response{
-			status_code: 503
-			body: '{"error": "reset in progress"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(503, '{"error": "reset in progress"}')
 	}
 
 	// Memory pressure (set by Python monitor)
 	if vlambda_overloaded {
-		return http.Response{
-			status_code: 503
-			body: '{"error": "server overloaded, try again later"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(503, '{"error": "server overloaded, try again later"}')
 	}
 
 	// Memory check
@@ -734,20 +734,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	// Scope enforcement for API tokens. JWTs get every scope.
 	if auth_uid >= 0 && auth_scopes != '' {
 		if req.url.starts_with('/admin/') && !has_scope(auth_scopes, 'admin') {
-			return http.Response{
-				status_code: 403
-				body: '{"error": "admin scope required"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(403, '{"error": "admin scope required"}')
 		}
 		is_write := req.method == .post || req.method == .put || req.method == .patch
 			|| req.method == .delete
 		if is_write && !has_scope(auth_scopes, 'write') && !has_scope(auth_scopes, 'admin') && !req.url.starts_with('/tokens') {
-			return http.Response{
-				status_code: 403
-				body: '{"error": "write scope required"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(403, '{"error": "write scope required"}')
 		}
 	}
 
@@ -768,11 +760,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		bucket.last = now
 		if bucket.tokens < 1 {
 			vlambda_rate_buckets[key] = bucket
-			return http.Response{
-				status_code: 429
-				body: '{"error": "user rate limit exceeded"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(429, '{"error": "user rate limit exceeded"}')
 		}
 		bucket.tokens -= 1
 		vlambda_rate_buckets[key] = bucket
@@ -781,7 +769,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	// Route: /async/<slug> (fire-and-forget, owner only)
 	if req.url.starts_with('/async/') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
@@ -789,21 +777,17 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[7..]
 		code_method := db_get_lambda_code(slug)
 		if code_method == '' {
-			return http.Response{
-				status_code: 404
-				body: '{"error": "lambda not found"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if db_get_project(slug) != '' {
-			return http.Response{ status_code: 400, body: '{"error": "async is only supported for code lambdas"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "async is only supported for code lambdas"}')
 		}
 		owner := db_get_lambda_owner(slug)
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		if req.data.len > vlambda_max_body_size {
-			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(413, '{"error": "request body too large"}')
 		}
 		parts := code_method.split('|')
 		code := if parts.len > 0 { parts[0] } else { '' }
@@ -816,17 +800,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		task_id := create_task_async(code, method, url_path, q, req.data, auth_uid, slug, request_meta_json(req))
 		status := if task_id.starts_with('{"error"') { 503 } else { 202 }
-		return http.Response{
-			status_code: status
-			body: task_id
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(status, task_id)
 	}
 
 	// Route: /task/<id> (owner only; admin token sees everything)
 	if req.url.starts_with('/task/') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut task_id := req.url[6..]
 		if qi := task_id.index('?') {
@@ -841,22 +821,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		} else {
 			200
 		}
-		return http.Response{
-			status_code: status
-			body: result
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(status, result)
 	}
 
 	// Route: /tokens (GET = list, POST = create)
 	if req.url == '/tokens' || req.url.starts_with('/tokens?') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if req.method == .post {
 			// Creating tokens requires the admin scope when using a PAT.
 			if auth_scopes != '' && !has_scope(auth_scopes, 'admin') {
-				return http.Response{ status_code: 403, body: '{"error": "admin scope required"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(403, '{"error": "admin scope required"}')
 			}
 			mut token_name := ''
 			mut token_scopes := 'read,write'
@@ -864,7 +840,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if req.data.len > 0 {
 				parsed, parse_error := parse_token_create(req.data)
 				if parse_error != '' {
-					return http.Response{ status_code: 400, body: '{"error": ' + json_str(parse_error) + '}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					return json_response(400, '{"error": ' + json_str(parse_error) + '}')
 				}
 				token_name = parsed.name
 				token_expires = parsed.expires_in
@@ -896,33 +872,33 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 			}
 			if valid_scopes.len == 0 {
-				return http.Response{ status_code: 400, body: '{"error": "no valid scopes"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "no valid scopes"}')
 			}
 			if token_expires < 0 || token_expires > 315360000 {
-				return http.Response{ status_code: 400, body: '{"error": "expires_in must be between 0 and 315360000 seconds"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "expires_in must be between 0 and 315360000 seconds"}')
 			}
 			expires_at := if token_expires > 0 { (time.now().unix() + i64(token_expires)).str() } else { '' }
 			result := db_create_api_token(auth_uid, token_name, valid_scopes.join(','), expires_at)
 			if result.starts_with('{"error"') {
-				return http.Response{ status_code: 500, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(500, result)
 			}
 			db_audit(auth_uid, 'token.create', token_name, 'scopes=' + valid_scopes.join(',') + ' expires_at=' + expires_at, request_client_ip(req))
-			return http.Response{ status_code: 201, body: result, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(201, result)
 		}
 		if req.method == .get {
 			body := '{"tokens": ' + db_list_api_tokens(auth_uid) + '}'
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(200, body)
 		}
-		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(405, '{"error": "method not allowed"}')
 	}
 
 	// Route: /tokens/<id> (DELETE = revoke)
 	if req.url.starts_with('/tokens/') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if auth_scopes != '' && !has_scope(auth_scopes, 'admin') {
-			return http.Response{ status_code: 403, body: '{"error": "admin scope required"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "admin scope required"}')
 		}
 		if req.method == .delete {
 			mut url_path := req.url
@@ -930,42 +906,38 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			url_path = url_path[..qi]
 			id := url_path[8..].int()
 			if id <= 0 {
-				return http.Response{ status_code: 400, body: '{"error": "invalid token id"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "invalid token id"}')
 			}
 			if db_revoke_api_token(auth_uid, id) {
 				db_audit(auth_uid, 'token.revoke', id.str(), '', request_client_ip(req))
-				return http.Response{ status_code: 200, body: '{"revoked": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(200, '{"revoked": true}')
 			}
-			return http.Response{ status_code: 404, body: '{"error": "token not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "token not found"}')
 		}
-		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(405, '{"error": "method not allowed"}')
 	}
 
 	// Route: /dlq
 	if req.url == '/dlq' {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if vlambda_get_dlq == unsafe { nil } {
-			return http.Response{ status_code: 500, body: '{"error": "not configured"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(500, '{"error": "not configured"}')
 		}
 		owner_id := request_owner(req, auth_uid)
 		mut body := call_py_strs(vlambda_get_dlq, [owner_id.str()])
 		if body == '' {
 			body = '[]'
 		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, body)
 	}
 
 	// Route: /openapi.json (owner scoped unless public)
 	if req.url == '/openapi.json' {
 		public := os.getenv('VLAMBDA_OPENAPI_PUBLIC') in ['1', 'true', 'yes', 'on']
 		if auth_uid < 0 && !public {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		owner_id := if public && auth_uid < 0 { 0 } else { request_owner(req, auth_uid) }
 		scheme := req.header.get_custom('X-Forwarded-Proto', http.HeaderQueryConfig{}) or { 'http' }
@@ -988,52 +960,32 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			vcraft.gil_release(state)
 		}
 		status := if body.starts_with('{"error"') { 500 } else { 200 }
-		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(status, body)
 	}
 
 	// Route: /config (public runtime flags for the UI)
 	if req.url == '/config' && req.method == .get {
 		reg := if vlambda_registration_enabled { 'true' } else { 'false' }
-		return http.Response{
-			status_code: 200
-			body: '{"registration": ${reg}}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, '{"registration": ${reg}}')
 	}
 
 	// Route: /health
 	if req.url == '/health' {
-		return http.Response{
-			status_code: 200
-			body: '{"status": "ok", "version": "${vlambda_version}"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, '{"status": "ok", "version": "${vlambda_version}"}')
 	}
 
 	// Route: /ready
 	if req.url == '/ready' {
 		if vlambda_draining || vlambda_executor == unsafe { nil } {
-			return http.Response{
-				status_code: 503
-				body: '{"status": "not ready"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(503, '{"status": "not ready"}')
 		}
-		return http.Response{
-			status_code: 200
-			body: '{"status": "ready", "version": "${vlambda_version}"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, '{"status": "ready", "version": "${vlambda_version}"}')
 	}
 
 	// Route: /shutdown (POST, admin token)
 	if req.url == '/shutdown' && req.method == .post {
 		if !is_admin_request(req) {
-			return http.Response{
-				status_code: 403
-				body: '{"error": "forbidden"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		vlambda_draining = true
 		if vlambda_shutdown != unsafe { nil } {
@@ -1047,11 +999,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			time.sleep(150 * time.millisecond)
 			C.exit(0)
 		}()
-		return http.Response{
-			status_code: 200
-			body: '{"status": "shutting down"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, '{"status": "shutting down"}')
 	}
 
 	// Route: /ui (serve HTML dashboard)
@@ -1072,11 +1020,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		name = name[..qi]
 		body := get_asset(name)
 		if body == '' {
-			return http.Response{
-				status_code: 404
-				body: 'asset not found'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
-			}
+			return text_response(404, 'asset not found', 'text/plain')
 		}
 		mut ctype := 'application/octet-stream'
 		if name.ends_with('.js') { ctype = 'application/javascript' }
@@ -1099,32 +1043,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		// so skip it when the request comes from a lambda page.
 		if ref := req.header.get(.referer) {
 			if ref.contains('/f/') {
-				return http.Response{
-					status_code: 404
-					body: ''
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
-				}
+				return text_response(404, '', 'text/plain')
 			}
 		}
 		icon := get_favicon()
-		return http.Response{
-			status_code: 200
-			body: icon
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'image/x-icon' })
-		}
+		return text_response(200, icon, 'image/x-icon')
 	}
 
 	// Route: /logs/history (persisted lambda logs)
 	if req.url.starts_with('/logs/history') {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if req.method != .get && req.method != .delete {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		mut days := if req.method == .delete { 0 } else { 1 }
 		mut slug := ''
@@ -1134,7 +1066,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') {
 					raw := part.all_after('=')
 					if !is_uint(raw) {
-						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						return json_response(400, '{"error": "days must be a non-negative integer"}')
 					}
 					days = raw.int()
 				}
@@ -1147,23 +1079,19 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if body == '' {
 				body = '{"deleted": 0}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(200, body)
 		}
 		mut body := call_py_strs(vlambda_query_logs, [days.str(), slug, owner_id.str()])
 		if body == '' {
 			body = '{"days": ${days}, "count": 0, "items": []}'
 		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, body)
 	}
 
 	// Route: /metrics/json (JSON format for UI charts, owner scoped)
 	if req.url == '/metrics/json' {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		owner_id := request_owner(req, auth_uid)
 		mut allowed := map[string]bool{}
@@ -1190,36 +1118,24 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		avg := if total_req > 0 { total_lat / f64(total_req) } else { 0.0 }
 		body := '{"requests_total": ${total_req}, "errors_total": ${total_err}, "lambdas_created": ${vlambda_lambdas_created}, "latency_avg_ms": ${avg}, "latency_count": ${total_req}, "per_lambda": [${items.join(',')}]}'
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, body)
 	}
 
 	// Route: /metrics (public aggregate counters; no per-lambda labels)
 	if req.url == '/metrics' {
 		avg := if vlambda_latency_count > 0 { vlambda_latency_sum / f64(vlambda_latency_count) } else { 0.0 }
 		body := 'vlambda_requests_total ${vlambda_req_total}\nvlambda_errors_total ${vlambda_req_errors}\nvlambda_lambdas_created_total ${vlambda_lambdas_created}\nvlambda_latency_avg_ms ${avg}\nvlambda_latency_count ${vlambda_latency_count}\n'
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
-		}
+		return text_response(200, body, 'text/plain')
 	}
 
 
 	// Route: /metrics/history (persisted metrics from separate DB)
 	if req.url.starts_with('/metrics/history') {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if req.method != .get && req.method != .delete {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		mut days := if req.method == .delete { 0 } else { 7 }
 		mut slug := ''
@@ -1229,7 +1145,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') {
 					raw := part.all_after('=')
 					if !is_uint(raw) {
-						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						return json_response(400, '{"error": "days must be a non-negative integer"}')
 					}
 					days = raw.int()
 				}
@@ -1244,28 +1160,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if body == '' {
 				body = '{"deleted": 0}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(200, body)
 		}
 		mut body := call_py_strs(vlambda_query_metrics, [days.str(), slug, owner_id.str()])
 		if body == '' {
 			body = '{"days": ${days}, "items": []}'
 		}
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, body)
 	}
 
 
 	// Route: /metrics/stats (aggregated persisted metrics)
 	if req.url.starts_with('/metrics/stats') {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut days := 7
 		mut slug := ''
@@ -1275,7 +1183,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') {
 					raw := part.all_after('=')
 					if !is_uint(raw) {
-						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						return json_response(400, '{"error": "days must be a non-negative integer"}')
 					}
 					days = raw.int()
 				}
@@ -1287,22 +1195,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if body == '' {
 			body = '{"days": ${days}, "count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0}'
 		}
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, body)
 	}
 
 
 	// Route: /metrics/aggregate (persisted per-lambda aggregates)
 	if req.url.starts_with('/metrics/aggregate') {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut days := 7
 		mut slug := ''
@@ -1312,7 +1212,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') {
 					raw := part.all_after('=')
 					if !is_uint(raw) {
-						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						return json_response(400, '{"error": "days must be a non-negative integer"}')
 					}
 					days = raw.int()
 				}
@@ -1324,17 +1224,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if body == '' {
 			body = '{"days": ${days}, "requests_total": 0, "errors_total": 0, "cold_starts": 0, "per_lambda": []}'
 		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, body)
 	}
 
 	// Route: /metrics/summary (aggregated persisted metrics)
 	if req.url.starts_with('/metrics/summary') {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut days := 7
 		mut slug := ''
@@ -1344,7 +1240,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') {
 					raw := part.all_after('=')
 					if !is_uint(raw) {
-						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						return json_response(400, '{"error": "days must be a non-negative integer"}')
 					}
 					days = raw.int()
 				}
@@ -1356,21 +1252,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if body == '' {
 			body = '{"days": ${days}, "items": []}'
 		}
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, body)
 	}
 
 	// Route: /metrics/export (CSV)
 	if req.url.starts_with('/metrics/export') {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut days := 7
 		mut slug := ''
@@ -1380,7 +1268,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				if part.starts_with('days=') {
 					raw := part.all_after('=')
 					if !is_uint(raw) {
-						return http.Response{ status_code: 400, body: '{"error": "days must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+						return json_response(400, '{"error": "days must be a non-negative integer"}')
 					}
 					days = raw.int()
 				}
@@ -1389,37 +1277,25 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		owner_id := request_owner(req, auth_uid)
 		body := call_py_strs(vlambda_export_metrics, [days.str(), slug, owner_id.str()])
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/csv' })
-		}
+		return text_response(200, body, 'text/csv')
 	}
 
 	// Route: /pool/stats
 	if req.url == '/pool/stats' {
 		if auth_uid < 0 {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "unauthorized"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut body := call_py_strs(vlambda_pool_stats, [])
 		if body == '' {
 			body = '{}'
 		}
-		return http.Response{
-			status_code: 200
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, body)
 	}
 
 	// Route: /admin/audit (GET, admin token protected)
 	if req.url.starts_with('/admin/audit') && req.method == .get {
 		if !is_admin_request(req) {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		mut limit := 100
 		if req.url.contains('limit=') {
@@ -1431,37 +1307,33 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if limit <= 0 || limit > 1000 {
 			limit = 100
 		}
-		return http.Response{
-			status_code: 200
-			body: '{"entries": ' + db_list_audit(limit) + '}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, '{"entries": ' + db_list_audit(limit) + '}')
 	}
 
 	// Route: /admin/password (POST, token protected = reset any user password)
 	if req.url == '/admin/password' && req.method == .post {
 		if !is_admin_request(req) {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		username, password := split_credentials(req.data)
 		if username == '' {
-			return http.Response{ status_code: 400, body: '{"error": "expected username:password"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "expected username:password"}')
 		}
 		code := auth_admin_reset_password(username, password)
 		if code == -2 {
-			return http.Response{ status_code: 400, body: '{"error": "password does not meet policy"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "password does not meet policy"}')
 		}
 		if code != 0 {
-			return http.Response{ status_code: 404, body: '{"error": "user not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "user not found"}')
 		}
 		db_audit(0, 'admin.user.password.reset', username, '', request_client_ip(req))
-		return http.Response{ status_code: 200, body: '{"changed": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, '{"changed": true}')
 	}
 
 	// Route: /admin/reset (POST, token protected)
 	if req.url == '/admin/reset' && req.method == .post {
 		if !is_admin_request(req) {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
 		vlambda_resetting = true
@@ -1472,26 +1344,18 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		db_audit(0, 'admin.reset', '', body, request_client_ip(req))
 		vlambda_resetting = false
 		status := if body.starts_with('{"error"') { 500 } else { 200 }
-		return http.Response{
-			status_code: status
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(status, body)
 	}
 
 	// Route: /admin/users (POST, token protected)
 	if req.url == '/admin/users' && req.method == .post {
 		if !is_admin_request(req) {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		token := req.header.get_custom('X-Admin-Token', http.HeaderQueryConfig{}) or { '' }
 		username, password := split_credentials(req.data)
 		if username == '' {
-			return http.Response{
-				status_code: 400
-				body: '{"error": "expected username:password"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(400, '{"error": "expected username:password"}')
 		}
 		mut body := call_py_strs(vlambda_admin_create_user, [token, username, password])
 		if body == '' {
@@ -1511,103 +1375,59 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		if status == 201 {
 			db_audit(0, 'admin.user.create', username, 'user_id=' + body.all_after('"user_id": ').all_before('}'), request_client_ip(req))
 		}
-		return http.Response{
-			status_code: status
-			body: body
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(status, body)
 	}
 
 	// Route: /register (POST)
 	if req.url == '/register' && req.method == .post {
 		if !vlambda_registration_enabled {
-			return http.Response{
-				status_code: 403
-				body: '{"error": "registration is disabled"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(403, '{"error": "registration is disabled"}')
 		}
 		// Parse username:password from body
 		username, password := split_credentials(req.data)
 		if username == '' {
-			return http.Response{
-				status_code: 400
-				body: '{"error": "expected username:password"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(400, '{"error": "expected username:password"}')
 		}
 		uid := auth_register_user(username, password, request_client_ip(req))
 		if uid == -2 {
-			return http.Response{
-				status_code: 429
-				body: '{"error": "registration rate limit exceeded"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(429, '{"error": "registration rate limit exceeded"}')
 		}
 		if uid == -3 {
-			return http.Response{
-				status_code: 400
-				body: '{"error": "password does not meet policy"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(400, '{"error": "password does not meet policy"}')
 		}
 		if uid == -4 {
-			return http.Response{
-				status_code: 400
-				body: '{"error": "invalid username"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(400, '{"error": "invalid username"}')
 		}
 		if uid < 0 {
-			return http.Response{
-				status_code: 409
-				body: '{"error": "user already exists"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(409, '{"error": "user already exists"}')
 		}
 		db_audit(uid, 'user.register', username, '', request_client_ip(req))
-		return http.Response{
-			status_code: 201
-			body: '{"user_id": ${uid}}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(201, '{"user_id": ${uid}}')
 	}
 
 	// Route: /login (POST)
 	if req.url == '/login' && req.method == .post {
 		username, password := split_credentials(req.data)
 		if username == '' {
-			return http.Response{
-				status_code: 400
-				body: '{"error": "expected username:password"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(400, '{"error": "expected username:password"}')
 		}
 		token := auth_login_user(username, password, request_client_ip(req))
 		if token == '' {
-			return http.Response{
-				status_code: 401
-				body: '{"error": "invalid credentials"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(401, '{"error": "invalid credentials"}')
 		}
-		return http.Response{
-			status_code: 200
-			body: '{"token": "${token}"}'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-		}
+		return json_response(200, '{"token": "${token}"}')
 	}
 
 	// Route: /password (POST, authenticated = change own password)
 	if req.url == '/password' && req.method == .post {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut old_password := ''
 		mut new_password := ''
 		if req.data.trim_space().starts_with('{') {
 			obj := json2.decode[map[string]json2.Any](req.data) or {
-				return http.Response{ status_code: 400, body: '{"error": "invalid json"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "invalid json"}')
 			}
 			old_value := obj['old'] or { json2.Null{} }
 			new_value := obj['new'] or { json2.Null{} }
@@ -1616,57 +1436,57 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					old_password = old_value
 					new_password = new_value
 				} else {
-					return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					return json_response(400, '{"error": "expected old:new"}')
 				}
 			} else {
-				return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "expected old:new"}')
 			}
 		} else {
 			if !req.data.contains(':') {
-				return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "expected old:new"}')
 			}
 			old_password = req.data.all_before(':')
 			new_password = req.data.all_after(':')
 		}
 		if old_password == '' || new_password == '' {
-			return http.Response{ status_code: 400, body: '{"error": "expected old:new"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "expected old:new"}')
 		}
 		code := auth_change_password(auth_uid, old_password, new_password)
 		if code == -1 {
-			return http.Response{ status_code: 401, body: '{"error": "invalid credentials"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "invalid credentials"}')
 		}
 		if code == -3 {
-			return http.Response{ status_code: 400, body: '{"error": "new password must differ from the current one"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "new password must differ from the current one"}')
 		}
 		if code != 0 {
-			return http.Response{ status_code: 400, body: '{"error": "password does not meet policy"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "password does not meet policy"}')
 		}
 		db_audit(auth_uid, 'user.password.change', '', '', request_client_ip(req))
-		return http.Response{ status_code: 200, body: '{"changed": true}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, '{"changed": true}')
 	}
 
 	// Route: /project/<slug> (GET = read files, PUT = save files)
 	if req.url.starts_with('/project/') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
 		if url_path.len < 10 {
-			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "missing slug"}')
 		}
 		slug := url_path[9..].all_before('/')
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "project not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "project not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		project_info := db_get_project(slug)
 		if project_info == '' {
-			return http.Response{ status_code: 404, body: '{"error": "project not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "project not found"}')
 		}
 		project_dir := project_info.all_before('|')
 		rest_info := project_info.all_after('|')
@@ -1677,11 +1497,11 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if body == '' {
 				body = '{}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(200, body)
 		}
 		if req.method == .put {
 			if req.data.len > vlambda_max_body_size * 2 {
-				return http.Response{ status_code: 413, body: '{"error": "project too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(413, '{"error": "project too large"}')
 			}
 			request_body := req.data
 			mut body := call_py_strs(vlambda_save_project_json, [project_dir, request_body, entrypoint])
@@ -1689,25 +1509,21 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				body = '{}'
 			}
 			status := if body.starts_with('{"error"') { 400 } else { 200 }
-			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(status, body)
 		}
-		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(405, '{"error": "method not allowed"}')
 	}
 
 	// Route: /vlambda (POST = create, GET = list)
 	if req.url == '/vlambda' || req.url.starts_with('/vlambda?') {
 		if req.method == .post {
 			if auth_uid < 0 {
-				return http.Response{
-					status_code: 401
-					body: '{"error": "unauthorized"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			// Project upload (multi-file zip)
 			if req.url.contains('project=1') || req.url.contains('project=true') {
 				if req.data.len > vlambda_max_body_size * 100 {
-					return http.Response{ status_code: 413, body: '{"error": "project too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+					return json_response(413, '{"error": "project too large"}')
 				}
 				mut entrypoint := 'main.py'
 				mut name := ''
@@ -1728,11 +1544,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 				method = normalize_method(method)
 				if vlambda_create_project == unsafe { nil } {
-					return http.Response{
-						status_code: 500
-						body: '{"error": "project creation not configured"}'
-						header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-					}
+					return json_response(500, '{"error": "project creation not configured"}')
 				}
 				mut result := '{"error": "project creation failed"}'
 				state := vcraft.gil_ensure()
@@ -1749,29 +1561,17 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				}
 				vcraft.gil_release(state)
 				status := if result.starts_with('{"error"') { 400 } else { 201 }
-				return http.Response{
-					status_code: status
-					body: result
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(status, result)
 			}
 			// Create lambda
 			// Body: {"code": "...", "method": "GET"}
 			// For now, read code from body directly
 			code := req.data
 			if code.len == 0 {
-				return http.Response{
-					status_code: 400
-					body: '{"error": "missing code in body"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(400, '{"error": "missing code in body"}')
 			}
 			if code.len > vlambda_max_body_size {
-				return http.Response{
-					status_code: 413
-					body: '{"error": "request body too large"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(413, '{"error": "request body too large"}')
 			}
 			// Parse method and name from query string
 			mut method := 'GET'
@@ -1799,26 +1599,14 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			// Validate code syntax
 			vr := validate_code(code)
 			if vr != '' {
-				return http.Response{
-					status_code: 400
-					body: '{"error": "${vr}"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(400, '{"error": "${vr}"}')
 			}
 			// Validate Python code compiles (basic check: must contain 'def handler')
 			if !code.contains('def handler') {
-				return http.Response{
-					status_code: 400
-					body: '{"error": "code must define a handler function"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(400, '{"error": "code must define a handler function"}')
 			}
 			if db_count_lambdas(auth_uid) >= max_lambdas_per_user() {
-				return http.Response{
-					status_code: 429
-					body: '{"error": "lambda quota exceeded"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(429, '{"error": "lambda quota exceeded"}')
 			}
 			slug := make_slug(code)
 			ok := db_create_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
@@ -1827,25 +1615,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				vlambda_lambdas_created++
 			}
 			if !ok {
-				return http.Response{
-					status_code: 500
-					body: '{"error": "failed to store lambda"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(500, '{"error": "failed to store lambda"}')
 			}
-			return http.Response{
-				status_code: 201
-				body: '{"slug": "${slug}", "method": "${method}"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(201, '{"slug": "${slug}", "method": "${method}"}')
 		}
 		if req.method == .get {
 			if auth_uid < 0 {
-				return http.Response{
-					status_code: 401
-					body: '{"error": "unauthorized"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			// Parse limit/offset from query string
 			mut limit := 50
@@ -1868,24 +1644,12 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			count := db_count_lambdas(auth_uid)
 			if as_json {
 				items := db_list_lambdas_json(auth_uid, limit, offset)
-				return http.Response{
-					status_code: 200
-					body: '{"lambdas": ${items}, "count": ${count}, "limit": ${limit}, "offset": ${offset}}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(200, '{"lambdas": ${items}, "count": ${count}, "limit": ${limit}, "offset": ${offset}}')
 			}
 			lambdas := db_list_lambdas_page(auth_uid, limit, offset)
-			return http.Response{
-				status_code: 200
-				body: '{"lambdas": ${json_str(lambdas)}, "count": ${count}, "limit": ${limit}, "offset": ${offset}}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(200, '{"lambdas": ${json_str(lambdas)}, "count": ${count}, "limit": ${limit}, "offset": ${offset}}')
 		}
-		return http.Response{
-			status_code: 405
-			body: 'method not allowed'
-			header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
-		}
+		return text_response(405, 'method not allowed', 'text/plain')
 	}
 
 	// Route: /f/<slug>/<path> (invoke lambda or serve project files)
@@ -2032,7 +1796,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	// Route: /vlambda/<slug>/env (GET list, PUT save)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/env') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
@@ -2040,21 +1804,21 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[9..].all_before('/env')
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		if req.method == .get {
 			mut body := call_py_strs(vlambda_list_env, [slug, auth_uid.str()])
 			if body == '' {
 				body = '{"env": []}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(200, body)
 		}
 		if req.method == .put {
 			if req.data.len > vlambda_max_body_size {
-				return http.Response{ status_code: 413, body: '{"error": "environment too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(413, '{"error": "environment too large"}')
 			}
 			request_body := req.data
 			mut body := call_py_strs(vlambda_save_env, [slug, auth_uid.str(), request_body])
@@ -2062,16 +1826,16 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				body = '{"error": "save failed"}'
 			}
 			status := if body.starts_with('{"env"') { 200 } else { 400 }
-			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(status, body)
 		}
-		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(405, '{"error": "method not allowed"}')
 	}
 
 	// Route: /vlambda/<slug>/kv (GET list, DELETE clear)
 	// Route: /vlambda/<slug>/kv/<key> (GET, PUT, DELETE)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/kv') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut q := ''
 		if req.url.contains('?') {
@@ -2086,35 +1850,35 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			key = key[1..]
 		}
 		if key.contains('/') {
-			return http.Response{ status_code: 400, body: '{"error": "invalid key"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "invalid key"}')
 		}
 		key = decode_query_value(key)
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		if req.method != .get && req.method != .put && req.method != .delete {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		request_body := req.data
 		if req.method == .put && request_body.len > vlambda_max_body_size {
-			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(413, '{"error": "request body too large"}')
 		}
 		mut body := call_py_strs(vlambda_kv, [slug, auth_uid.str(), req.method.str(), key, request_body, q])
 		if body == '' {
 			body = '{"error": "kv failed"}'
 		}
 		status := if body.starts_with('{"error"') { 400 } else { 200 }
-		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(status, body)
 	}
 
 	// Route: /vlambda/<slug>/egress (GET list, PUT replace)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/egress') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
@@ -2122,30 +1886,30 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[9..].all_before('/egress')
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		if req.method != .get && req.method != .put {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		request_body := req.data
 		if req.method == .put && request_body.len > vlambda_max_body_size {
-			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(413, '{"error": "request body too large"}')
 		}
 		mut body := call_py_strs(vlambda_egress, [slug, auth_uid.str(), req.method.str(), request_body])
 		if body == '' {
 			body = '{"error": "egress failed"}'
 		}
 		status := if body.starts_with('{"hosts"') { 200 } else { 400 }
-		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(status, body)
 	}
 
 	// Route: /vlambda/<slug>/schedules[/<id>[/run|/runs]]
 	if req.url.starts_with('/vlambda/') && req.url.contains('/schedules') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
@@ -2163,36 +1927,36 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		if action == 'run' && req.method != .post {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		if action == 'runs' && req.method != .get {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		if action == '' && schedule_id != '' && req.method != .put && req.method != .delete {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		request_body := req.data
 		if request_body.len > vlambda_max_body_size {
-			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(413, '{"error": "request body too large"}')
 		}
 		mut body := call_py_strs(vlambda_schedules, [slug, auth_uid.str(), action, req.method.str(), schedule_id, request_body])
 		if body == '' {
 			body = '{"error": "schedules failed"}'
 		}
 		status := if body.starts_with('{"error"') { 400 } else { 200 }
-		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(status, body)
 	}
 
 	// Route: /vlambda/<slug>/meta (GET/PUT OpenAPI metadata)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/meta') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
@@ -2200,99 +1964,99 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[9..].all_before('/meta')
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		if req.method != .get && req.method != .put {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		request_body := req.data
 		if req.method == .put && request_body.len > vlambda_max_body_size {
-			return http.Response{ status_code: 413, body: '{"error": "request body too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(413, '{"error": "request body too large"}')
 		}
 		mut body := call_py_strs(vlambda_meta, [slug, auth_uid.str(), req.method.str(), request_body])
 		if body == '' {
 			body = '{"error": "meta failed"}'
 		}
 		status := if body.starts_with('{"summary"') { 200 } else { 400 }
-		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(status, body)
 	}
 
 	// Route: /vlambda/<slug>/export (GET = download lambda as JSON)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/export') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if req.method != .get {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
 		slug := url_path[9..].all_before('/export')
 		if slug == '' {
-			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "missing slug"}')
 		}
 		body := call_py_two_str(vlambda_export_lambda, slug, auth_uid.str())
 		if body == '' {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if body.starts_with('{"error"') {
-			return http.Response{ status_code: 500, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(500, body)
 		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, body)
 	}
 
 	// Route: /vlambda/import (POST = create from exported JSON)
 	if req.url == '/vlambda/import' && req.method == .post {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if req.data.len == 0 {
-			return http.Response{ status_code: 400, body: '{"error": "missing json body"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "missing json body"}')
 		}
 		if req.data.len > vlambda_max_body_size * 100 {
-			return http.Response{ status_code: 413, body: '{"error": "import too large"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(413, '{"error": "import too large"}')
 		}
 		body := call_py_two_str(vlambda_import_lambda, req.data, auth_uid.str())
 		if body == '' {
-			return http.Response{ status_code: 500, body: '{"error": "import failed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(500, '{"error": "import failed"}')
 		}
 		status := if body.starts_with('{"error"') { 400 } else { 201 }
-		return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(status, body)
 	}
 
 	// Route: /vlambda/<slug>/duplicate (POST = copy lambda)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/duplicate') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		if req.method != .post {
-			return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(405, '{"error": "method not allowed"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
 		url_path = url_path[..qi]
 		slug := url_path[9..].all_before('/duplicate')
 		if slug == '' {
-			return http.Response{ status_code: 400, body: '{"error": "missing slug"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "missing slug"}')
 		}
 		body := call_py_two_str(vlambda_duplicate_lambda, slug, auth_uid.str())
 		if body == '' {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if body.starts_with('{"error"') {
-			return http.Response{ status_code: 400, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, body)
 		}
-		return http.Response{ status_code: 201, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(201, body)
 	}
 
 	// Route: /vlambda/<slug>/packages (GET list, POST install)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/packages') {
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		mut url_path := req.url
 		qi := url_path.index('?') or { url_path.len }
@@ -2300,10 +2064,10 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path[9..].all_before('/packages')
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		project_info := db_get_project(slug)
 		kind := if project_info != '' { 'project' } else { 'code' }
@@ -2313,7 +2077,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			if body == '' {
 				body = '{"packages": []}'
 			}
-			return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(200, body)
 		}
 		if req.method == .post {
 			request_body := req.data
@@ -2322,9 +2086,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 				body = '{"error": "install failed"}'
 			}
 			status := if body.starts_with('{"error"') { 400 } else { 200 }
-			return http.Response{ status_code: status, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(status, body)
 		}
-		return http.Response{ status_code: 405, body: '{"error": "method not allowed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(405, '{"error": "method not allowed"}')
 	}
 
 	// Route: /vlambda/<slug>/versions
@@ -2334,20 +2098,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		url_path = url_path[..qi]
 		slug := url_path[9..url_path.index('/versions') or { url_path.len }]
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		mut body := call_py_strs(vlambda_list_versions, [slug])
 		if body == '' {
 			body = '{"versions": []}'
 		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, body)
 	}
 
 	// Route: /vlambda/<slug>/aliases
@@ -2357,20 +2121,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		url_path = url_path[..qi]
 		slug := url_path[9..url_path.index('/aliases') or { url_path.len }]
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		mut body := call_py_strs(vlambda_list_aliases, [slug])
 		if body == '' {
 			body = '{"aliases": []}'
 		}
-		return http.Response{ status_code: 200, body: body, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+		return json_response(200, body)
 	}
 
 	// Route: /vlambda/<slug>/version/<n> (GET = read version code)
@@ -2382,42 +2146,42 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		ver_str := url_path.all_after('/version/')
 		version := ver_str.int()
 		if auth_uid < 0 {
-			return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(401, '{"error": "unauthorized"}')
 		}
 		owner := db_get_lambda_owner(slug)
 		if owner < 0 {
-			return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "lambda not found"}')
 		}
 		if owner != auth_uid {
-			return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(403, '{"error": "forbidden"}')
 		}
 		code_info := db_get_version_code(slug, version)
 		if code_info == '' {
-			return http.Response{ status_code: 404, body: '{"error": "version not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(404, '{"error": "version not found"}')
 		}
 		code := code_info.all_before('|')
-		return http.Response{ status_code: 200, body: code, header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' }) }
+		return text_response(200, code, 'text/plain')
 	}
 
 	// Route: /vlambda/<slug>/rollback?version=N (POST = restore version)
 	if req.url.starts_with('/vlambda/') && req.url.contains('/rollback') {
 		if req.method == .post {
 			if auth_uid < 0 {
-				return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			mut url_path := req.url
 			qi := url_path.index('?') or { url_path.len }
 			url_path = url_path[..qi]
 			slug := url_path[9..].all_before('/rollback')
 			if auth_uid < 0 {
-				return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			owner := db_get_lambda_owner(slug)
 			if owner < 0 {
-				return http.Response{ status_code: 404, body: '{"error": "lambda not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(404, '{"error": "lambda not found"}')
 			}
 			if owner != auth_uid {
-				return http.Response{ status_code: 403, body: '{"error": "forbidden"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(403, '{"error": "forbidden"}')
 			}
 			mut version := 0
 			if req.url.contains('?') {
@@ -2428,7 +2192,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			}
 			code_info := db_get_version_code(slug, version)
 			if code_info == '' {
-				return http.Response{ status_code: 404, body: '{"error": "version not found"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(404, '{"error": "version not found"}')
 			}
 			code := code_info.all_before('|')
 			rest_info := code_info.all_after('|')
@@ -2446,9 +2210,9 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			name := db_get_lambda_name(slug)
 			ok := db_update_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
 			if ok {
-				return http.Response{ status_code: 200, body: '{"rolled_back": true, "version": ${version}}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(200, '{"rolled_back": true, "version": ${version}}')
 			}
-			return http.Response{ status_code: 500, body: '{"error": "rollback failed"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(500, '{"error": "rollback failed"}')
 		}
 	}
 
@@ -2456,7 +2220,7 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 	if req.url.starts_with('/vlambda/') && req.url.contains('/alias') {
 		if req.method == .post {
 			if auth_uid < 0 {
-				return http.Response{ status_code: 401, body: '{"error": "unauthorized"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			mut url_path := req.url
 			qi := url_path.index('?') or { url_path.len }
@@ -2473,20 +2237,20 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 					if part.starts_with('version=') {
 						raw := part.all_after('=')
 						if !is_uint(raw) {
-							return http.Response{ status_code: 400, body: '{"error": "version must be a non-negative integer"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+							return json_response(400, '{"error": "version must be a non-negative integer"}')
 						}
 						version = raw.int()
 					}
 				}
 			}
 			if alias == '' {
-				return http.Response{ status_code: 400, body: '{"error": "missing alias name"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(400, '{"error": "missing alias name"}')
 			}
 			ok := db_create_alias(alias, slug, version, auth_uid)
 			if ok {
-				return http.Response{ status_code: 201, body: '{"alias": "${alias}", "slug": "${slug}", "version": ${version}}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+				return json_response(201, '{"alias": "${alias}", "slug": "${slug}", "version": ${version}}')
 			}
-			return http.Response{ status_code: 400, body: '{"error": "failed to create alias"}', header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' }) }
+			return json_response(400, '{"error": "failed to create alias"}')
 		}
 	}
 
@@ -2498,98 +2262,50 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		slug := url_path2[9..]
 		if req.method == .get {
 			if auth_uid < 0 {
-				return http.Response{
-					status_code: 401
-					body: '{"error": "unauthorized"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			owner := db_get_lambda_owner(slug)
 			if owner >= 0 && owner != auth_uid {
-				return http.Response{
-					status_code: 403
-					body: '{"error": "forbidden"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(403, '{"error": "forbidden"}')
 			}
 			code_method := db_get_lambda_code(slug)
 			if code_method == '' {
-				return http.Response{
-					status_code: 404
-					body: '{"error": "lambda not found"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(404, '{"error": "lambda not found"}')
 			}
 			parts := code_method.split('|')
 			code := if parts.len > 0 { parts[0] } else { '' }
-			return http.Response{
-				status_code: 200
-				body: code
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
-			}
+			return text_response(200, code, 'text/plain')
 		}
 		if req.method == .delete {
 			owner := db_get_lambda_owner(slug)
 			if owner < 0 {
-				return http.Response{
-					status_code: 404
-					body: '{"error": "lambda not found"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(404, '{"error": "lambda not found"}')
 			}
 			if owner != auth_uid {
-				return http.Response{
-					status_code: 403
-					body: '{"error": "forbidden"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(403, '{"error": "forbidden"}')
 			}
 			// Project files are removed by the Python orphan GC thread,
 			// which avoids calling into Python while the V GC may be running.
 			ok := db_delete_lambda(slug, auth_uid)
 			if ok {
-				return http.Response{
-					status_code: 200
-					body: '{"deleted": true}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(200, '{"deleted": true}')
 			}
-			return http.Response{
-				status_code: 500
-				body: '{"error": "delete failed"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(500, '{"error": "delete failed"}')
 		}
 		if req.method == .put {
 			if auth_uid < 0 {
-				return http.Response{
-					status_code: 401
-					body: '{"error": "unauthorized"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(401, '{"error": "unauthorized"}')
 			}
 			owner := db_get_lambda_owner(slug)
 			if owner < 0 {
-				return http.Response{
-					status_code: 404
-					body: '{"error": "lambda not found"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(404, '{"error": "lambda not found"}')
 			}
 			if owner != auth_uid {
-				return http.Response{
-					status_code: 403
-					body: '{"error": "forbidden"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(403, '{"error": "forbidden"}')
 			}
 			code := req.data
 			if code.len == 0 {
-				return http.Response{
-					status_code: 400
-					body: '{"error": "missing code in body"}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(400, '{"error": "missing code in body"}')
 			}
 			mut method := 'GET'
 			mut name := db_get_lambda_name(slug)
@@ -2627,25 +2343,13 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 			ok := db_update_lambda(slug, name, code, method, auth_uid, timeout, memory_mb)
 			if ok {
 				prewarm_lambda(code)
-				return http.Response{
-					status_code: 200
-					body: '{"updated": true}'
-					header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-				}
+				return json_response(200, '{"updated": true}')
 			}
-			return http.Response{
-				status_code: 500
-				body: '{"error": "update failed"}'
-				header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'application/json' })
-			}
+			return json_response(500, '{"error": "update failed"}')
 		}
 	}
 
-	return http.Response{
-		status_code: 404
-		body: 'asset not found'
-		header: http.new_header(http.HeaderConfig{ key: .content_type, value: 'text/plain' })
-	}
+	return text_response(404, 'asset not found', 'text/plain')
 }
 
 // ---- vcraft extension functions (Python bridge) ----

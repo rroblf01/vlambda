@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The example Compose deployments default to `VLAMBDA_REGISTRATION=0` and build `VLAMBDA_VERSION=1.0.0`, matching the production image.
 - Documentation describes 1.0 as the current line, opt-in CORS, the `--online-only` reset mode, `VLAMBDA_TRUST_PROXY`, response and task limits, and JSON password changes.
 - `request.path` no longer includes the query string; `request.query_string` and `request.query` carry it separately.
+- The web UI markup, JavaScript and CSS are separate files embedded at build time, and V routes use shared `json_response`/`text_response` helpers.
 - `PUT /vlambda/<slug>` and the rollback/alias flows preserve the lambda's timeout and memory settings when the query omits them.
 - A token with the `admin` scope now also grants write access; admin tokens can still create and revoke tokens.
 - `POST /password` accepts `{"old": "...", "new": "..."}` in addition to `old:new`, so passwords may contain colons.

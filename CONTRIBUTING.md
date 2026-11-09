@@ -22,7 +22,8 @@ editable wheel. Set `VCRAFT_BIN` to use another vcraft binary.
 
 - `src/` — V sources, including the native HTTP server.
 - `python/vlambda/` — Python package (server, sandbox, CLI, UI assets).
-- `python/vlambda/ui.html` — UI source.
+- `python/vlambda/ui.html` — UI markup.
+- `python/vlambda/static/ui.js` and `ui.css` — UI logic and styles.
 - `ui/` — editor/Chart.js bundle source; build with `npm run build` and
   regenerate `python/vlambda/static/app.js`.
 - `tests/test_unit.py` — unit tests.

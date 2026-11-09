@@ -115,6 +115,20 @@ def test_health():
     assert status == 200 and body["status"] == "ok"
     assert body.get("version"), body
 
+def test_ui_assets():
+    import urllib.request
+
+    for path in ("/ui", "/assets/app.js", "/assets/ui.js", "/assets/ui.css", "/favicon.ico"):
+        resp = urllib.request.urlopen(f"http://localhost:{PORT}{path}")
+        assert resp.status == 200, path
+    html = urllib.request.urlopen(f"http://localhost:{PORT}/ui").read().decode()
+    assert '/assets/ui.js' in html and '/assets/ui.css' in html and '/assets/app.js' in html
+    css = urllib.request.urlopen(f"http://localhost:{PORT}/assets/ui.css").read().decode()
+    assert ":root" in css
+    js = urllib.request.urlopen(f"http://localhost:{PORT}/assets/ui.js").read().decode()
+    assert "function escapeHtml" in js
+
+
 def test_favicon_only_for_ui():
     status, _ = req("GET", "/favicon.ico", extra_headers={"Referer": f"http://localhost:{PORT}/"})
     assert status == 200
@@ -2043,7 +2057,7 @@ def test_fuzz_smoke():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_trust_proxy_client_ip, test_request_path_excludes_query, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
+    tests = [test_health, test_ui_assets, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_trust_proxy_client_ip, test_request_path_excludes_query, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_update_preserves_limits, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_project_rejects_dependency_urls,

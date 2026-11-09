@@ -23,9 +23,10 @@ Release build: vcraft build --release (and --free-threading for t builds). Relea
 pyproject.toml configures pyright, mypy, ty with python/ as extra import path. Run from the repository root.
 
 ## UI
-- Source: `python/vlambda/ui.html`.
+- Markup: `python/vlambda/ui.html`.
+- App logic and styles: `python/vlambda/static/ui.js` and `ui.css`.
 - Bundled editor/Chart.js: `python/vlambda/static/app.js` (built from `ui/` with `npm run build`).
-- After changing `ui.html` or `app.js`, regenerate the packaged assets: `python scripts/embed_assets.py`.
+- After changing any UI source, regenerate the packaged assets: `python scripts/embed_assets.py`.
 - Assets served locally via `/assets/<name>`; no CDN.
 
 ## Projects

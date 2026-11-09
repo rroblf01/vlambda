@@ -203,6 +203,38 @@ stateless, idempotent GET lambdas; handlers that read request context, log,
 - `POST /password` — Change your password (body: `old:new`, or JSON `{"old":"...","new":"..."}` when the old password contains a colon); revokes existing sessions
 - `POST /admin/users` — Create a user with `X-Admin-Token` and body `username:password` (for closed registration)
 
+### Admin token
+
+vlambda does **not** have an admin user account or an `is_admin` column. The
+admin is a deployment secret, `VLAMBDA_ADMIN_TOKEN`, sent as
+`X-Admin-Token`. With registration closed (the production default), use it to
+create the first users:
+
+```bash
+curl -X POST https://your-host/admin/users \
+  -H "X-Admin-Token: $VLAMBDA_ADMIN_TOKEN" \
+  -d "alice:change-me-please-123"
+```
+
+The token also protects `/admin/password` (reset a password),
+`/admin/reset` (wipe all data) and `/admin/audit` (read administrative audit
+entries), plus `/shutdown`:
+
+```bash
+curl -X POST https://your-host/admin/password \
+  -H "X-Admin-Token: $VLAMBDA_ADMIN_TOKEN" \
+  -d "alice:new-password-123"
+
+curl https://your-host/admin/audit?limit=50 \
+  -H "X-Admin-Token: $VLAMBDA_ADMIN_TOKEN"
+```
+
+The token is not stored in SQLite, cannot log in, and does not own lambdas.
+It remains valid across a data reset; users do not. To see every user's
+tasks, metrics, logs or OpenAPI document, send the admin token alongside a
+valid Bearer token. A reset does not change `VLAMBDA_ADMIN_TOKEN` or
+`VLAMBDA_SECRET`.
+
 ### Lambdas (requires auth)
 - `POST /vlambda?method=GET&name=my-lambda` — Create lambda (body: Python code)
 - `GET /vlambda` — List lambdas (pipe-delimited)
@@ -219,8 +251,9 @@ stateless, idempotent GET lambdas; handlers that read request context, log,
 - `DELETE /tokens/<id>` — Revoke a token
 
 Tokens are accepted anywhere a JWT is accepted. `read` allows listing and
-reading, `write` allows mutating lambdas/projects, `admin` allows token
-management and admin routes.
+reading, `write` allows mutating lambdas/projects, and `admin` allows token
+management. The `/admin/*` endpoints always require the deployment admin token
+(`X-Admin-Token`), not an API token scope.
 
 ### Export / import
 - `GET /vlambda/<slug>/export` — Export code or project files as JSON
@@ -305,8 +338,9 @@ Logs are stored in the metrics database and can be queried with
 `GET /logs/history?days=1&slug=<slug>`. The UI Logs view shows them alongside
 invocations. The "Save logs" template in the editor is a ready-to-run example.
 
-Metrics and logs are scoped to the authenticated user. The admin token
-(`X-Admin-Token`) can query all users through the API/CLI.
+Metrics and logs are scoped to the authenticated user. A request that also
+carries the deployment admin token (`X-Admin-Token`) can query all users
+through the API; the admin token is not a login credential by itself.
 
 Metrics and logs are pruned after `VLAMBDA_METRICS_RETENTION` days (default 7).
 From the UI you can also prune data older than the selected period, or delete

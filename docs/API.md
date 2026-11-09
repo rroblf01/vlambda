@@ -8,7 +8,8 @@ server. JSON errors use `{"error": "message"}`.
 - **User auth:** `Authorization: Bearer <JWT or API token>`.
 - **Admin auth:** `X-Admin-Token: <VLAMBDA_ADMIN_TOKEN>`.
 - **Ownership:** management endpoints and OpenAPI only expose the caller's
-  lambdas unless the admin token is used.
+  lambdas. A Bearer request that also carries the admin token sees all users;
+  `/admin/*` endpoints use the admin token directly.
 - **Auth scope:** endpoints outside the Public section require a Bearer token;
   admin endpoints require `X-Admin-Token`.
 - **Methods:** a lambda is invoked only with its configured HTTP method; other
@@ -184,7 +185,9 @@ addresses are blocked.
 | Method | Path | Description |
 |---|---|---|
 | POST | `/admin/users` | Create a user |
+| POST | `/admin/password` | Reset a user password |
 | POST | `/admin/reset` | Reset all data (admin token) |
+| GET | `/admin/audit?limit=100` | Recent administrative actions |
 | POST | `/shutdown` | Graceful shutdown (admin token) |
 
 ## Errors

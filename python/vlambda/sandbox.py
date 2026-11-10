@@ -21,11 +21,21 @@ BLOCKED_MODULES = {
     "sqlite3", "dbm", "shelve", "sysconfig", "site", "platform",
 }
 
+# Small pure standard-library submodules that are safe even though their parent
+# package is blocked. Keep this list short and review any addition carefully.
+ALLOWED_SUBMODULES = {
+    "urllib.parse",
+    "urllib.error",
+}
+
 
 def blocked_import(name, *args, **kwargs):
     base = name.split(".")[0]
     if base in BLOCKED_MODULES:
-        raise ImportError(f"module '{name}' is not allowed")
+        if name not in ALLOWED_SUBMODULES and not any(
+            name.startswith(prefix + ".") for prefix in ALLOWED_SUBMODULES
+        ):
+            raise ImportError(f"module '{name}' is not allowed")
     # Allow safe modules
     import importlib
     return importlib.import_module(name)

@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-10
+
+### Fixed
+- Code lambdas can now import `urllib.parse` and `urllib.error`; the `form`
+  template and URL parsing work in the sandbox. `urllib.request` and the rest of
+  the `urllib` package remain blocked; use `request.fetch` for HTTP calls.
+- The README documents the `urllib` exception.
+
 ## [1.0.0] - 2026-11-09
 
 ### Added
@@ -380,6 +388,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ~0.3ms per invocation (warm)
 - No cold starts (persistent process)
 
+[1.0.1]: https://github.com/rroblf01/vlambda/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/rroblf01/vlambda/compare/v0.4.0...v1.0.0
 [1.0.0rc1]: https://github.com/rroblf01/vlambda/compare/v0.4.0...v1.0.0rc1
 [0.3.0]: https://github.com/rroblf01/vlambda/compare/v0.2.4...v0.3.0

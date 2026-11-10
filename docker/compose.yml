@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: Dockerfile
       args:
-        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-1.0.0}
+        VLAMBDA_VERSION: ${VLAMBDA_VERSION:-1.0.1}
     image: ghcr.io/rroblf01/vlambda:latest
     restart: unless-stopped
     ports:

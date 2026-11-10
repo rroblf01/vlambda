@@ -1,6 +1,6 @@
 [package]
 name = "vlambda"
-version = "1.0.0"
+version = "1.0.1"
 module = "vlambda_native"
 description = "An ASGI-like server for Python lambdas, written in V."
 license = "MIT"

@@ -386,7 +386,7 @@ module stays blocked because it exposes sockets indirectly.
 
 Safe builtins: `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `range`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`, `print`, etc.
 
-Blocked modules: `os`, `posix`, `subprocess`, `sys`, `importlib`, `ctypes`, `socket`, `_socket`, `urllib`, `http`, `shutil`, `pathlib`, `io`, `pickle`, `marshal`, `resource`, `fcntl`, `mmap`, `sqlite3`, etc.
+Blocked modules: `os`, `posix`, `subprocess`, `sys`, `importlib`, `ctypes`, `socket`, `_socket`, `urllib` (except `urllib.parse`), `http`, `shutil`, `pathlib`, `io`, `pickle`, `marshal`, `resource`, `fcntl`, `mmap`, `sqlite3`, etc.
 
 Safe modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `functools`, `hashlib`, `base64`, `string`, `random`, `statistics`, etc.
 

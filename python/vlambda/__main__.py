@@ -84,7 +84,7 @@ def main() -> None:
     from vlambda.auth import verify_token, create_token, hash_password, check_password, new_auth_epoch
     import sqlite3
     from vlambda.request import Request
-    from vlambda_native import start_server, db_init, db_init_error, set_version, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_env, register_save_env, register_kv, register_egress, register_schedules, register_meta, register_openapi, register_shutdown, set_overloaded
+    from vlambda_native import start_server, db_init, db_init_error, set_version, register_pool, register_auth_verifier, register_auth_register, register_auth_login, configure, register_validate_code, register_ui_html, register_get_asset, register_get_project_json, register_save_project_json, register_list_versions, register_list_aliases, register_admin_reset, register_admin_create_user, register_list_packages, register_install_packages, register_create_task, register_get_task, register_record_metric, register_query_metrics, register_query_stats, register_query_summary, register_query_aggregate, register_query_logs, register_delete_metrics, register_delete_logs, register_export_metrics, register_pool_stats, register_run_project, register_create_project, register_delete_project, register_schedule_delete, register_get_dlq, register_export_lambda, register_import_lambda, register_duplicate_lambda, register_list_workflows, register_get_workflow, register_get_workflow_graph, register_save_workflow, register_delete_workflow, register_validate_workflow, register_run_workflow, register_get_workflow_run, register_list_workflow_runs, register_cancel_workflow_run, register_retry_workflow_node, register_list_env, register_save_env, register_kv, register_egress, register_schedules, register_meta, register_openapi, register_shutdown, set_overloaded
 
     from vlambda.version import __version__
     set_version(__version__)
@@ -161,6 +161,11 @@ def main() -> None:
 
     from vlambda.tasks import create_task, get_task, start as start_tasks
     start_tasks(pool)
+    try:
+        from vlambda import workflows as _recover_workflows
+        _recover_workflows.recover()
+    except Exception:
+        pass
 
     def _task_owner(owner_id):
         try:
@@ -792,6 +797,79 @@ def main() -> None:
     register_import_lambda(_import_lambda)
     register_duplicate_lambda(_duplicate_lambda)
 
+    from vlambda.workflows import (
+        list_workflows as _list_workflows,
+        get_workflow as _get_workflow,
+        get_workflow_graph as _get_workflow_graph,
+        create_workflow as _create_workflow,
+        update_workflow as _update_workflow,
+        delete_workflow as _delete_workflow,
+        validate_workflow as _validate_workflow,
+        run_workflow as _run_workflow,
+        get_workflow_run as _get_workflow_run,
+        list_workflow_runs as _list_workflow_runs,
+        cancel_workflow_run as _cancel_workflow_run,
+        retry_workflow_node as _retry_workflow_node,
+        recover as _recover_workflows,
+        configure as _configure_workflows,
+        stop as _stop_workflows,
+    )
+
+    def _list_workflows_cb(owner_id="0"):
+        return _list_workflows(_task_owner(owner_id))
+
+    def _get_workflow_cb(workflow_id, owner_id="0"):
+        return _get_workflow(int(workflow_id), _task_owner(owner_id))
+
+    def _get_workflow_graph_cb(workflow_id, owner_id="0", run_id=None):
+        rid = int(run_id) if run_id not in (None, "", "None") else None
+        return _get_workflow_graph(int(workflow_id), _task_owner(owner_id), rid)
+
+    def _save_workflow_cb(owner_id, body):
+        return _create_workflow(_task_owner(owner_id), body)
+
+    def _update_workflow_cb(workflow_id, owner_id, body):
+        return _update_workflow(int(workflow_id), _task_owner(owner_id), body)
+
+    def _delete_workflow_cb(workflow_id, owner_id):
+        return _delete_workflow(int(workflow_id), _task_owner(owner_id))
+
+    def _validate_workflow_cb(owner_id, body):
+        return _validate_workflow(_task_owner(owner_id), body)
+
+    def _run_workflow_cb(workflow_id, owner_id, body):
+        try:
+            data = json.loads(body or "{}")
+        except Exception:
+            data = {}
+        input_json = json.dumps(data.get("input", {}) if isinstance(data, dict) else {})
+        return _run_workflow(int(workflow_id), _task_owner(owner_id), input_json)
+
+    def _get_workflow_run_cb(run_id, owner_id="0"):
+        return _get_workflow_run(int(run_id), _task_owner(owner_id))
+
+    def _list_workflow_runs_cb(workflow_id, owner_id="0"):
+        return _list_workflow_runs(int(workflow_id), _task_owner(owner_id))
+
+    def _cancel_workflow_run_cb(run_id, owner_id="0"):
+        return _cancel_workflow_run(int(run_id), _task_owner(owner_id))
+
+    def _retry_workflow_node_cb(run_id, node_id, owner_id="0"):
+        return _retry_workflow_node(int(run_id), node_id, _task_owner(owner_id))
+
+    register_list_workflows(_list_workflows_cb)
+    register_get_workflow(_get_workflow_cb)
+    register_get_workflow_graph(_get_workflow_graph_cb)
+    register_save_workflow(_save_workflow_cb)
+    register_delete_workflow(_delete_workflow_cb)
+    register_validate_workflow(_validate_workflow_cb)
+    register_run_workflow(_run_workflow_cb)
+    register_get_workflow_run(_get_workflow_run_cb)
+    register_list_workflow_runs(_list_workflow_runs_cb)
+    register_cancel_workflow_run(_cancel_workflow_run_cb)
+    register_retry_workflow_node(_retry_workflow_node_cb)
+    _configure_workflows(pool, args)
+
     def _get_dlq(owner_id="0"):
         import json
         from vlambda.tasks import get_dlq
@@ -875,6 +953,10 @@ def main() -> None:
         _schedules_stop()
         _lifecycle.drain()
         _tasks.stop()
+        try:
+            _workflows.stop()
+        except Exception:
+            pass
         pool.stop()
         _broker.stop()
         try:

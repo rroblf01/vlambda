@@ -68,6 +68,18 @@ __global (
 	vlambda_export_lambda = voidptr(0)
 	vlambda_import_lambda = voidptr(0)
 	vlambda_duplicate_lambda = voidptr(0)
+	vlambda_list_workflows = voidptr(0)
+	vlambda_get_workflow = voidptr(0)
+	vlambda_get_workflow_graph = voidptr(0)
+	vlambda_save_workflow = voidptr(0)
+	vlambda_update_workflow = voidptr(0)
+	vlambda_delete_workflow = voidptr(0)
+	vlambda_validate_workflow = voidptr(0)
+	vlambda_run_workflow = voidptr(0)
+	vlambda_get_workflow_run = voidptr(0)
+	vlambda_list_workflow_runs = voidptr(0)
+	vlambda_cancel_workflow_run = voidptr(0)
+	vlambda_retry_workflow_node = voidptr(0)
 	vlambda_admin_create_user = voidptr(0)
 	// Config
 	vlambda_max_body_size = 1048576  // 1MB
@@ -2349,6 +2361,176 @@ pub fn (mut h VlambdaHandler) handle(req http.Request) http.Response {
 		}
 	}
 
+	// Route: workflows (owner scoped)
+	if req.url.starts_with('/workflows') {
+		if auth_uid < 0 {
+			return json_response(401, '{"error": "unauthorized"}')
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+
+		// /workflows/<id>/validate
+		if url_path.contains('/validate') {
+			if req.method != .post {
+				return json_response(405, '{"error": "method not allowed"}')
+			}
+			slug := url_path[11..].all_before('/validate')
+			id := slug.int()
+			if id <= 0 {
+				return json_response(400, '{"error": "invalid workflow id"}')
+			}
+			mut body := call_py_two_str(vlambda_validate_workflow, auth_uid.str(), req.data)
+			if body == '' { body = '{"error": "validation failed"}' }
+			status := if body.starts_with('{"valid"') { 200 } else { 400 }
+			return json_response(status, body)
+		}
+
+		// /workflows/<id>/run
+		if url_path.contains('/run') && !url_path.contains('/runs') {
+			if req.method != .post {
+				return json_response(405, '{"error": "method not allowed"}')
+			}
+			slug := url_path[11..].all_before('/run')
+			id := slug.int()
+			if id <= 0 {
+				return json_response(400, '{"error": "invalid workflow id"}')
+			}
+			mut body := call_py_three_str(vlambda_run_workflow, id.str(), auth_uid.str(), req.data)
+			if body == '' { body = '{"error": "run failed"}' }
+			status := if body.starts_with('{"error"') { 400 } else { 202 }
+			return json_response(status, body)
+		}
+
+		// /workflows/<id>/runs
+		if url_path.contains('/runs') {
+			if req.method != .get {
+				return json_response(405, '{"error": "method not allowed"}')
+			}
+			slug := url_path[11..].all_before('/runs')
+			id := slug.int()
+			if id <= 0 {
+				return json_response(400, '{"error": "invalid workflow id"}')
+			}
+			mut body := call_py_two_str(vlambda_list_workflow_runs, id.str(), auth_uid.str())
+			if body == '' { body = '[]' }
+			return json_response(200, body)
+		}
+
+		// /workflows/<id>/graph
+		if url_path.contains('/graph') {
+			if req.method != .get {
+				return json_response(405, '{"error": "method not allowed"}')
+			}
+			slug := url_path[11..].all_before('/graph')
+			id := slug.int()
+			if id <= 0 {
+				return json_response(400, '{"error": "invalid workflow id"}')
+			}
+			mut run_id := ''
+			if req.url.contains('run_id=') {
+				run_id = req.url.all_after('run_id=').all_before('&')
+			}
+			mut body := if run_id == '' {
+				call_py_two_str(vlambda_get_workflow_graph, id.str(), auth_uid.str())
+			} else {
+				call_py_three_str(vlambda_get_workflow_graph, id.str(), auth_uid.str(), run_id)
+			}
+			if body == '' { body = '{"error": "graph not found"}' }
+			status := if body.starts_with('{"error"') { 404 } else { 200 }
+			return json_response(status, body)
+		}
+
+		// /workflows or /workflows/<id>
+		if url_path == '/workflows' {
+			if req.method == .get {
+				mut body := call_py_strs(vlambda_list_workflows, [auth_uid.str()])
+				if body == '' { body = '[]' }
+				return json_response(200, body)
+			}
+			if req.method == .post {
+				mut body := call_py_two_str(vlambda_save_workflow, auth_uid.str(), req.data)
+				if body == '' { body = '{"error": "save failed"}' }
+				status := if body.starts_with('{"error"') { 400 } else { 201 }
+				return json_response(status, body)
+			}
+			return json_response(405, '{"error": "method not allowed"}')
+		}
+
+		slug := url_path[11..]
+		id := slug.int()
+		if id <= 0 {
+			return json_response(400, '{"error": "invalid workflow id"}')
+		}
+		if req.method == .get {
+			mut body := call_py_two_str(vlambda_get_workflow, id.str(), auth_uid.str())
+			if body == '' { body = '{"error": "workflow not found"}' }
+			status := if body.starts_with('{"error"') { 404 } else { 200 }
+			return json_response(status, body)
+		}
+		if req.method == .put {
+			mut body := call_py_three_str(vlambda_update_workflow, id.str(), auth_uid.str(), req.data)
+			if body == '' { body = '{"error": "update failed"}' }
+			status := if body.starts_with('{"error"') { 400 } else { 200 }
+			return json_response(status, body)
+		}
+		if req.method == .delete {
+			mut body := call_py_two_str(vlambda_delete_workflow, id.str(), auth_uid.str())
+			if body == '' { body = '{"error": "delete failed"}' }
+			status := if body.starts_with('{"error"') { 400 } else { 200 }
+			return json_response(status, body)
+		}
+		return json_response(405, '{"error": "method not allowed"}')
+	}
+
+	// Route: workflow runs
+	if req.url.starts_with('/workflow-runs/') {
+		if auth_uid < 0 {
+			return json_response(401, '{"error": "unauthorized"}')
+		}
+		mut url_path := req.url
+		qi := url_path.index('?') or { url_path.len }
+		url_path = url_path[..qi]
+		// /workflow-runs/<id>/cancel
+		if url_path.contains('/cancel') {
+			if req.method != .post {
+				return json_response(405, '{"error": "method not allowed"}')
+			}
+			id := url_path[15..].all_before('/cancel').int()
+			if id <= 0 {
+				return json_response(400, '{"error": "invalid run id"}')
+			}
+			mut body := call_py_two_str(vlambda_cancel_workflow_run, id.str(), auth_uid.str())
+			if body == '' { body = '{"error": "cancel failed"}' }
+			status := if body.starts_with('{"error"') { 400 } else { 200 }
+			return json_response(status, body)
+		}
+		// /workflow-runs/<id>/nodes/<node_id>/retry
+		if url_path.contains('/nodes/') && url_path.contains('/retry') {
+			if req.method != .post {
+				return json_response(405, '{"error": "method not allowed"}')
+			}
+			id := url_path[15..].all_before('/nodes/').int()
+			node_id := url_path.all_after('/nodes/').all_before('/retry')
+			if id <= 0 || node_id == '' {
+				return json_response(400, '{"error": "invalid run or node id"}')
+			}
+			mut body := call_py_three_str(vlambda_retry_workflow_node, id.str(), node_id, auth_uid.str())
+			if body == '' { body = '{"error": "retry failed"}' }
+			status := if body.starts_with('{"error"') { 400 } else { 200 }
+			return json_response(status, body)
+		}
+		// /workflow-runs/<id>
+		id := url_path[15..].int()
+		if id <= 0 {
+			return json_response(400, '{"error": "invalid run id"}')
+		}
+		mut body := call_py_two_str(vlambda_get_workflow_run, id.str(), auth_uid.str())
+		if body == '' { body = '{"error": "run not found"}' }
+		status := if body.starts_with('{"error"') { 404 } else { 200 }
+		return json_response(status, body)
+	}
+
 	return text_response(404, 'asset not found', 'text/plain')
 }
 
@@ -2374,6 +2556,31 @@ pub fn db_init(db_path string) bool {
 @[vc_fn]
 pub fn db_init_error() string {
 	return vlambda_db_error
+}
+
+
+@[vc_fn]
+pub fn call_py_three_str(cb voidptr, first string, second string, third string) string {
+	if cb == unsafe { nil } { return '' }
+	state := vcraft.gil_ensure()
+	defer { vcraft.gil_release(state) }
+	mut args := []voidptr{cap: 3}
+	args << vcraft.to_py_string(first).ptr
+	args << vcraft.to_py_string(second).ptr
+	args << vcraft.to_py_string(third).ptr
+	r := vcraft.call(cb, args)
+	for arg in args { vcraft.borrow(arg).decref() }
+	if r.is_null() {
+		vcraft.clear_error()
+		return ''
+	}
+	if r.type_name() == 'str' {
+		ss := py_string_copy(r, 'result', '')
+		r.decref()
+		return ss
+	}
+	r.decref()
+	return ''
 }
 
 @[vc_fn]
@@ -3100,6 +3307,31 @@ pub fn register_import_lambda(cb voidptr) {
 pub fn register_duplicate_lambda(cb voidptr) {
 	vlambda_duplicate_lambda = cb
 }
+
+@[vc_fn]
+pub fn register_list_workflows(cb voidptr) { vlambda_list_workflows = cb }
+@[vc_fn]
+pub fn register_get_workflow(cb voidptr) { vlambda_get_workflow = cb }
+@[vc_fn]
+pub fn register_get_workflow_graph(cb voidptr) { vlambda_get_workflow_graph = cb }
+@[vc_fn]
+pub fn register_save_workflow(cb voidptr) { vlambda_save_workflow = cb }
+@[vc_fn]
+pub fn register_update_workflow(cb voidptr) { vlambda_update_workflow = cb }
+@[vc_fn]
+pub fn register_delete_workflow(cb voidptr) { vlambda_delete_workflow = cb }
+@[vc_fn]
+pub fn register_validate_workflow(cb voidptr) { vlambda_validate_workflow = cb }
+@[vc_fn]
+pub fn register_run_workflow(cb voidptr) { vlambda_run_workflow = cb }
+@[vc_fn]
+pub fn register_get_workflow_run(cb voidptr) { vlambda_get_workflow_run = cb }
+@[vc_fn]
+pub fn register_list_workflow_runs(cb voidptr) { vlambda_list_workflow_runs = cb }
+@[vc_fn]
+pub fn register_cancel_workflow_run(cb voidptr) { vlambda_cancel_workflow_run = cb }
+@[vc_fn]
+pub fn register_retry_workflow_node(cb voidptr) { vlambda_retry_workflow_node = cb }
 
 // call_py_two_str invokes a Python callback with two string arguments and
 // returns its string result. Used by export/import/duplicate.

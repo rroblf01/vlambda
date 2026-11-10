@@ -62,6 +62,7 @@ class Worker:
                     env=meta.get("env", {}),
                     kv_client=client,
                     fetch_client=client,
+                    trigger_client=client,
                 )
                 if task.get("kind") == "project":
                     from vlambda.project import execute_project

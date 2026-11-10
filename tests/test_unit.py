@@ -1775,3 +1775,195 @@ def test_backup_rejects_path_traversal(tmp_path, monkeypatch):
     with pytest.raises(BackupError):
         restore_backup(str(archive), db_path=str(tmp_path / "evil.db"))
     assert not (tmp_path / "escape.txt").exists()
+
+
+def _workflow_db(monkeypatch, tmp_path):
+    import os
+    import sqlite3
+
+    db = tmp_path / "vlambda.db"
+    monkeypatch.setenv("VLAMBDA_DB", str(db))
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE lambdas (slug TEXT, owner_id INTEGER)")
+    conn.execute("INSERT INTO lambdas (slug, owner_id) VALUES ('a', 1)")
+    conn.execute("INSERT INTO lambdas (slug, owner_id) VALUES ('b', 1)")
+    conn.execute("INSERT INTO lambdas (slug, owner_id) VALUES ('c', 1)")
+    conn.commit()
+    conn.close()
+    from vlambda import workflows
+
+    workflows.ensure_schema()
+    return workflows
+
+
+def test_workflow_validation_rejects_unknown_lambda(monkeypatch, tmp_path):
+    workflows = _workflow_db(monkeypatch, tmp_path)
+    definition, error = workflows._validate_definition(
+        1, {"name": "w", "nodes": [{"id": "a", "type": "lambda", "slug": "missing"}]}
+    )
+    assert definition is None
+    assert "lambda not found" in error
+
+
+def test_workflow_validation_rejects_cycles(monkeypatch, tmp_path):
+    workflows = _workflow_db(monkeypatch, tmp_path)
+    definition, error = workflows._validate_definition(
+        1,
+        {
+            "name": "w",
+            "nodes": [
+                {"id": "a", "type": "lambda", "slug": "a", "next": ["b"]},
+                {"id": "b", "type": "lambda", "slug": "b", "next": ["a"]},
+            ],
+        },
+    )
+    assert definition is None
+    assert "cycle" in error
+
+
+def test_workflow_validation_rejects_mixed_incoming_edges(monkeypatch, tmp_path):
+    workflows = _workflow_db(monkeypatch, tmp_path)
+    definition, error = workflows._validate_definition(
+        1,
+        {
+            "name": "w",
+            "nodes": [
+                {"id": "a", "type": "lambda", "slug": "a"},
+                {"id": "b", "type": "lambda", "slug": "b"},
+                {"id": "c", "type": "lambda", "slug": "c"},
+            ],
+            "edges": [
+                {"from": "a", "to": "c", "kind": "trigger"},
+                {"from": "b", "to": "c", "kind": "dependency"},
+            ],
+        },
+    )
+    assert definition is None
+    assert "mix" in error
+
+
+def test_workflow_sequential_execution(monkeypatch, tmp_path):
+    import types
+    import vlambda_native
+
+    workflows = _workflow_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(vlambda_native, "db_get_lambda_code", lambda slug: "code|GET|0|0|1")
+    monkeypatch.setattr(vlambda_native, "db_get_project", lambda slug: "")
+
+    class DummyPool:
+        def execute(self, *args, **kwargs):
+            return {"status": 200, "body": '{"ok": true}', "headers": []}
+
+        def execute_project(self, *args, **kwargs):
+            return {"status": 200, "body": '{"ok": true}', "headers": []}
+
+    workflows.configure(DummyPool(), types.SimpleNamespace(invoke_timeout=5))
+    definition, error = workflows._validate_definition(
+        1,
+        {
+            "name": "w",
+            "nodes": [
+                {"id": "a", "type": "lambda", "slug": "a", "next": ["b"]},
+                {"id": "b", "type": "lambda", "slug": "b"},
+            ],
+        },
+    )
+    assert error is None
+    run = workflows._Run(1, definition, 1, {"x": 1}, workflows._pool, workflows._args)
+    run.start()
+    for _ in range(50):
+        with run.lock:
+            status = getattr(run, "status", None)
+        if status in {"succeeded", "failed", "cancelled", "timed_out"}:
+            break
+        time.sleep(0.1)
+    run.thread.join(timeout=2)
+    with run.lock:
+        assert getattr(run, "status", None) == "succeeded"
+        assert run.node_status == {"a": "succeeded", "b": "succeeded"}
+        assert len(run.node_invocations["a"]) == 1
+        assert len(run.node_invocations["b"]) == 1
+
+
+def test_workflow_parallel_join_runs_once(monkeypatch, tmp_path):
+    import types
+    import vlambda_native
+
+    workflows = _workflow_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(vlambda_native, "db_get_lambda_code", lambda slug: "code|GET|0|0|1")
+    monkeypatch.setattr(vlambda_native, "db_get_project", lambda slug: "")
+
+    class DummyPool:
+        def execute(self, *args, **kwargs):
+            return {"status": 200, "body": '{"ok": true}', "headers": []}
+
+        def execute_project(self, *args, **kwargs):
+            return {"status": 200, "body": '{"ok": true}', "headers": []}
+
+    workflows.configure(DummyPool(), types.SimpleNamespace(invoke_timeout=5))
+    definition, error = workflows._validate_definition(
+        1,
+        {
+            "name": "w",
+            "nodes": [
+                {"id": "a", "type": "lambda", "slug": "a", "next": ["c"]},
+                {"id": "b", "type": "lambda", "slug": "b", "next": ["c"]},
+                {"id": "c", "type": "lambda", "slug": "c", "mode": "join", "waits_for": ["a", "b"]},
+            ],
+        },
+    )
+    assert error is None
+    run = workflows._Run(2, definition, 1, {}, workflows._pool, workflows._args)
+    run.start()
+    for _ in range(50):
+        with run.lock:
+            status = getattr(run, "status", None)
+        if status in {"succeeded", "failed", "cancelled", "timed_out"}:
+            break
+        time.sleep(0.1)
+    run.thread.join(timeout=2)
+    with run.lock:
+        assert getattr(run, "status", None) == "succeeded"
+        assert run.node_status["c"] == "succeeded"
+        assert len(run.node_invocations["c"]) == 1
+
+
+def test_workflow_condition_true_schedules_target(monkeypatch, tmp_path):
+    import types
+    import vlambda_native
+
+    workflows = _workflow_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(vlambda_native, "db_get_lambda_code", lambda slug: "code|GET|0|0|1")
+    monkeypatch.setattr(vlambda_native, "db_get_project", lambda slug: "")
+
+    class DummyPool:
+        def execute(self, *args, **kwargs):
+            return {"status": 200, "body": '{"flag": true}', "headers": []}
+
+        def execute_project(self, *args, **kwargs):
+            return {"status": 200, "body": '{"flag": true}', "headers": []}
+
+    workflows.configure(DummyPool(), types.SimpleNamespace(invoke_timeout=5))
+    definition, error = workflows._validate_definition(
+        1,
+        {
+            "name": "w",
+            "nodes": [
+                {"id": "a", "type": "lambda", "slug": "a", "next": ["b"], "next_when": {"path": "$.nodes.a.output.body.flag", "equals": True}},
+                {"id": "b", "type": "lambda", "slug": "b"},
+            ],
+        },
+    )
+    assert error is None
+    run = workflows._Run(3, definition, 1, {}, workflows._pool, workflows._args)
+    run.start()
+    for _ in range(50):
+        with run.lock:
+            status = getattr(run, "status", None)
+        if status in {"succeeded", "failed", "cancelled", "timed_out"}:
+            break
+        time.sleep(0.1)
+    run.thread.join(timeout=2)
+    with run.lock:
+        assert getattr(run, "status", None) == "succeeded"
+        assert run.node_status["b"] == "succeeded"

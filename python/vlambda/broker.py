@@ -313,6 +313,26 @@ def _dispatch(payload: dict, context: dict):
         )
     if operation == "http.fetch":
         return _http_fetch(context, payload)
+    if operation == "workflow.trigger":
+        try:
+            workflow_id = int(payload.get("workflow_id"))
+        except (TypeError, ValueError):
+            raise BrokerError("invalid workflow id")
+        workflow_input = payload.get("payload", {})
+        if workflow_input is None:
+            workflow_input = {}
+        if not isinstance(workflow_input, dict):
+            raise BrokerError("workflow payload must be an object")
+        if len(json.dumps(workflow_input).encode("utf-8")) > 256 * 1024:
+            raise BrokerError("workflow payload is too large")
+        from vlambda import workflows
+
+        result = json.loads(workflows.trigger_workflow_for_slug(
+            slug, workflow_id, json.dumps(workflow_input, ensure_ascii=False)
+        ))
+        if result.get("error"):
+            raise BrokerError(str(result["error"]))
+        return result
     raise BrokerError(f"unknown operation: {operation}")
 
 

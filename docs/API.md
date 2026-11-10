@@ -203,3 +203,18 @@ addresses are blocked.
 | 413 | Body too large |
 | 429 | Rate limit exceeded |
 | 500 | Handler or server error |
+
+## Workflows
+
+- `POST /workflows` create a workflow.
+- `GET /workflows` list workflows.
+- `GET /workflows/{id}` get a workflow.
+- `PUT /workflows/{id}` update a workflow.
+- `DELETE /workflows/{id}` delete a workflow.
+- `POST /workflows/{id}/validate` validate a definition.
+- `POST /workflows/{id}/run` run a workflow with `{"input": {...}}`.
+- `GET /workflows/{id}/runs` list runs.
+- `GET /workflows/{id}/graph?run_id={run}` read-only graph.
+- `GET /workflow-runs/{id}` get a run and node states.
+- `POST /workflow-runs/{id}/cancel` cancel a run.
+- `POST /workflow-runs/{id}/nodes/{node_id}/retry` retry a failed node.

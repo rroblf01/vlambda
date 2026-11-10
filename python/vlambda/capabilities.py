@@ -124,6 +124,14 @@ class CapabilityClient:
     def incr(self, key: str, amount: int | float = 1):
         return self._call("kv.incr", key=key, amount=amount).get("value")
 
+    def trigger_workflow(self, workflow_id, payload=None):
+        fields = {"workflow_id": int(workflow_id)}
+        if payload is not None:
+            if not isinstance(payload, dict):
+                raise CapabilityError("workflow payload must be a JSON object")
+            fields["payload"] = payload
+        return self._call("workflow.trigger", **fields)
+
     def fetch(self, url: str, method: str = "GET", headers=None, data=None,
               json_payload=None, timeout: float | None = None) -> EgressResponse:
         fields = {"url": url, "method": method}

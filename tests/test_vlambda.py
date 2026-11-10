@@ -2190,3 +2190,67 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n{'All tests passed' if failed == 0 else f'{failed} failed'}")
     sys.exit(1 if failed else 0)
+
+
+def test_workflow_smoke():
+    token = test_register_login()
+    st, a = req("POST", "/vlambda", "def handler(r): return {'step': 'a', 'value': 42}", token)
+    assert st == 201
+    st, b = req("POST", "/vlambda", "def handler(r): return {'step': 'b', 'value': 7}", token)
+    assert st == 201
+    st, c = req("POST", "/vlambda", "def handler(r): return {'step': 'c'}", token)
+    assert st == 201
+    workflow = {
+        "name": "smoke",
+        "nodes": [
+            {"id": "a", "type": "lambda", "slug": a["slug"], "next": ["c"]},
+            {"id": "b", "type": "lambda", "slug": b["slug"], "next": ["c"]},
+            {"id": "c", "type": "lambda", "slug": c["slug"], "mode": "join", "waits_for": ["a", "b"]},
+        ],
+    }
+    st, created = req("POST", "/workflows", json.dumps(workflow), token)
+    assert st == 201, created
+    wid = created["id"]
+    st, run = req("POST", "/workflows/%d/run" % wid, json.dumps({"input": {"x": 1}}), token)
+    assert st == 202, run
+    rid = run["run_id"]
+    for _ in range(50):
+        st, detail = req("GET", "/workflow-runs/%d" % rid, token=token)
+        assert st == 200
+        if detail.get("status") in {"succeeded", "failed", "cancelled", "timed_out"}:
+            break
+        time.sleep(0.2)
+    assert detail["status"] == "succeeded", detail
+    statuses = {node["node_id"]: node["status"] for node in detail["nodes"]}
+    assert statuses == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
+
+
+def test_workflow_graph_smoke():
+    token = test_register_login()
+    st, a = req("POST", "/vlambda", "def handler(r): return {'step':'a'}", token)
+    st, b = req("POST", "/vlambda", "def handler(r): return {'step':'b'}", token)
+    st, c = req("POST", "/vlambda", "def handler(r): return {'step':'c'}", token)
+    workflow = {
+        "name": "graphsmoke",
+        "nodes": [
+            {"id": "a", "type": "lambda", "slug": a["slug"], "next": ["c"]},
+            {"id": "b", "type": "lambda", "slug": b["slug"], "next": ["c"]},
+            {"id": "c", "type": "lambda", "slug": c["slug"], "mode": "join", "waits_for": ["a", "b"]},
+        ],
+    }
+    st, created = req("POST", "/workflows", json.dumps(workflow), token)
+    assert st == 201
+    wid = created["id"]
+    st, run = req("POST", "/workflows/%d/run" % wid, json.dumps({"input": {"x": 1}}), token)
+    assert st == 202
+    rid = run["run_id"]
+    for _ in range(50):
+        st, detail = req("GET", "/workflow-runs/%d" % rid, token=token)
+        if detail.get("status") in {"succeeded", "failed", "cancelled", "timed_out"}:
+            break
+        time.sleep(0.2)
+    st, graph = req("GET", "/workflows/%d/graph?run_id=%d" % (wid, rid), token=token)
+    assert st == 200
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 2
+    assert {n["id"] for n in graph["nodes"]} == {"a", "b", "c"}

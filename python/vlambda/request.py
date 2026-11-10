@@ -26,11 +26,12 @@ class Request:
     __slots__ = (
         "method", "path", "query_string", "query", "headers", "cookies",
         "body", "request_id", "slug", "remote_ip", "host", "scheme", "env", "kv", "fetch",
+        "trigger_workflow", "trigger_client",
     )
 
     def __init__(self, method="GET", path="/", query_string="", headers=None, body=b"",
                  request_id="", slug="", remote_ip="", host="", scheme="http", env=None,
-                 kv_client=None, fetch_client=None):
+                 kv_client=None, fetch_client=None, trigger_client=None):
         self.method = method
         self.path = path
         self.query_string = query_string
@@ -45,6 +46,8 @@ class Request:
         self.env = dict(env or {})
         self.kv = kv_client if kv_client is not None else _kv_proxy
         self.fetch = fetch_client.fetch if fetch_client is not None else _fetch_proxy
+        self.trigger_client = trigger_client if trigger_client is not None else (kv_client if kv_client is not None else None)
+        self.trigger_workflow = self._trigger_workflow
         cookie_header = self.header("cookie")
         self.cookies = {}
         for part in cookie_header.split(";"):
@@ -66,6 +69,24 @@ class Request:
 
     def form(self):
         return {k: v[0] for k, v in parse_qs(self.body.decode("utf-8", "replace")).items()}
+
+    def _trigger_workflow(self, workflow_id, payload=None):
+        client = self.trigger_client
+        if client is None:
+            try:
+                client = current()
+            except Exception:
+                client = None
+        if client is not None:
+            return client.trigger_workflow(workflow_id, payload)
+        from vlambda.workflows import trigger_workflow_for_slug
+
+        if not self.slug:
+            raise CapabilityUnavailable("capability broker is not available in this invocation")
+        import json as _json
+
+        result = trigger_workflow_for_slug(self.slug, workflow_id, _json.dumps(payload or {}))
+        return _json.loads(result)
 
     def log(self, message, level="info"):
         """Persist a log line for this invocation."""

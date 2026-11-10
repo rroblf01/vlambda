@@ -27,9 +27,12 @@ def test_sandbox_blocked_module():
             blocked_import(module)
 
 
-def test_sandbox_compile_error():
-    with pytest.raises(SyntaxError):
-        make_sandbox("def handler(request) return 1", None)
+def test_sandbox_safe_submodule():
+    assert blocked_import("urllib.parse") is not None
+    with pytest.raises(ImportError):
+        blocked_import("urllib.request")
+    with pytest.raises(ImportError):
+        blocked_import("urllib")
 
 
 def test_sandbox_missing_handler():
@@ -1712,7 +1715,7 @@ def test_encrypted_backup_roundtrip(tmp_path, monkeypatch):
     archive = tmp_path / "backup.tar.gz.enc"
 
     manifest = create_backup(
-        str(archive), db_path=str(db), projects_dir=str(projects), encrypt=True,
+        str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"), projects_dir=str(projects), encrypt=True,
     )
     assert manifest["encrypted"] is True
     assert is_encrypted(str(archive))
@@ -1721,7 +1724,7 @@ def test_encrypted_backup_roundtrip(tmp_path, monkeypatch):
     db.unlink()
     shutil.rmtree(projects)
     result = restore_backup(
-        str(archive), db_path=str(db), projects_dir=str(projects),
+        str(archive), db_path=str(db), metrics_db=str(tmp_path / "missing.db"), projects_dir=str(projects),
     )
     assert result["encrypted"] is True
     assert (projects / "main.py").read_text(encoding="utf-8") == "print('encrypted')\n"

@@ -2,7 +2,7 @@
 # Production image: installs vlambda from PyPI and listens on port 8080.
 # TLS and the public reverse proxy are handled by Dokploy.
 # The release workflow overrides this with the version being published.
-ARG VLAMBDA_VERSION=1.0.1
+ARG VLAMBDA_VERSION=1.1.0
 ARG PYTHON_VERSION=3.15t
 
 FROM debian:bookworm-slim AS python-env

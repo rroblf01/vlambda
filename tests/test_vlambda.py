@@ -299,6 +299,24 @@ def test_request_path_excludes_query():
     assert body["query"] == {"a": "1", "b": "two"}, body
 
 
+def test_sandbox_urllib_parse():
+    token = test_register_login()
+    code = "from urllib.parse import urlparse\ndef handler(request): return {'path': urlparse(request.path).path}"
+    status, body = req("POST", "/vlambda", code, token)
+    assert status == 201, body
+    slug = body["slug"]
+    status, body = req("GET", f"/f/{slug}?a=1")
+    assert status == 200 and body["path"] == f"/f/{slug}", body
+
+    status, body = req("POST", "/vlambda",
+                       "import urllib.request\ndef handler(request): return {}", token)
+    assert status in (201, 400), body
+    if status == 201:
+        slug = body["slug"]
+        status, body = req("GET", f"/f/{slug}")
+        assert status == 500 and "not allowed" in body.get("error", ""), body
+
+
 def test_sensitive_headers_hidden():
     import urllib.request
 
@@ -1945,6 +1963,71 @@ def test_audit_log():
     assert "old.action" not in [item["action"] for item in body["entries"]]
 
 
+def test_examples_smoke():
+    import base64, io, os, zipfile
+
+    stop_server()
+    start_server({"VLAMBDA_RATE_LIMIT": "100000"}, max_body=10000)
+    token = test_register_login()
+    root = os.path.join(os.environ.get("VLAMBDA_BASE", os.getcwd()), "examples")
+    if not os.path.isdir(root):
+        root = os.path.join(os.getcwd(), "..", "examples")
+    root = os.path.abspath(root)
+
+    def deploy_code(name, rel, method="GET"):
+        with open(os.path.join(root, rel), encoding="utf-8") as f:
+            code = f.read()
+        status, body = req("POST", f"/vlambda?name={name}&method={method}", code, token)
+        assert status == 201, (name, status, body)
+        return body["slug"]
+
+    slug = deploy_code("hello", "hello/main.py")
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body["msg"] == "hello from vlambda", body
+
+    slug = deploy_code("async", "async/main.py")
+    status, body = req("GET", f"/f/{slug}")
+    assert status == 200 and body["async"] is True and len(body["items"]) == 3, body
+
+    slug = deploy_code("htmlfetch", "html-fetch/main.py")
+    status, html = req("GET", f"/f/{slug}")
+    assert status == 200
+    import urllib.request
+    html = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}").read().decode()
+    assert "<h1>vlambda fetch demo</h1>" in html
+    status, body = req("GET", f"/f/{slug}/api")
+    assert status == 200 and body["items"] == ["alpha", "beta", "gamma"], body
+
+    slug = deploy_code("jsonapi", "json-api/main.py")
+    status, body = req("GET", f"/f/{slug}?x=1")
+    assert status == 200 and body["ok"] is True and body["query"] == "x=1", body
+
+    slug = deploy_code("webhook", "webhook/main.py", "POST")
+    status, body = req("POST", f"/f/{slug}", '{"a": 1}',
+                       extra_headers={"Content-Type": "application/json"})
+    assert status == 200 and body["received"] is True, body
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for dirpath, _, files in os.walk(os.path.join(root, "static-site")):
+            for name in files:
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, os.path.join(root, "static-site"))
+                z.writestr(rel, open(full, "rb").read())
+    status, body = req("POST", "/vlambda?project=1&entry=main.py&name=static-site",
+                       base64.b64encode(buf.getvalue()).decode(), token)
+    assert status == 201, body
+    slug = body["slug"]
+    html = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}/").read()
+    assert b"<h1>Static site on vlambda</h1>" in html
+    css = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}/style.css").read()
+    assert b"font-family" in css
+    js = urllib.request.urlopen(f"http://localhost:{PORT}/f/{slug}/app.js").read()
+    assert b"ping" in js
+    status, body = req("GET", f"/f/{slug}/api/ping")
+    assert status == 200 and body["ok"] is True, body
+
+
 def test_project_static_files():
     token, slug = _upload_project("static", {
         "main.py": "def handler(request):\n    return {'path': request.path}\n",
@@ -2061,7 +2144,7 @@ def test_fuzz_smoke():
 
 
 if __name__ == "__main__":
-    tests = [test_health, test_ui_assets, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_trust_proxy_client_ip, test_request_path_excludes_query, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
+    tests = [test_health, test_ui_assets, test_favicon_only_for_ui, test_register_login, test_registration_controls, test_password_policy, test_registration_limit, test_create_invoke, test_sandbox_urllib_parse, test_trust_proxy_client_ip, test_request_path_excludes_query, test_sensitive_headers_hidden, test_async_handler, test_lambda_names, test_response_contract, test_status_body_dict_is_data, test_header_responses_not_cached, test_response_binary, test_lambda_env, test_lambda_kv, test_async_kv, test_kv_fork_project, test_egress_fetch, test_schedules, test_openapi, test_openapi_public, test_response_injection_blocked, test_html_lambda, test_auth_required,
              test_update, test_update_preserves_limits, test_delete, test_delete_cleans_lambda_state, test_validation, test_metrics, test_body_size,
              test_method_mismatch, test_pagination, test_ownership, test_project_zip,
              test_project_rejects_dependency_urls,
@@ -2074,6 +2157,7 @@ if __name__ == "__main__":
              test_sandbox_blocked, test_system_endpoints, test_admin_reset, test_bytes_result, test_request_body_echo, test_packages, test_metrics_aggregate_endpoint, test_lambda_logs, test_delete_metrics_and_logs,
              test_project_dependencies_are_private,
              test_cors_headers, test_json_listing, test_api_tokens, test_password_change, test_audit_log, test_security_regressions, test_sandbox_runtime_coverage, test_project_static_files,
+             test_examples_smoke,
              test_export_import_duplicate, test_project_export_import,
              test_concurrency, test_failure_isolation, test_fuzz_smoke, test_rate_limit]
     failed = 0

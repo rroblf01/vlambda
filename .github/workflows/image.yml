@@ -26,10 +26,12 @@ jobs:
       - name: wait for PyPI
         shell: bash
         run: |
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 180); do
             if curl -fsS "https://pypi.org/pypi/vlambda/${{ inputs.version }}/json" >/dev/null; then
+              echo "vlambda ${{ inputs.version }} is available on PyPI"
               exit 0
             fi
+            echo "waiting for vlambda ${{ inputs.version }} on PyPI (attempt $_/180)"
             sleep 10
           done
           echo "vlambda ${{ inputs.version }} is not on PyPI yet" >&2
